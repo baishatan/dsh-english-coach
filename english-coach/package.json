@@ -1,0 +1,47 @@
+{
+  "name": "@lijingtong/dsh-english-coach",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "英语教练：判断水平、每天准备一课、碎片时间复习。",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test test/core.test.js"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./core": "./core/index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "core/index.js",
+    "core/store.js",
+    "core/constants.js",
+    "core/anchors.js",
+    "core/scoring.js",
+    "core/review.js",
+    "core/lesson.js",
+    "core/commands.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "NOTICE.md",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  }
+}
