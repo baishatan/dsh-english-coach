@@ -4,7 +4,7 @@
 
 **英语教练**是装在 DeepSeek Harness 里的英语学习插件。它替你做那件每天要花二三十分钟的杂活：判断水平、找难度合适的材料、抠出值得记的表达、排复习。你只负责学。
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](../LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ## 它是什么
 
@@ -32,7 +32,8 @@
 
 ## 环境要求
 
-- DeepSeek Harness **桌面版**（已在 `0.2.1-rc.2` 上验证）。插件依赖宿主的插件槽位、持久化调度与本地文件写入。
+- DeepSeek Harness **桌面版 `0.2.1-rc.2`**：当前 `engines.dsh` 仅声明这个精确版本，不推断其他版本兼容。插件依赖宿主的插件槽位、持久化调度与本地文件写入。
+- Node.js：`engines.node` 为 `>=24.21.0 <25`，以该桌面版内置的 Node `24.21.0` 为验证基线；桌面用户无需自行安装 Node。
 - 一个可用的模型连接：首次出题、生成课程都要让模型跑一轮。
 - 不需要 API key，也不需要在本机装 Node 或任何依赖。
 - 生成课程时需要联网：素材由 Agent 搜索并抓取公开网页。
@@ -165,7 +166,12 @@ Agent 会换源并把换了什么写进课程备注；连续失败可以在面�
 
 ```bash
 node --test test/core.test.js
+npm run check:package
 ```
+
+`check:package` 需要开发机提供 npm 和 tar；它使用 `npm pack --ignore-scripts --offline` 生成真实压缩包，检查发布文件、许可证、入口及模块导入，并针对解包后的代码运行领域测试。产物和日志保存在仓库忽略的 `.scratch/package-check/`，不安装插件、不激活 Host、不访问真实学习数据。也可直接运行 `node scripts/check-package.mjs`。
+
+兼容性声明以本机已知环境为边界：2026-10-21 核对桌面版运行清单及内置 DSH 均为 `0.2.1-rc.2`，内置 Node 为 `24.21.0`；历史功能验收见设计文档。本轮打包检查不代表修复包已通过一次性 Profile 的安装、冷启动、卸载、回滚，亦不代表通过商城审核。其他 DSH 版本及跨平台矩阵尚未验证。
 
 领域与状态全部在 `core/`，是一层纯 Node 模块：给定数据目录与一条命令，返回结果并落盘。Host 只做平台接线（工具、路由、调度），Client 只做界面。测试只打 `core` 这一层。
 
@@ -173,6 +179,6 @@ node --test test/core.test.js
 
 ## 许可
 
-MIT，见仓库根目录的 [LICENSE](../LICENSE)。锚题、素材、词表与图标的来源见 [NOTICE.md](NOTICE.md)。
+MIT，见随插件分发的 [LICENSE](LICENSE)（与仓库根目录的许可证一致）。锚题、素材、词表与图标的来源见 [NOTICE.md](NOTICE.md)。
 
 英语教练与 DeepSeek 官方没有隶属关系，是第三方插件。
