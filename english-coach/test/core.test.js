@@ -194,7 +194,7 @@ test('补充词当天就能学，第一次作答只排下一次复习', async ()
   assert.equal(added.data.added[1].kind, 'word')
 
   const list = await run(root, 'review.list', {}, day0)
-  assert.equal(list.data.dueCount, 2, '补充词立刻到期')
+  assert.equal(list.data.dueCount, 3, '补充词立刻到期，课上那一个词当天也在队列里')
 
   const answered = await run(root, 'review.answer', { itemId: added.data.added[0].id, choice: 0 }, day0)
   assert.equal(answered.data.correct, true)
@@ -303,12 +303,19 @@ test('词库给出全部词、到期标记和下一次到期', async () => {
 
   await run(root, 'lesson.save', lessonPayload('2026-10-20'), day0)
 
+  // 课上的词就是当天那一批：当天到期，等学
   const before = await run(root, 'review.list', {}, day0)
   assert.equal(before.data.total, 1)
-  assert.equal(before.data.dueCount, 0, '新项不当天到期')
-  assert.equal(before.data.items[0].due, false)
-  assert.equal(before.data.nextDueAt, plusDays(day0, 1).toISOString())
-  assert.equal(before.data.nextDueCount, 1)
+  assert.equal(before.data.dueCount, 1)
+  assert.equal(before.data.items[0].due, true)
+  assert.equal(before.data.nextDueAt, null)
+
+  // 第一次作答只是"认识一下"：盒子不动，排到 1 天后
+  const learned = await run(root, 'review.answer', { itemId: 'rv-1', choice: 0 }, day0)
+  assert.equal(learned.data.box, 1)
+  const learnedList = await run(root, 'review.list', {}, day0)
+  assert.equal(learnedList.data.dueCount, 0)
+  assert.equal(learnedList.data.nextDueAt, plusDays(day0, 1).toISOString())
 
   const day1 = plusDays(day0, 1)
   const due = await run(root, 'review.list', {}, day1)
@@ -326,11 +333,27 @@ test('词库给出全部词、到期标记和下一次到期', async () => {
   assert.equal(after.data.nextDueCount, 1)
 })
 
+test('当天第一批新词就是这节课的词，学完才轮到继续学习', async () => {
+  const root = await makeRoot()
+  const day0 = at('2026-10-20')
+  await run(root, 'lesson.save', lessonPayload('2026-10-20'), day0)
+
+  const batch = await run(root, 'review.queue', {}, day0)
+  assert.equal(batch.data.dueCount, 1)
+  assert.equal(batch.data.items[0].term, 'in fact')
+  assert.equal(batch.data.items[0].sourceLesson, '2026-10-20')
+
+  await run(root, 'review.answer', { itemId: 'rv-1', choice: 0 }, day0)
+  const finished = await run(root, 'review.list', {}, day0)
+  assert.equal(finished.data.dueCount, 0, '这一批学完，面板才给出「继续学习」')
+})
+
 test('到期按自然日算：隔天一早就能复习，不必等上次作答的钟点', async () => {
   const root = await makeRoot()
-  // 上午 11 点存的词，1 天后到期 = 第二天 11:46 左右
+  // 上午 11 点学完第一个词，1 天后的复习排在第二天 11:00
   const day0 = at('2026-10-20', 11)
   await run(root, 'lesson.save', lessonPayload('2026-10-20'), day0)
+  await run(root, 'review.answer', { itemId: 'rv-1', choice: 0 }, day0)
 
   // 第二天早上 8 点，早于昨天的作答钟点，但已经是新的一天
   const nextMorning = at('2026-10-21', 8)
@@ -352,9 +375,13 @@ test('复习项在 1 / 7 / 30 天各答对一次后变为掌握', async () => {
 
   await run(root, 'lesson.save', lessonPayload('2026-10-20'), day0)
 
+  // 当天学第一遍：认识一下，盒子留在第一盒
+  const learned = await run(root, 'review.answer', { itemId: 'rv-1', choice: 0 }, day0)
+  assert.equal(learned.data.box, 1)
+
   const day1 = plusDays(day0, 1)
   const due1 = await run(root, 'review.queue', {}, day1)
-  assert.equal(due1.data.dueCount, 1, '新项应在 1 天后到期')
+  assert.equal(due1.data.dueCount, 1, '认识之后应在 1 天后到期')
   const answer1 = await run(root, 'review.answer', { itemId: 'rv-1', choice: 0 }, day1)
   assert.equal(answer1.data.correct, true)
   assert.equal(answer1.data.box, 2)
@@ -394,6 +421,7 @@ test('复习中途答错回到第一盒，掌握不成立', async () => {
   const root = await makeRoot()
   const day0 = at('2026-10-20')
   await run(root, 'lesson.save', lessonPayload('2026-10-20'), day0)
+  await run(root, 'review.answer', { itemId: 'rv-1', choice: 0 }, day0)
 
   const day1 = plusDays(day0, 1)
   await run(root, 'review.answer', { itemId: 'rv-1', choice: 0 }, day1)
@@ -640,14 +668,15 @@ test('未到期的复习项不能推进盒子，到了才能答', async () => {
   const day0 = at('2026-10-20')
   await run(root, 'lesson.save', lessonPayload('2026-10-20'), day0)
 
+  // 当天的词可以学一遍：认识一下，盒子还在第一盒
+  const first = await run(root, 'review.answer', { itemId: 'rv-1', choice: 0 }, day0)
+  assert.equal(first.ok, true, JSON.stringify(first))
+  assert.equal(first.data.box, 1)
+
+  // 同一天再答就是复习，间隔没走完，拒绝
   const tooEarly = await run(root, 'review.answer', { itemId: 'rv-1', choice: 0 }, day0)
   assert.equal(tooEarly.ok, false)
   assert.equal(tooEarly.code, 'not_due')
-  assert.equal((await run(root, 'progress.get', {}, day0)).data.mastered, 0)
-
-  // 同一天连答三次也到不了掌握，因为盒子根本没动
-  await run(root, 'review.answer', { itemId: 'rv-1', choice: 0 }, day0)
-  await run(root, 'review.answer', { itemId: 'rv-1', choice: 0 }, day0)
   assert.equal((await run(root, 'progress.get', {}, day0)).data.mastered, 0)
 
   const day1 = plusDays(day0, 1)
@@ -743,6 +772,7 @@ test('课程里的表达会自动进入复习队列', async () => {
   const saved = await run(root, 'lesson.save', payload, now)
   assert.equal(saved.ok, true, JSON.stringify(saved))
   assert.equal(saved.data.reviewAdded, 4)
+  assert.equal(saved.data.dueCount, 4, '课上派生出来的词也是当天那一批')
 
   const queue = await run(root, 'review.queue', {}, plusDays(now, 1))
   const items = JSON.parse(await fs.readFile(join(root, 'review', 'items.json'), 'utf8')).items

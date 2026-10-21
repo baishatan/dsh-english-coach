@@ -943,7 +943,10 @@ const handlers = {
     let added = 0
     for (const candidate of merged.reviewItems ?? []) {
       if (reviewStore.items.some((item) => item.id === candidate.id)) continue
-      reviewStore.items.push(newReviewItem(candidate, ctx.now, merged.date))
+      // 课上的词就是当天的第一批新词，所以当天就到期：面板和悬浮层抓到的是
+      // 这一课要学的词，而不是另外生成的一批。第一次作答按「认识一下」处理
+      // （只排 1 天后的复习，不推盒子），所以当天学完不会把间隔提前。
+      reviewStore.items.push(newReviewItem(candidate, ctx.now, merged.date, { freshNow: true }))
       added += 1
     }
     if (added) await save(ctx, 'review', reviewStore)
