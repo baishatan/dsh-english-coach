@@ -161,7 +161,7 @@ window.__ModuleLoader__.load({
       openPanel: '在面板里打开',
       openLibrary: '去词库',
       studyInPanel: '在面板里复习',
-      pillHint: '这里只是入口：完整的复习、讲解和词库都在面板里。',
+      pillProgress: '第 {i} 个 / 共 {n} 个',
 
       // library
       library: '词库',
@@ -197,8 +197,6 @@ window.__ModuleLoader__.load({
       generatingWords: '正在出词…',
       generatingWordsHint: '正在出词，大约一分钟；出好后会自动接着学。',
       continueReview: '继续复习剩下的 {n} 个',
-      continueHint: '想多学几个，去面板点「继续学习」。',
-      nextDueContinue: '下次 {date}。想多学几个，去面板点「继续学习」。',
       vocabEmpty: '这次没有拿到新词，再点一次试试。'
     }
 
@@ -216,9 +214,12 @@ window.__ModuleLoader__.load({
 
     const API = '/english-coach/api'
     const PILL_POSITION_KEY = 'english-coach:pill-position'
-    // The overlay can only open the panel; when a deck is already mounted it can
-    // also ask it to start a vocabulary job, so the pill's button does what it says.
-    const vocabRequests = new Set()
+    // 悬浮层和面板答的是同一个复习队列：任何一边答完，另一边都重读一次，
+    // 免得面板上还挂着已经被答掉的词。
+    const reviewListeners = new Set()
+    const notifyReview = () => {
+      for (const listener of reviewListeners) listener()
+    }
 
     async function call(command, payload) {
       let response
@@ -556,6 +557,12 @@ window.__ModuleLoader__.load({
 .ec-pop-term { font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
   font-size: 24px; margin: 12px 0 2px; letter-spacing: -.01em; }
 .ec-pop-hint { font-size: 12px; color: var(--dsw-alias-label-secondary); line-height: 1.6; margin-top: 6px; }
+.ec-pop-prompt { font-size: 11.5px; color: var(--dsw-alias-label-secondary); margin-top: 3px; }
+/* 306px 的悬浮层里，选项比面板里紧一档，四行释义一屏放得下 */
+.ec-pop .ec-choices { margin: 12px 0 0; gap: 6px; }
+.ec-pop .ec-choice { font-size: 12.8px; padding: 8px 9px; gap: 8px; }
+.ec-pop .ec-fb { margin-top: 12px; }
+.ec-pop .ec-acts { margin-top: 10px; }
 .ec-pop-acts { display: flex; gap: 8px; margin-top: 14px; }
 `
     function Style() {
@@ -1349,7 +1356,9 @@ window.__ModuleLoader__.load({
         if (!result.ok) {
           setPicked(null)
           setFeedback(null)
-          setError(result.message)
+          // 这张可能已经在悬浮层里答过了：跳过它，不要用报错拦人
+          if (result.code === 'not_due') next()
+          else setError(result.message)
           return
         }
         if (result.data.correct) setCorrect((value) => value + 1)
@@ -1413,13 +1422,6 @@ window.__ModuleLoader__.load({
         }
         window.addEventListener('keydown', onKey)
         return () => window.removeEventListener('keydown', onKey)
-      })
-
-      useEffect(() => {
-        const start = () => void generateMore()
-        vocabRequests.add(start)
-        return () => vocabRequests.delete(start)
-        // eslint-disable-next-line react-hooks/exhaustive-deps
       })
 
       const generateButton = (label) =>
@@ -2233,6 +2235,13 @@ window.__ModuleLoader__.load({
       const { data, error, loading, reload } = useRefresh(loadState, 20000)
       const words = useRefresh(loadWords, 0)
 
+      // 悬浮层里答了词，这边的词库与到期数要跟着变；面板自己答完也走 reload。
+      useEffect(() => {
+        const listener = () => void words.reload()
+        reviewListeners.add(listener)
+        return () => reviewListeners.delete(listener)
+      }, [words.reload])
+
       if (loading) {
         return h('div', { className: 'ec-root' }, h(Style), h('div', { className: 'ec-wrap' },
           h('div', { className: 'ec-empty' }, t('loading'))))
@@ -2592,14 +2601,20 @@ window.__ModuleLoader__.load({
     // ---------------------------------------------------------------- overlay
 
     /**
-     * The overlay is an entry, not a study surface: it says what is waiting and
-     * drops the learner into the panel. Keeping the session in one place means
-     * the box state, the explanation and the library never disagree.
+     * The overlay is a small review surface of its own: one word, four choices,
+     * then the explanation. Working in another session should not cost the
+     * learner a trip to the panel for every card; the panel keeps the library
+     * and the longer session, and both answer from the same queue.
      */
     function Pill({ getLayout }) {
       const { data, reload } = useRefresh(loadState, 30000)
       const [open, setOpen] = useState(false)
       const [queue, setQueue] = useState(null)
+      const [session, setSession] = useState(null)
+      const [busy, setBusy] = useState(false)
+      const [error, setError] = useState(null)
+      const [job, setJob] = useState(null)
+      const [lastDue, setLastDue] = useState(null)
 
       // Where the learner dragged the pill: null means "the default corner".
       const [pos, setPosState] = useState(null)
@@ -2696,11 +2711,126 @@ window.__ModuleLoader__.load({
         if (drag && movedRef.current && positionRef.current) persistPosition(positionRef.current)
       }
 
+      // ------------------------------------------------------------ 复习会话
+      const limit = data?.settings?.study?.wordsPerDay ?? 10
+      const generating = job?.status === 'pending'
+      const card = session && session.at < session.cards.length ? session.cards[session.at] : null
+      const finished = Boolean(session) && session.cards.length > 0 && !card
+
+      const startSession = (list) => {
+        const due = (list?.items ?? []).filter((item) => item.due && (item.choices?.length ?? 0) === 4)
+        setSession({ cards: due.slice(0, limit), at: 0, picked: null, feedback: null, correct: 0 })
+        setError(null)
+      }
+
+      const next = () =>
+        setSession((prev) => (prev ? { ...prev, at: prev.at + 1, picked: null, feedback: null } : prev))
+
+      const answer = async (choice) => {
+        if (!card || session.picked !== null || busy) return
+        setBusy(true)
+        setError(null)
+        setSession((prev) => ({ ...prev, picked: choice }))
+        const result = await call('review.answer', { itemId: card.id, choice })
+        setBusy(false)
+        if (!result.ok) {
+          // 这张可能刚在面板里答过：算过去了，不要用报错拦人
+          if (result.code === 'not_due') {
+            next()
+            return
+          }
+          setSession((prev) => ({ ...prev, picked: null }))
+          setError(result.message)
+          return
+        }
+        setLastDue(result.data.dueAt ?? null)
+        setSession((prev) => ({
+          ...prev,
+          feedback: { correct: result.data.correct, explanation: result.data.explanation ?? '' },
+          correct: prev.correct + (result.data.correct ? 1 : 0)
+        }))
+        // 药丸上的数字当场就变，不用等下一次轮询
+        setQueue((prev) =>
+          prev
+            ? {
+                ...prev,
+                dueCount: Math.max(0, (prev.dueCount ?? 1) - 1),
+                items: (prev.items ?? []).map((item) => (item.id === card.id ? { ...item, due: false } : item))
+              }
+            : prev
+        )
+        notifyReview()
+        // 一轮答完，下一次到期要由服务端算：刚答的这批里，盒子不同的词
+        // 排到的日期也不同，客户端猜不准
+        if (session.at + 1 >= session.cards.length) {
+          const fresh = await call('review.list')
+          if (fresh.ok) setQueue(fresh.data)
+        }
+      }
+
+      const continueRemaining = async () => {
+        const result = await call('review.list')
+        if (!result.ok) {
+          setError(result.message)
+          return
+        }
+        setQueue(result.data)
+        startSession(result.data)
+      }
+
+      const generateMore = async () => {
+        if (generating) return
+        setError(null)
+        const result = await call('generate.vocab')
+        if (!result.ok) {
+          setError(result.message)
+          return
+        }
+        setJob(result.data)
+      }
+
       useEffect(() => {
+        if (!job || job.status !== 'pending') return undefined
+        const timer = setInterval(async () => {
+          const status = await call('job.status', { kind: 'vocab' })
+          if (!status.ok || !status.data) return
+          setJob(status.data)
+          if (status.data.status === 'pending') return
+          if (status.data.status === 'failed') {
+            setError(status.data.failure ?? t('generateFailed'))
+            return
+          }
+          const fresh = await call('review.list')
+          if (!fresh.ok) return
+          setQueue(fresh.data)
+          if ((fresh.data.items ?? []).some((item) => item.due)) startSession(fresh.data)
+          else setError(t('vocabEmpty'))
+        }, 4000)
+        return () => clearInterval(timer)
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [job])
+
+      useEffect(() => {
+        if (!open) return undefined
+        let alive = true
         void (async () => {
           const result = await call('review.list')
-          if (result.ok) setQueue(result.data)
+          if (!alive || !result.ok) return
+          setQueue(result.data)
+          setSession((prev) => {
+            // 收起再打开时接着没答完的那一轮，不要从头开始
+            if (prev && prev.at < prev.cards.length) return prev
+            const due = (result.data.items ?? []).filter(
+              (item) => item.due && (item.choices?.length ?? 0) === 4
+            )
+            if (!due.length) return null
+            return { cards: due.slice(0, limit), at: 0, picked: null, feedback: null, correct: 0 }
+          })
         })()
+        return () => {
+          alive = false
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [open])
 
       useEffect(() => {
@@ -2714,10 +2844,16 @@ window.__ModuleLoader__.load({
       }, [open])
 
       const dueCount = queue?.dueCount ?? data?.review?.dueCount ?? 0
-      const first = (queue?.items ?? []).find((item) => item.due) ?? null
       const lesson = data?.todayLesson
       const hasDraft = lesson && lesson.status === 'draft'
       const badge = dueCount > 0 ? dueCount : hasDraft ? '·' : ''
+      const nextAt = queue?.nextDueAt ?? lastDue
+      const nextText = !dueCount && nextAt ? t('nextDueShort', { date: formatDay(nextAt) }) : ''
+      const quietText = finished
+        ? t('reviewDoneHint', { n: session.correct })
+        : hasDraft
+          ? t('draftReady')
+          : t('nothingDueHint')
 
       const openPanel = () => {
         // Resolved at click time: on a cold boot the layout service may not
@@ -2728,18 +2864,11 @@ window.__ModuleLoader__.load({
         } catch {
           /* the panel entry may be gone */
         }
-        if (!dueCount) for (const start of vocabRequests) start()
         setOpen(false)
       }
 
-      const openDown = Boolean(pos && pos.y < 280)
+      const openDown = Boolean(pos && pos.y < 420)
       const pillStyle = pos ? { left: pos.x, top: pos.y, right: 'auto', bottom: 'auto' } : undefined
-
-      let hint = ''
-      if (dueCount) hint = first ? t('pillHint') : t('nothingDue')
-      else if (hasDraft) hint = t('draftReady')
-      else if (queue?.nextDueAt) hint = t('nextDueContinue', { date: formatDay(queue.nextDueAt) })
-      else hint = t('continueHint')
 
       return h(
         'div',
@@ -2756,15 +2885,89 @@ window.__ModuleLoader__.load({
                   'div',
                   { className: 'ec-pop-head' },
                   h('b', null, t('title')),
-                  h('span', null, dueCount ? t('dueToday', { n: dueCount }) : t('nothingDueShort'))
+                  h(
+                    'span',
+                    null,
+                    card
+                      ? t('pillProgress', { i: session.at + 1, n: session.cards.length })
+                      : dueCount
+                        ? t('dueToday', { n: dueCount })
+                        : t('nothingDueShort')
+                  )
                 ),
-                first ? h('div', { className: 'ec-pop-term' }, first.term) : null,
-                h('div', { className: 'ec-pop-hint' }, hint),
+                card
+                  ? h(
+                      'div',
+                      null,
+                      h('div', { className: 'ec-pop-term' }, card.term),
+                      h('div', { className: 'ec-pop-prompt' }, t('pickMeaning')),
+                      h(ChoiceList, {
+                        choices: card.choices ?? [],
+                        answerIndex: card.answerIndex,
+                        picked: session.picked,
+                        onPick: (choice) => void answer(choice),
+                        disabled: busy
+                      }),
+                      session.feedback
+                        ? h(
+                            'div',
+                            {
+                              className: 'ec-fb',
+                              'data-tone': session.feedback.correct ? 'ok' : 'err'
+                            },
+                            h(
+                              'div',
+                              { className: 'ec-verdict' },
+                              session.feedback.correct ? t('correct') : t('wrong')
+                            ),
+                            h('div', { className: 'ec-meaning' }, card.meaning),
+                            session.feedback.explanation
+                              ? h('div', { className: 'ec-note' }, session.feedback.explanation)
+                              : null,
+                            h(
+                              'div',
+                              { className: 'ec-acts' },
+                              h(
+                                Btn,
+                                { primary: true, small: true, onClick: next },
+                                session.at + 1 >= session.cards.length
+                                  ? t('finishReview')
+                                  : t('nextWord')
+                              )
+                            )
+                          )
+                        : null
+                    )
+                  : h(
+                      'div',
+                      null,
+                      h('div', { className: 'ec-pop-hint' }, quietText),
+                      dueCount > 0
+                        ? h(
+                            Btn,
+                            { primary: true, small: true, style: { marginTop: 12 }, onClick: continueRemaining },
+                            t('continueReview', { n: dueCount })
+                          )
+                        : h(
+                            Btn,
+                            {
+                              primary: true,
+                              small: true,
+                              style: { marginTop: 12 },
+                              disabled: generating,
+                              onClick: generateMore
+                            },
+                            generating ? t('generatingWords') : t('continueLearning')
+                          ),
+                      generating ? h('div', { className: 'ec-pop-hint' }, t('generatingWordsHint')) : null,
+                      nextText ? h('div', { className: 'ec-pop-hint' }, nextText) : null
+                    ),
+                error ? h(Notice, { tone: 'error' }, error) : null,
                 h(
                   'div',
                   { className: 'ec-pop-acts' },
-                  h(Btn, { primary: true, onClick: openPanel }, dueCount ? t('studyInPanel') : t('continueLearning')),
-                  h(Btn, { ghost: true, onClick: () => setOpen(false) }, t('collapse'))
+                  h(Btn, { ghost: true, small: true, onClick: openPanel }, t('studyInPanel')),
+                  h(Btn, { ghost: true, small: true, onClick: () => setOpen(false) }, t('collapse'))
                 )
               )
             : null,
