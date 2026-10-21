@@ -36,9 +36,24 @@ export function newReviewItem(input, now, sourceLesson, options = {}) {
   }
 }
 
+/** Local calendar date of an instant, e.g. "2026-10-21". */
+function dayKey(value) {
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${date.getFullYear()}-${month}-${day}`
+}
+
 export function isDue(item, now) {
   if (!item || item.status === 'retired') return false
-  return Date.parse(item.dueAt) <= now.getTime()
+  // Intervals are counted in whole days, not in hours. A word booked for
+  // "tomorrow 11:46" is due tomorrow morning, not at 11:46: comparing raw
+  // timestamps keeps it hidden until the exact hour it was last answered,
+  // which from the learner's side reads as "the new day never arrived".
+  const dueDay = dayKey(item.dueAt)
+  if (!dueDay) return false
+  return dueDay <= dayKey(now)
 }
 
 export function dueItems(items, now) {

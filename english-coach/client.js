@@ -1011,7 +1011,12 @@ window.__ModuleLoader__.load({
 
     function dueLabel(item, nowIso) {
       if (item.due) return t('dueTodayShort')
-      const days = Math.ceil((Date.parse(item.dueAt) - Date.parse(nowIso)) / 86400000)
+      // 按自然日算：明天早上的词，今天看就该是"明天"，不是"2 天后"
+      const startOfDay = (value) => {
+        const date = new Date(value)
+        return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()
+      }
+      const days = Math.round((startOfDay(item.dueAt) - startOfDay(nowIso)) / 86400000)
       if (days <= 1) return t('tomorrow')
       if (days < 30) return t('daysAfter', { n: days })
       return formatDay(item.dueAt)

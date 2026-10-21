@@ -21,7 +21,7 @@ import {
   seededShuffle,
   validateLesson
 } from './lesson.js'
-import { advance, countMastered, dueItems, newReviewItem } from './review.js'
+import { advance, countMastered, dueItems, isDue, newReviewItem } from './review.js'
 import { scoreAssessment, nextDrift } from './scoring.js'
 import {
   appendJsonl,
@@ -1088,11 +1088,14 @@ const handlers = {
   async 'review.list'(ctx) {
     const review = await load(ctx, 'review')
     const items = review.items ?? []
-    const now = ctx.now.getTime()
-    const stamped = items.map((item) => ({ item, at: Date.parse(item.dueAt) }))
-    const due = stamped.filter((entry) => entry.at <= now)
-    const upcoming = stamped
-      .filter((entry) => entry.at > now)
+    const entries = items.map((item) => ({
+      item,
+      due: isDue(item, ctx.now),
+      at: Date.parse(item.dueAt)
+    }))
+    const due = entries.filter((entry) => entry.due)
+    const upcoming = entries
+      .filter((entry) => !entry.due && entry.item.status !== 'retired')
       .sort((a, b) => a.at - b.at)
     const nextDueAt = upcoming[0]?.item.dueAt ?? null
     const nextDay = nextDueAt ? nextDueAt.slice(0, 10) : null
@@ -1104,17 +1107,15 @@ const handlers = {
       nextDueCount: nextDay
         ? upcoming.filter((entry) => entry.item.dueAt.slice(0, 10) === nextDay).length
         : 0,
-      items: stamped
+      items: entries
         .slice()
         .sort((a, b) => {
-          const aDue = a.at <= now
-          const bDue = b.at <= now
-          if (aDue !== bDue) return aDue ? -1 : 1
+          if (a.due !== b.due) return a.due ? -1 : 1
           return a.at - b.at
         })
-        .map(({ item, at }) => ({
+        .map(({ item, due: isItemDue }) => ({
           ...publicReviewItem(item),
-          due: at <= now
+          due: isItemDue
         }))
     }
   },
@@ -1133,7 +1134,9 @@ const handlers = {
     // Mastery means "correct at the 1, 7 and 30 day interval", so an item that
     // is not yet due cannot advance a box. Answering early is practice, and
     // practice that moved the box would make the intervals meaningless.
-    if (Date.parse(item.dueAt) > ctx.now.getTime()) {
+    // Due is decided in whole days, same as `review.list`, or the deck could
+    // show a word that this guard then refuses.
+    if (!isDue(item, ctx.now)) {
       fail('not_due', `「${item.term}」还没到期，${item.dueAt.slice(0, 10)} 之后再答`, 'itemId')
     }
     const correct = choice === item.answerIndex

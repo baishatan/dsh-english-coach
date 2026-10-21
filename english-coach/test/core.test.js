@@ -326,6 +326,26 @@ test('词库给出全部词、到期标记和下一次到期', async () => {
   assert.equal(after.data.nextDueCount, 1)
 })
 
+test('到期按自然日算：隔天一早就能复习，不必等上次作答的钟点', async () => {
+  const root = await makeRoot()
+  // 上午 11 点存的词，1 天后到期 = 第二天 11:46 左右
+  const day0 = at('2026-10-20', 11)
+  await run(root, 'lesson.save', lessonPayload('2026-10-20'), day0)
+
+  // 第二天早上 8 点，早于昨天的作答钟点，但已经是新的一天
+  const nextMorning = at('2026-10-21', 8)
+  const list = await run(root, 'review.list', {}, nextMorning)
+  assert.equal(list.data.dueCount, 1, '新的一天就应该到期')
+  assert.equal(list.data.items[0].due, true)
+  assert.equal(list.data.nextDueAt, null)
+
+  // 列表说到期，答题就不能再以 not_due 拒绝
+  const answered = await run(root, 'review.answer', { itemId: 'rv-1', choice: 0 }, nextMorning)
+  assert.equal(answered.ok, true, JSON.stringify(answered))
+  assert.equal(answered.data.box, 2)
+  assert.equal(answered.data.dueCount, 0)
+})
+
 test('复习项在 1 / 7 / 30 天各答对一次后变为掌握', async () => {
   const root = await makeRoot()
   const day0 = at('2026-10-20')
