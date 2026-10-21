@@ -16,6 +16,7 @@ window.__ModuleLoader__.load({
       today: '今日',
       plan: '计划',
       progress: '进度',
+      profile: '个人',
       loading: '加载中…',
       retry: '重试',
       onboardTitle: '先说三件事',
@@ -31,6 +32,14 @@ window.__ModuleLoader__.load({
       targetBand: '想练到哪一档',
       interests: '感兴趣的主题',
       interestsHint: '逗号分隔，例如：工程管理, 产品设计, 能源',
+      profileTitle: '个人目标',
+      profileHint: '用于安排学习目标和选择课程素材，随时可以改。',
+      profileInterestsHint: '输入主题后按回车或点「添加」，最多 12 个；最后点「保存」。',
+      interestLimit: '最多填写 12 个兴趣主题，请先移除一些再添加。',
+      goalNote: '为什么学英语',
+      goalNotePlaceholder: '例如：评审会上要听懂对方的技术判断',
+      interestAdd: '加一个，回车确认',
+      removeInterest: '移除',
       workContext: '我们猜你在做',
       workContextHint: '按当前工作区猜的，不对就改。',
       save: '保存',
@@ -96,7 +105,7 @@ window.__ModuleLoader__.load({
       diagnostics: '诊断数据',
       accuracy: '答对率',
       expiredDrafts: '过期草稿',
-      dueReview: '到期复习',
+      dueReview: '单词学习',
       collapse: '收起',
       dragHint: '按住可以拖到别处，点一下打开',
       dataRoot: '数据目录',
@@ -114,7 +123,7 @@ window.__ModuleLoader__.load({
       automationOn: '已开启',
       automationOff: '未开启',
       band: '档位',
-      editProfile: '编辑画像',
+      profileSettingsNote: '画像、目标和兴趣在「个人」页里改。',
       regenerateSyllabus: '重新生成大纲',
 
       // workbench
@@ -160,7 +169,7 @@ window.__ModuleLoader__.load({
       dueToday: '今天到期 {n} 个',
       openPanel: '在面板里打开',
       openLibrary: '去词库',
-      studyInPanel: '在面板里复习',
+      studyInPanel: '打开主页',
       pillProgress: '第 {i} 个 / 共 {n} 个',
 
       // library
@@ -216,6 +225,7 @@ window.__ModuleLoader__.load({
     const PILL_POSITION_KEY = 'english-coach:pill-position'
     // 悬浮层和面板答的是同一个复习队列：任何一边答完，另一边都重读一次，
     // 免得面板上还挂着已经被答掉的词。
+    const homeListeners = new Set()
     const reviewListeners = new Set()
     const notifyReview = () => {
       for (const listener of reviewListeners) listener()
@@ -349,6 +359,19 @@ window.__ModuleLoader__.load({
 .ec-input, .ec-select { font: inherit; font-size: 13px; padding: 7px 10px; border-radius: 8px;
   border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-2);
   color: var(--dsw-alias-label-primary); width: 100%; box-sizing: border-box; }
+/* 个人页的三列表单：目标、时长、档位一排，备注和兴趣占满整行 */
+.ec-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }
+.ec-form .ec-field { margin-bottom: 0; }
+.ec-form .ec-wide { grid-column: 1 / -1; }
+@media (max-width: 760px) { .ec-form { grid-template-columns: 1fr; } }
+.ec-chip.ec-chip-edit { padding-right: 3px; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.ec-chip-x { border: 0; background: none; padding: 0 4px; font: inherit; font-size: 13px; line-height: 1;
+  color: var(--dsw-alias-label-secondary); cursor: pointer; }
+.ec-chip-x:hover { color: var(--dsw-alias-state-error-primary); }
+.ec-chip-input { flex: 1 1 140px; min-width: 140px; font: inherit; font-size: 12px; padding: 4px 10px;
+  border-radius: 999px; border: 1px dashed var(--dsw-alias-border-l2);
+  background: transparent; color: var(--dsw-alias-label-primary); }
+.ec-chip-input:focus { outline: none; border-style: solid; border-color: var(--dsw-alias-brand-primary); }
 .ec-badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px;
   background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary);
   border: 1px solid var(--dsw-alias-border-l1); white-space: nowrap; }
@@ -1262,7 +1285,7 @@ window.__ModuleLoader__.load({
           ),
           h(
             Btn,
-            { ghost: true, small: true, style: { marginLeft: 'auto' }, onClick: () => onTab('progress') },
+            { ghost: true, small: true, style: { marginLeft: 'auto' }, onClick: () => onTab('profile') },
             t('viewProgress')
           )
         )
@@ -1926,6 +1949,207 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /**
+     * 个人页：上半是关于"我"的——为什么学、能花多久、想要什么、关心什么；
+     * 下半是"我练到哪了"，直接复用进度那两张栏。画像只有一份，编辑放在这里，
+     * 设置页只留学习节奏和运行相关的开关。
+     */
+    function ProfileTab({ data, reload }) {
+      const [draft, setDraft] = useState(null)
+      const [dirty, setDirty] = useState(false)
+      const [status, setStatus] = useState(null)
+      const [busy, setBusy] = useState(false)
+      const [interestText, setInterestText] = useState('')
+
+      useEffect(() => {
+        // 正在改的时候，不让每 20 秒一次的刷新把输入吞掉
+        if (dirty || busy) return
+        setDraft(data.profile ?? null)
+      }, [data.profile])
+
+      if (!draft) {
+        return h('section', { className: 'ec-card' }, h('div', { className: 'ec-empty' }, t('loading')))
+      }
+
+      const interests = Array.isArray(draft.interests) ? draft.interests : []
+      const update = (patch) => {
+        setDraft({ ...draft, ...patch })
+        setDirty(true)
+        setStatus(null)
+      }
+
+      const collectInterests = () => {
+        const next = [...new Set([...interests, ...interestText.split(/[,，]/).map((item) => item.trim()).filter(Boolean)])]
+        if (next.length > 12) {
+          setStatus({ tone: 'error', text: t('interestLimit') })
+          return null
+        }
+        return next
+      }
+
+      const addInterest = () => {
+        const next = collectInterests()
+        if (!next) return
+        update({ interests: next })
+        setInterestText('')
+      }
+
+      const save = async () => {
+        if (busy) return
+        const next = collectInterests()
+        if (!next) return
+        setBusy(true)
+        const result = await call('profile.save', {
+          ...draft,
+          minutesPerDay: Number(draft.minutesPerDay),
+          goalNote: String(draft.goalNote ?? ''),
+          interests: next
+        })
+        if (!result.ok) {
+          setBusy(false)
+          setStatus({ tone: 'error', text: result.message })
+          return
+        }
+        // Use the saved value immediately, rather than briefly restoring the old polling snapshot.
+        setDraft(result.data.profile)
+        setInterestText('')
+        setStatus({ tone: 'success', text: t('saved') })
+        if (reload) await reload()
+        setDirty(false)
+        setBusy(false)
+      }
+
+      return h(
+        'div',
+        { className: 'ec-page' },
+        h(
+          'section',
+          { className: 'ec-card' },
+          h(
+            'div',
+            { className: 'ec-card-head' },
+            h('h2', null, t('profileTitle')),
+            h('span', { className: 'ec-sub' }, t('profileHint'))
+          ),
+          h(
+            'fieldset',
+            { className: 'ec-form', disabled: busy, style: { border: 0, padding: 0, minWidth: 0 } },
+            h(
+              'div',
+              { className: 'ec-field' },
+              h('label', { className: 'ec-label' }, t('goal')),
+              h(
+                'select',
+                {
+                  className: 'ec-select',
+                  value: draft.goal ?? 'work',
+                  onChange: (event) => update({ goal: event.target.value })
+                },
+                GOALS.map((goal) =>
+                  h(
+                    'option',
+                    { key: goal, value: goal },
+                    t(`goal${goal[0].toUpperCase()}${goal.slice(1)}`)
+                  )
+                )
+              )
+            ),
+            h(
+              'div',
+              { className: 'ec-field' },
+              h('label', { className: 'ec-label' }, t('minutes')),
+              h('input', {
+                className: 'ec-input',
+                type: 'number',
+                min: 5,
+                max: 180,
+                value: draft.minutesPerDay ?? 30,
+                onChange: (event) => update({ minutesPerDay: event.target.value })
+              })
+            ),
+            h(
+              'div',
+              { className: 'ec-field' },
+              h('label', { className: 'ec-label' }, t('targetBand')),
+              h(
+                'select',
+                {
+                  className: 'ec-select',
+                  value: draft.targetBand ?? '',
+                  onChange: (event) => update({ targetBand: event.target.value })
+                },
+                h('option', { value: '' }, '暂未设定'),
+                BANDS.map((band) => h('option', { key: band, value: band }, band))
+              )
+            ),
+            h(
+              'div',
+              { className: 'ec-field ec-wide' },
+              h('label', { className: 'ec-label' }, t('goalNote')),
+              h('input', {
+                className: 'ec-input',
+                type: 'text',
+                value: draft.goalNote ?? '',
+                placeholder: t('goalNotePlaceholder'),
+                onChange: (event) => update({ goalNote: event.target.value })
+              })
+            ),
+            h(
+              'div',
+              { className: 'ec-field ec-wide' },
+              h('label', { className: 'ec-label' }, t('interests')),
+              h(
+                'div',
+                { className: 'ec-chip-row' },
+                interests.map((item) =>
+                  h(
+                    'span',
+                    { key: item, className: 'ec-chip ec-chip-edit' },
+                    item,
+                    h(
+                      'button',
+                      {
+                        type: 'button',
+                        className: 'ec-chip-x',
+                        title: `${t('removeInterest')} ${item}`,
+                        'aria-label': `${t('removeInterest')} ${item}`,
+                        onClick: () => update({ interests: interests.filter((entry) => entry !== item) })
+                      },
+                      '×'
+                    )
+                  )
+                ),
+                h('input', {
+                  className: 'ec-chip-input',
+                  type: 'text',
+                  value: interestText,
+                  placeholder: t('interestAdd'),
+                  'aria-label': t('interests'),
+                  onChange: (event) => { setInterestText(event.target.value); setDirty(true); setStatus(null) },
+                  onKeyDown: (event) => {
+                    if (event.nativeEvent?.isComposing || event.isComposing) return
+                    if (event.key === 'Enter' || event.key === ',' || event.key === '，') {
+                      event.preventDefault()
+                      addInterest()
+                    }
+                  }
+                }),
+                h(Btn, { small: true, onClick: addInterest, disabled: !interestText.trim() }, '添加')
+              ),
+              h('div', { className: 'ec-muted', style: { marginTop: 6 } }, t('profileInterestsHint'))
+            )
+          ),
+          h(
+            'div',
+            { className: 'ec-row', style: { marginTop: 16 } },
+            h(Btn, { primary: true, onClick: save, disabled: busy || !dirty }, busy ? t('saving') : t('save'))
+          ),
+          status ? h('div', { style: { marginTop: 10 } }, h(Notice, { tone: status.tone }, status.text)) : null
+        ),
+        h('div', { style: { marginTop: 16 } }, h(ProgressTab, { data }))
+      )
+    }
+
     function ProgressTab({ data }) {
       const { data: progress, error } = useRefresh(loadProgress, 20000)
       const [showDiagnostics, setShowDiagnostics] = useState(false)
@@ -2235,6 +2459,12 @@ window.__ModuleLoader__.load({
       const { data, error, loading, reload } = useRefresh(loadState, 20000)
       const words = useRefresh(loadWords, 0)
 
+      useEffect(() => {
+        const goHome = () => { setTab('today'); setMode('normal') }
+        homeListeners.add(goHome)
+        return () => homeListeners.delete(goHome)
+      }, [])
+
       // 悬浮层里答了词，这边的词库与到期数要跟着变；面板自己答完也走 reload。
       useEffect(() => {
         const listener = () => void words.reload()
@@ -2277,7 +2507,7 @@ window.__ModuleLoader__.load({
         ['today', t('today')],
         ['words', t('words')],
         ['plan', t('plan')],
-        ['progress', t('progress')]
+        ['profile', t('profile')]
       ]
 
       let content = null
@@ -2313,7 +2543,7 @@ window.__ModuleLoader__.load({
       } else if (tab === 'plan') {
         content = h(PlanTab, { data, reload })
       } else {
-        content = h(ProgressTab, { data })
+        content = h(ProfileTab, { data, reload })
       }
 
       return h(
@@ -2356,7 +2586,6 @@ window.__ModuleLoader__.load({
 
     function SettingsPage() {
       const { data, error, reload } = useRefresh(loadState, 0)
-      const [profile, setProfile] = useState(null)
       const [settings, setSettings] = useState(null)
       const [status, setStatus] = useState(null)
       const [busy, setBusy] = useState(false)
@@ -2364,38 +2593,12 @@ window.__ModuleLoader__.load({
 
       useEffect(() => {
         if (!data) return
-        setProfile(
-          data.profile ?? {
-            goal: 'work',
-            minutesPerDay: 30,
-            targetBand: '中级',
-            interests: [],
-            confirmedAt: null
-          }
-        )
         setSettings(data.settings)
       }, [data])
 
       if (error) return h('div', { className: 'ec-settings' }, h(Style), h(Notice, { tone: 'error' }, error))
-      if (!profile || !settings) {
+      if (!settings) {
         return h('div', { className: 'ec-settings' }, h(Style), h('div', { className: 'ec-empty' }, t('loading')))
-      }
-
-      const saveProfile = async () => {
-        setBusy(true)
-        const result = await call('profile.save', {
-          ...profile,
-          minutesPerDay: Number(profile.minutesPerDay),
-          interests: Array.isArray(profile.interests)
-            ? profile.interests
-            : String(profile.interests)
-                .split(/[,，]/)
-                .map((item) => item.trim())
-                .filter(Boolean)
-        })
-        setBusy(false)
-        setStatus(result.ok ? { tone: 'success', text: t('saved') } : { tone: 'error', text: result.message })
-        if (result.ok) await reload()
       }
 
       const saveSettings = async (patch) => {
@@ -2438,58 +2641,8 @@ window.__ModuleLoader__.load({
         h(Style),
         status ? h(Notice, { tone: status.tone }, status.text) : null,
 
-        h('div', { className: 'ec-section-title' }, t('editProfile')),
-        h(
-          Field,
-          { label: t('goal') },
-          h(
-            'select',
-            {
-              className: 'ec-select',
-              value: profile.goal,
-              onChange: (event) => setProfile({ ...profile, goal: event.target.value })
-            },
-            GOALS.map((goal) =>
-              h('option', { key: goal, value: goal }, t(`goal${goal[0].toUpperCase()}${goal.slice(1)}`))
-            )
-          )
-        ),
-        h(
-          Field,
-          { label: t('minutes') },
-          h('input', {
-            className: 'ec-input',
-            type: 'number',
-            min: 5,
-            max: 180,
-            value: profile.minutesPerDay,
-            onChange: (event) => setProfile({ ...profile, minutesPerDay: event.target.value })
-          })
-        ),
-        h(
-          Field,
-          { label: t('targetBand') },
-          h(
-            'select',
-            {
-              className: 'ec-select',
-              value: profile.targetBand ?? '中级',
-              onChange: (event) => setProfile({ ...profile, targetBand: event.target.value })
-            },
-            BANDS.map((band) => h('option', { key: band, value: band }, band))
-          )
-        ),
-        h(
-          Field,
-          { label: t('interests'), hint: t('interestsHint') },
-          h('input', {
-            className: 'ec-input',
-            type: 'text',
-            value: Array.isArray(profile.interests) ? profile.interests.join(', ') : String(profile.interests ?? ''),
-            onChange: (event) => setProfile({ ...profile, interests: event.target.value })
-          })
-        ),
-        h(Btn, { primary: true, onClick: saveProfile, disabled: busy }, t('save')),
+        h('div', { className: 'ec-section-title' }, t('profileTitle')),
+        h('div', { className: 'ec-muted', style: { marginBottom: 10 } }, t('profileSettingsNote')),
 
         h('div', { className: 'ec-section-title' }, t('studyPace')),
         h(
@@ -2860,7 +3013,10 @@ window.__ModuleLoader__.load({
         // have existed when this component was registered.
         try {
           const layout = typeof getLayout === 'function' ? getLayout() : null
-          if (layout && layout.selectPanel) layout.selectPanel('english-coach')
+          if (layout && layout.selectPanel) {
+            for (const goHome of homeListeners) goHome()
+            layout.selectPanel('english-coach')
+          }
         } catch {
           /* the panel entry may be gone */
         }

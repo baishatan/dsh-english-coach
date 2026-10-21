@@ -142,6 +142,40 @@ async function fullAssessment(root, now, { kind = 'short', decide } = {}) {
 
 // --------------------------------------------------------------------- tests
 
+test('个人目标和兴趣保存后可读回，其他画像和学习进度不变', async (t) => {
+  const root = await makeRoot()
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  const now = at('2026-10-21')
+  const profile = {
+    goal: 'work', goalNote: '读懂技术文档', minutesPerDay: 30,
+    targetBand: '中高级', interests: ['工程管理'], workContext: '软件开发', draft: false
+  }
+  const first = await run(root, 'profile.save', profile, now)
+  assert.equal(first.ok, true)
+  const before = await run(root, 'progress.get', {}, now)
+  const saved = await run(root, 'profile.save', {
+    ...first.data.profile, goal: 'study', goalNote: '能读懂研究论文',
+    minutesPerDay: 45, interests: ['人工智能', '能源']
+  }, plusDays(now, 1))
+  assert.equal(saved.ok, true)
+  const state = await run(root, 'state.get', {}, plusDays(now, 1))
+  assert.equal(state.data.profile.goalNote, '能读懂研究论文')
+  assert.equal(state.data.profile.goal, 'study')
+  assert.equal(state.data.profile.minutesPerDay, 45)
+  assert.deepEqual(state.data.profile.interests, ['人工智能', '能源'])
+  assert.equal(state.data.profile.workContext, profile.workContext)
+  assert.equal(state.data.profile.targetBand, profile.targetBand)
+  assert.equal(state.data.profile.createdAt, first.data.profile.createdAt)
+  const after = await run(root, 'progress.get', {}, now)
+  assert.deepEqual(after.data, before.data)
+
+  const rejected = await run(root, 'profile.save', { ...saved.data.profile, minutesPerDay: 0 }, now)
+  assert.equal(rejected.ok, false)
+  assert.equal(rejected.field, 'minutesPerDay')
+  const intact = await run(root, 'state.get', {}, now)
+  assert.deepEqual(intact.data.profile, saved.data.profile)
+})
+
 test('同一日期提交两次，最终只有一课，内容是第二次的', async () => {
   const root = await makeRoot()
   const now = at('2026-10-20')
