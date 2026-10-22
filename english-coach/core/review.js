@@ -74,6 +74,10 @@ export function dueItems(items, now) {
  * 90-day check-up on an already-mastered item: missing that returns it to the
  * 30-day box, because the item was demonstrably learned once.
  */
+export function hasAnswered(item) {
+  return (item.answers ?? []).length > 0 || Boolean(item.lastAt || item.masteredAt) || item.status === 'mastered' || item.box > 1
+}
+
 export function advance(item, correct, now) {
   const at = now.toISOString()
   const next = {
@@ -85,7 +89,7 @@ export function advance(item, correct, now) {
   // A word the learner just met through the deck: this answer is the first
   // exposure, not a review. It books the 1-day review and leaves the box alone,
   // so the 1 / 7 / 30 chain still starts after it.
-  if (item.fresh) {
+  if (!hasAnswered(item)) {
     return {
       ...next,
       fresh: false,

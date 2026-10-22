@@ -11,7 +11,9 @@
     "dsh": "0.2.1-rc.2"
   },
   "scripts": {
-    "test": "node --test test/core.test.js",
+    "test": "node --test test/*.test.js",
+    "test:core": "node --test test/core.test.js test/learning-experience.test.js test/host-preference.test.js",
+    "test:ui": "node --test test/*-ui.test.js",
     "check:package": "node scripts/check-package.mjs"
   },
   "exports": {
@@ -25,6 +27,7 @@
     "index.js",
     "client.js",
     "core/*.js",
+    "data/*",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",

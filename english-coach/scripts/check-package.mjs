@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { promises as fs } from 'node:fs'
-import { dirname, join, resolve, sep } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import vm from 'node:vm'
 
@@ -14,7 +14,6 @@ const work = await fs.mkdtemp(join(scratch, 'run-'))
 console.log(`Artifacts: ${work}`)
 const env = {
   ...process.env,
-  PATH: `${dirname(process.execPath)}${sep === '\\' ? ';' : ':'}${process.env.PATH ?? ''}`,
   npm_config_cache: join(work, 'npm-cache'),
   npm_config_update_notifier: 'false'
 }
@@ -35,7 +34,8 @@ assert.equal(sourceManifest.repository, 'https://github.com/baishatan/dsh-englis
 assert.ok(sourceManifest.engines?.node, 'Declare engines.node')
 assert.ok(sourceManifest.engines?.dsh, 'Declare engines.dsh')
 for (const file of ['index.js', 'client.js', 'package.json', 'cordis.patch.yml',
-  'locale/en.json', 'locale/zh.json', 'icon.svg', 'README.md', 'NOTICE.md', 'LICENSE']) {
+  'locale/en.json', 'locale/zh.json', 'icon.svg', 'README.md', 'NOTICE.md', 'LICENSE',
+  'data/wordlists.json', 'data/manifest.json', 'data/ECDICT-LICENSE.txt', 'data/NOTICE.md']) {
   assert.ok(listed.has(file), `Published archive is missing ${file}`)
 }
 for (const file of await fs.readdir(join(root, 'core'))) {
@@ -91,8 +91,13 @@ for (const locale of ['en', 'zh']) {
 // Tests are intentionally not distributed. Stage them beside the extracted
 // core so their relative imports cannot accidentally exercise the source tree.
 await fs.mkdir(join(unpacked, 'test'))
-await fs.copyFile(join(root, 'test/core.test.js'), join(unpacked, 'test/core.test.js'))
-const testOutput = run(process.execPath, ['--test', 'test/core.test.js'], unpacked)
+const tests = []
+for (const name of await fs.readdir(join(root, 'test'))) {
+  if (!name.endsWith('.js')) continue
+  await fs.copyFile(join(root, 'test', name), join(unpacked, 'test', name))
+  if (name.endsWith('.test.js')) tests.push(`test/${name}`)
+}
+const testOutput = run(process.execPath, ['--test', ...tests], unpacked)
 await fs.writeFile(join(work, 'core-tests.log'), testOutput)
 console.log(testOutput)
 const summary = {
@@ -102,10 +107,13 @@ const summary = {
   archive,
   integrity: pack.integrity,
   files: listed.size,
+  compressedBytes: pack.size,
+  unpackedBytes: pack.unpackedSize,
+  catalog: (await import(pathToFileURL(join(unpacked, 'core/catalog.js')).href)).getWordCatalog().lists.map(({ id, total, playableCount }) => ({ id, total, playableCount })),
   checks: ['archive file coverage', 'source byte equality', 'license', 'exports and bundle',
     'host/core imports without activation', 'client module registration', 'locale JSON',
-    'core tests against extracted package'],
-  notVerified: ['DSH install/start/uninstall', 'client rendering', 'Store policy approval']
+    'all domain, Host adapter and React DOM tests against extracted package', 'catalog checksum and complete contracts'],
+  notVerified: ['DSH install/start/uninstall', 'actual host rendering and speech quality', 'Store policy approval']
 }
 await fs.writeFile(join(work, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`)
 console.log(JSON.stringify(summary, null, 2))

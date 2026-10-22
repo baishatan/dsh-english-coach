@@ -1,0 +1,76 @@
+{
+  "version": "ecdict-bc015ed2-conservative-v1",
+  "source": {
+    "name": "ECDICT",
+    "author": "Linwei (skywind3000)",
+    "copyright": "Copyright (c) 2025 Linwei",
+    "license": "MIT",
+    "commit": "bc015ed2e24a7abef49fc6dbbb7fe32c1dadaf8b",
+    "url": "https://github.com/skywind3000/ECDICT/tree/bc015ed2e24a7abef49fc6dbbb7fe32c1dadaf8b",
+    "csvUrl": "https://raw.githubusercontent.com/skywind3000/ECDICT/bc015ed2e24a7abef49fc6dbbb7fe32c1dadaf8b/ecdict.csv",
+    "licenseUrl": "https://raw.githubusercontent.com/skywind3000/ECDICT/bc015ed2e24a7abef49fc6dbbb7fe32c1dadaf8b/LICENSE",
+    "bytes": 65933428,
+    "sha256": "1a6947e04785db63613a92e14903cdae7954f7e84860b10e68e5c7cbb3f9c3cf",
+    "gitBlobSha1": "c4ade63ea08cf39d9c3475e96929036d64d94c94",
+    "licenseSha256": "f8552dd246f61a4e064569eae6194a01c6b3d63b03bf27c6ca863593c549ed0f",
+    "rowCount": 770611,
+    "selectedRows": 7638,
+    "duplicateRows": 0,
+    "rawTagCounts": {
+      "cet4": 3849,
+      "cet6": 5407,
+      "ielts": 5040
+    }
+  },
+  "uniqueEntries": 7638,
+  "playableEntries": 261,
+  "unavailableEntries": 7377,
+  "reasonCounts": {
+    "multiple_senses": 7201,
+    "term_format": 102,
+    "formatting": 55,
+    "meaning_length": 9,
+    "known_semantic_risk": 10
+  },
+  "lists": [
+    {
+      "id": "cet4",
+      "title": "四级学习参考词库",
+      "description": "开源整理的学习参考，非官方指定全集，不承诺考试分数。",
+      "total": 3849,
+      "playableCount": 119,
+      "unavailableCount": 3730
+    },
+    {
+      "id": "cet6",
+      "title": "六级学习参考词库（含四级基础）",
+      "description": "开源整理的学习参考，非官方指定全集，不承诺考试分数。",
+      "total": 5805,
+      "playableCount": 178,
+      "unavailableCount": 5627
+    },
+    {
+      "id": "ielts",
+      "title": "雅思学习参考词库",
+      "description": "开源整理的学习参考，非官方指定全集，不承诺考试分数。",
+      "total": 5040,
+      "playableCount": 143,
+      "unavailableCount": 4897
+    }
+  ],
+  "overlaps": {
+    "cet4AndCet6Tag": 3451,
+    "cet4AndIelts": 2146,
+    "cet6AndIelts": 3207
+  },
+  "artifact": {
+    "file": "wordlists.json",
+    "bytes": 4028401,
+    "sha256": "7241c6cd41aafa1869afe7b234764bcedde3436a0bb1c2490b2fba316eb2c903"
+  },
+  "quality": {
+    "policy": "Conservative single-clean-gloss gate; source ambiguity is quarantined, not silently discarded.",
+    "distractors": "24 concrete concepts; full source translation and English alias exclusion, no shared Han characters, deterministic ranking.",
+    "limits": "Automated risk screening and stratified sample review are not professional review of every entry. Source dictionary errors and unlisted synonyms can remain."
+  }
+}

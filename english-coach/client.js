@@ -155,8 +155,8 @@ window.__ModuleLoader__.load({
       pickMeaning: '选一个最接近的意思',
       nextWord: '下一个',
       finishReview: '完成复习',
-      reviewDone: '今天的词过完了',
-      reviewDoneHint: '答对 {n} 个。明天这时候会再见到它们，答对的会推得更远。',
+      reviewDone: '这一批学完了',
+      reviewDoneHint: '这批答对 {n} 个。复习排期已按作答更新，还可以继续下一批。',
       wordKind: '单词',
       expressionKind: '表达',
       kbdPick: '按 1–4 直接选',
@@ -199,10 +199,10 @@ window.__ModuleLoader__.load({
 
       // pace + continue learning
       studyPace: '学习节奏',
-      wordsPerDay: '每天学几个词',
-      wordsPerDayHint: '3 到 30 个。课程按这个数出词，补充学习也按这个数。',
+      wordsPerDay: '每批学习 / 每次补充词数',
+      wordsPerDayHint: '3 到 30 个，默认 10 个。课程建议出词量也用这个数；不是每日上限，可同日继续学习。',
       continueLearning: '继续学习',
-      continueLearningHint: '再来 {n} 个新词，大约一分钟',
+      continueLearningHint: '下一批最多 {n} 个，先复习旧词；词库新词可直接学习。',
       generatingWords: '正在出词…',
       generatingWordsHint: '正在出词，大约一分钟；出好后会自动接着学。',
       continueReview: '继续复习剩下的 {n} 个',
@@ -259,45 +259,193 @@ window.__ModuleLoader__.load({
 
     // --------------------------------------------------------------- audio
 
-    /**
-     * AudioProvider: turn English text into sound. The first implementation is
-     * the browser's own speech synthesis — every platform, no key, works
-     * offline. Adding a provider that plays audio attached to the source, or
-     * calls an external speech service, means adding one entry here; callers
-     * keep calling `audioProvider(id).speak(text)`.
-     */
-    const AUDIO_PROVIDERS = {
-      'web-speech': {
-        id: 'web-speech',
-        available() {
-          return typeof window !== 'undefined' && 'speechSynthesis' in window
-        },
-        speak(text, handlers) {
-          if (!this.available()) return false
-          const synth = window.speechSynthesis
-          synth.cancel()
-          const utterance = new window.SpeechSynthesisUtterance(text)
-          utterance.lang = 'en-US'
-          utterance.rate = 0.92
-          if (handlers && handlers.onEnd) utterance.onend = handlers.onEnd
-          if (handlers && handlers.onError) utterance.onerror = handlers.onError
-          synth.speak(utterance)
-          return true
-        },
-        pause() {
-          if (this.available()) window.speechSynthesis.pause()
-        },
-        resume() {
-          if (this.available()) window.speechSynthesis.resume()
-        },
-        stop() {
-          if (this.available()) window.speechSynthesis.cancel()
+    // One sound owner for every entry point. Keep this inside the Client factory:
+    // the Host loads this plain script, not an independently bundled ES module.
+    const speech = (() => {
+      const articles = new Map(), listeners = new Set()
+      let bookmarkWrites = Promise.resolve()
+      // Two independent 32-bit streams plus length: stable synchronous content
+      // fingerprint, not a security hash and never sent with the actual text.
+      function fingerprint(text) {
+        let a = 2166136261, b = 5381
+        for (let i = 0; i < text.length; i++) { a = Math.imul(a ^ text.charCodeAt(i), 16777619); b = Math.imul(b, 33) ^ text.charCodeAt(i) }
+        return `s1-${text.length}-${(a >>> 0).toString(16)}-${(b >>> 0).toString(16)}`
+      }
+      function save(value) {
+        value.revision++
+        const revision = value.revision
+        const payload = { materialId: value.id, contentFingerprint: value.fingerprint, position: value.position }
+        bookmarkWrites = bookmarkWrites.then(async () => {
+          if (articles.get(value.id) !== value) return
+          const result = await call('audio.bookmark.save', payload)
+          if (revision !== value.revision || articles.get(value.id) !== value) return
+          value.saveError = result.ok ? '' : '书签保存失败，当前会话位置仍保留。'
+          emit()
+        })
+        return bookmarkWrites
+      }
+      async function restore(value) {
+        if (value.loaded) return
+        value.loaded = true
+        const revision = value.revision
+        const result = await call('audio.bookmark.get', { materialId: value.id, contentFingerprint: value.fingerprint })
+        if (revision !== value.revision || articles.get(value.id) !== value) return
+        if (!result.ok) value.saveError = '无法读取书签；当前会话仍可定位，请重试读取书签。'
+        else if (result.data.invalidated) value.notice = '正文已变化，旧书签已失效，已静默回到起点。'
+        else if (result.data.bookmark) {
+          value.position = Math.min(value.segments.length, Math.max(0, result.data.bookmark.position))
+          value.status = value.position === value.segments.length ? 'completed' : value.position > 0 ? 'paused' : 'idle'
+          value.notice = '已静默恢复书签，请手动继续。'
+        }
+        emit()
+      }
+      let active = null, token = 0, loaded = false, settingsWrites = Promise.resolve()
+      const changedPreferences = new Set()
+      const preferences = { voiceURI: null, rate: 1, voices: [], notice: '', error: '' }
+      function refreshVoices() {
+        try { preferences.voices = (synth()?.getVoices() ?? []).filter(voice => /^en(?:[-_]|$)/i.test(voice.lang)) } catch { preferences.voices = [] }
+        if (active && !preferences.voices.some(voice => voice.voiceURI === active.utterance.voice?.voiceURI)) {
+          const current = active.article
+          cancel()
+          if (current) { current.status = 'error'; current.error = '正在使用的英语音色已不可用，请换声后重试。'; void save(current) }
+          else preferences.error = '正在使用的英语音色已不可用，请换声后重试。'
+        }
+        preferences.notice = !available() ? t('noSpeech') : !preferences.voices.length ? '英语音色尚未就绪或不可用，请重试声源。' : preferences.voiceURI && !preferences.voices.some(voice => voice.voiceURI === preferences.voiceURI) ? '偏好音色当前不可用，已回退到可用英语音色。' : ''
+        emit()
+      }
+      const selectedVoice = () => preferences.voices.find(voice => voice.voiceURI === preferences.voiceURI) ?? preferences.voices.find(voice => voice.default) ?? preferences.voices[0]
+      async function loadPreferences() {
+        if (loaded) return
+        loaded = true
+        const result = await call('settings.get')
+        if (result.ok) {
+          if (!changedPreferences.has('voiceURI')) preferences.voiceURI = result.data.audio?.voiceURI ?? null
+          if (!changedPreferences.has('rate')) preferences.rate = [0.5, 1, 1.5, 2].includes(result.data.audio?.rate) ? result.data.audio.rate : 1
+        } else preferences.error = '无法读取语音偏好，暂用默认设置。'
+        refreshVoices()
+      }
+      function configure(change) {
+        for (const key of Object.keys(change)) changedPreferences.add(key)
+        Object.assign(preferences, change)
+        const current = active?.article
+        const playing = current?.status === 'playing'
+        if (current) { cancel(); if (playing) play(current) }
+        refreshVoices()
+        const payload = { audio: { ...change } }
+        settingsWrites = settingsWrites.then(async () => {
+          const result = await call('settings.save', payload)
+          preferences.error = result.ok ? '' : '语音偏好保存失败，请重新选择后重试。'
+          emit()
+        })
+      }
+      const synth = () => window.speechSynthesis
+      const emit = () => { for (const listener of listeners) listener() }
+      const available = () => !!(synth() && window.SpeechSynthesisUtterance)
+      let resumeTimer = null
+      const clearResume = () => { if (resumeTimer !== null) { clearTimeout(resumeTimer); resumeTimer = null } }
+      const cancel = () => { clearResume(); token++; active = null; if (available()) { try { synth().cancel() } catch { /* unavailable Host */ } } }
+      function article(id, text) {
+        const previous = articles.get(id)
+        if (previous?.text === text) return previous
+        if (active?.article === previous) cancel()
+        const value = { id, text, segments: (text.match(/[^.!?\n]+(?:[.!?]+|\n|$)/g) ?? []).map(s => s.trim()).filter(Boolean), position: 0, status: 'idle', error: '', fingerprint: fingerprint(text), revision: 0, loaded: false, notice: previous ? '正文已变化，旧书签已失效，已静默回到起点。' : '', saveError: '' }
+        articles.set(id, value)
+        return value
+      }
+      function pause(value) {
+        if (value.status !== 'playing') return
+        value.status = 'paused'
+        clearResume()
+        void save(value)
+        if (active?.article === value) {
+          try { synth().pause(); if (!synth().paused) cancel() } catch { cancel() }
+        }
+        emit()
+      }
+      function play(value) {
+        if (!available()) { value.status = 'error'; value.error = t('noSpeech'); emit(); return }
+        if (!selectedVoice()) { value.status = 'error'; value.error = '暂无可用英语音色，请重试声源。'; emit(); return }
+        if (!value.segments.length) return
+        if (active?.article === value && value.status === 'paused') {
+          // A bounded liveness check, never a progress clock. Some engines
+          // accept resume but emit neither resume nor boundary and stay silent.
+          const run = token
+          value.status = 'playing'
+          resumeTimer = setTimeout(() => {
+            resumeTimer = null
+            if (run !== token || value.status !== 'playing') return
+            cancel(); value.status = 'paused'; play(value)
+          }, 700)
+          try { synth().resume(); if (!synth().paused && synth().speaking) { emit(); return } } catch { /* rebuild the saved segment */ }
+          clearResume()
+        }
+        if (active?.article && active.article !== value) pause(active.article)
+        cancel()
+        const run = token
+        value.error = ''
+        value.status = 'playing'
+        void save(value)
+        const utterance = new window.SpeechSynthesisUtterance(value.segments[value.position])
+        utterance.voice = selectedVoice()
+        utterance.lang = utterance.voice.lang
+        utterance.rate = preferences.rate
+        active = { article: value, utterance }
+        utterance.onresume = utterance.onboundary = () => { if (run === token && value.status === 'playing') clearResume() }
+        utterance.onend = () => {
+          if (run !== token) return
+          if (value.status !== 'playing') { cancel(); return }
+          clearResume()
+          active = null
+          value.position++
+          void save(value)
+          if (value.position >= value.segments.length) { value.status = 'completed'; emit() }
+          else play(value)
+        }
+        utterance.onerror = () => {
+          if (run !== token) return
+          cancel(); value.status = 'error'; value.error = '朗读失败，请重试或更换英语音色。'; emit()
+        }
+        try { if (synth().paused) synth().resume(); synth().speak(utterance) } catch { utterance.onerror() }
+        emit()
+      }
+      function seek(value, position) {
+        const playing = value.status === 'playing'
+        if (active?.article === value) cancel()
+        value.position = Math.max(0, Math.min(value.segments.length, Number(position) || 0))
+        value.status = value.position === value.segments.length ? 'completed' : value.status === 'idle' ? 'idle' : 'paused'
+        void save(value)
+        if (playing && value.position < value.segments.length) play(value)
+        else emit()
+      }
+      function restart(value) { cancel(); value.position = 0; value.status = 'idle'; play(value) }
+      function short(text, owner) {
+        if (active?.article) pause(active.article)
+        cancel()
+        if (!available() || !selectedVoice()) { preferences.error = '暂无可用英语音色，请重试声源。'; emit(); return }
+        preferences.error = ''
+        const run = token, utterance = new window.SpeechSynthesisUtterance(text)
+        utterance.voice = selectedVoice(); utterance.lang = utterance.voice.lang; utterance.rate = preferences.rate
+        active = { owner, utterance }
+        utterance.onend = () => { if (run !== token) return; active = null; emit() }
+        utterance.onerror = () => { if (run !== token) return; cancel(); preferences.error = '发音失败，请重试或更换英语音色。'; emit() }
+        try { if (synth().paused) synth().resume(); synth().speak(utterance) } catch { utterance.onerror() }
+        emit()
+      }
+      function suspend() { if (active?.article) pause(active.article); else if (active) cancel() }
+      const hidden = () => { if (document.hidden) suspend() }
+      return { article, pause, play, restart, seek, save, restore, preferences, configure, selectedVoice, refreshVoices, short,
+        release(owner) { if (active?.owner === owner) cancel() },
+        subscribe(listener) {
+          listeners.add(listener)
+          if (listeners.size === 1) { refreshVoices(); synth()?.addEventListener?.('voiceschanged', refreshVoices); document.addEventListener('visibilitychange', hidden); window.addEventListener('pagehide', suspend); void loadPreferences() }
+          return () => { listeners.delete(listener); if (!listeners.size) { synth()?.removeEventListener?.('voiceschanged', refreshVoices); document.removeEventListener('visibilitychange', hidden); window.removeEventListener('pagehide', suspend); suspend(); cancel() } }
         }
       }
-    }
-
-    function audioProvider(id) {
-      return AUDIO_PROVIDERS[id] ?? AUDIO_PROVIDERS['web-speech']
+    })()
+    function useSpeech() {
+      const [, update] = useState(0)
+      useEffect(() => speech.subscribe(() => update(value => value + 1)), [])
+      return speech
     }
 
     // ----------------------------------------------------------------- style
@@ -451,6 +599,14 @@ window.__ModuleLoader__.load({
 .ec-word[data-used="true"] { opacity: .35; }
 .ec-progress { height: 3px; border-radius: 2px; background: var(--dsw-alias-border-l1); overflow: hidden; margin: 8px 0 14px; }
 .ec-progress > i { display: block; height: 100%; background: var(--dsw-alias-brand-primary); }
+
+/* Shared speech controls remain usable in a narrow panel and with a keyboard. */
+.ec-pronounce { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px; max-width: 100%; }
+.ec-speech-options { width: 100%; min-width: 0; margin: 6px 0; }
+.ec-speech-options > .ec-row > label { flex: 1 1 140px; min-width: 0; }
+.ec-pronounce button:focus-visible, .ec-speech-options select:focus-visible,
+.ec-speech-options button:focus-visible, .ec-root input[type=range]:focus-visible,
+.ec-item-body .ec-btn:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
 
 /* --------------------------------------------------------------------- deck */
 .ec-deck-term { font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Songti SC", serif;
@@ -808,41 +964,54 @@ window.__ModuleLoader__.load({
 
     // ----------------------------------------------------------- study items
 
-    function Speak({ text, provider }) {
-      const [playing, setPlaying] = useState(false)
-      const audio = useMemo(() => audioProvider(provider), [provider])
-      const supported = useMemo(() => audio.available(), [audio])
+    function SpeechOptions() {
+      const audio = useSpeech(), prefs = audio.preferences
+      return h('div', { className: 'ec-speech-options' },
+        h('div', { className: 'ec-row' },
+          h('label', null, '英语音色', h('select', { className: 'ec-select', 'aria-label': '英语音色', value: audio.selectedVoice()?.voiceURI ?? '', onChange: event => audio.configure({ voiceURI: event.target.value }) },
+            !prefs.voices.length ? h('option', { value: '' }, '暂无英语音色') : null,
+            prefs.voices.map(voice => h('option', { key: voice.voiceURI, value: voice.voiceURI }, `${voice.name} · ${voice.localService ? '本地' : '联网'}`)))),
+          h('label', null, '朗读语速', h('select', { className: 'ec-select', 'aria-label': '朗读语速', value: prefs.rate, onChange: event => audio.configure({ rate: Number(event.target.value) }) },
+            [0.5, 1, 1.5, 2].map(rate => h('option', { key: rate, value: rate }, `${rate.toFixed(1)} 倍`)))),
+          h(Btn, { small: true, onClick: () => audio.short('Hello. Let us practise English together.', 'audition') }, '试听音色'),
+          h(Btn, { small: true, onClick: audio.refreshVoices }, '重试声源')),
+        h('div', { className: 'ec-muted' }, '联网音色可能向声源服务外发朗读文本；倍速相对所选声源，不保证不同声源词速相同。'),
+        prefs.notice ? h('div', { role: 'status', className: 'ec-muted' }, prefs.notice) : null,
+        prefs.error ? h(Notice, { tone: 'error' }, prefs.error) : null)
+    }
 
-      useEffect(() => () => audio.stop(), [audio])
+    function PronounceButton({ text, label }) {
+      const audio = useSpeech(), owner = useRef({})
+      const [options, setOptions] = useState(false)
+      useEffect(() => () => audio.release(owner.current), [])
+      if (typeof text !== 'string' || !/[A-Za-z]/.test(text) || /[\u3400-\u9fff]/.test(text)) return null
+      return h('span', { className: 'ec-pronounce', onKeyDown: event => { if (['Enter', ' ', '1', '2', '3', '4'].includes(event.key)) event.stopPropagation() }, onClick: event => event.stopPropagation() },
+        h('button', { type: 'button', className: 'ec-btn ec-btn-sm', 'aria-label': label ?? `朗读 ${text}`, onClick: event => { event.stopPropagation(); audio.short(text, owner.current) } }, '发音'),
+        h('button', { type: 'button', className: 'ec-btn ec-btn-sm', 'aria-label': `语音选项 ${text}`, onClick: () => setOptions(value => !value) }, '语音选项'),
+        h('span', { className: 'ec-muted' }, ' 联网音色可能外发朗读文本'),
+        audio.preferences.error ? h('span', { role: 'status' }, audio.preferences.error) : null,
+        options ? h(SpeechOptions) : null)
+    }
 
-      if (!supported) {
-        return h('div', { className: 'ec-muted' }, t('noSpeech'))
-      }
-      return h(
-        'div',
-        { className: 'ec-row', style: { margin: '10px 0' } },
-        h(
-          Btn,
-          {
-            onClick: () => {
-              audio.speak(text, { onEnd: () => setPlaying(false) })
-              setPlaying(true)
-            }
-          },
-          playing ? t('replay') : t('play')
-        ),
-        h(
-          Btn,
-          {
-            onClick: () => {
-              audio.pause()
-              setPlaying(false)
-            },
-            disabled: !playing
-          },
-          t('pause')
-        )
-      )
+    function Speak({ text = '', materialId }) {
+      const audio = useSpeech()
+      const article = useMemo(() => audio.article(materialId, text), [materialId, text])
+      useEffect(() => { void audio.restore(article); return () => audio.pause(article) }, [article])
+      const status = { idle: '待播放', playing: '播放中', paused: '已暂停', completed: '朗读已完成', error: '朗读错误' }[article.status]
+      return h('div', { style: { margin: '10px 0' } },
+        h(SpeechOptions),
+        h('div', { className: 'ec-row' },
+          h('span', { role: 'status' }, status),
+          h(Btn, { disabled: !text.trim() || article.status === 'playing' || article.status === 'completed', onClick: () => audio.play(article) }, article.status === 'paused' ? '继续' : article.status === 'error' ? '重试朗读' : '播放'),
+          h(Btn, { disabled: article.status !== 'playing', onClick: () => audio.pause(article) }, '暂停'),
+          h(Btn, { disabled: !text.trim(), onClick: () => audio.restart(article) }, '从头播放')),
+        h('label', { className: 'ec-label' }, `文本进度：${article.position} / ${article.segments.length} 句段`,
+          h('input', { type: 'range', min: 0, max: article.segments.length, step: 1, value: article.position, 'aria-label': '文本进度', disabled: !article.segments.length, style: { width: '100%' }, onChange: event => audio.seek(article, event.target.value) })),
+        article.notice ? h('div', { className: 'ec-muted', role: 'status' }, article.notice) : null,
+        article.saveError ? h(Notice, { tone: 'error' }, article.saveError,
+          h(Btn, { small: true, onClick: () => audio.save(article) }, '重试保存书签'),
+          h(Btn, { small: true, onClick: () => { article.loaded = false; void audio.restore(article) } }, '重试读取书签')) : null,
+        article.error ? h(Notice, { tone: 'error' }, article.error) : null)
     }
 
     function SourceLine({ source }) {
@@ -861,6 +1030,7 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         null,
+        h(Speak, { text: item.body, materialId: `${lesson.date}:${item.id}` }),
         h('div', { className: 'ec-body' }, item.body),
         h(SourceLine, { source })
       )
@@ -871,7 +1041,7 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         null,
-        h(Speak, { text: item.transcript, provider }),
+        h(Speak, { text: item.transcript, materialId: `${lesson.date}:${item.id}` }),
         h('div', { className: 'ec-transcript' }, item.transcript),
         h(SourceLine, { source })
       )
@@ -886,8 +1056,10 @@ window.__ModuleLoader__.load({
             'div',
             { key: index, style: { marginBottom: 12 } },
             h('div', { style: { fontSize: 14.5, fontWeight: 600 } }, expression.term),
+            h(PronounceButton, { text: expression.term }),
             expression.example
-              ? h('div', { className: 'ec-body', style: { fontSize: 13.5, marginTop: 4 } }, expression.example)
+              ? h('div', { className: 'ec-body', style: { fontSize: 13.5, marginTop: 4 } }, expression.example,
+                  h(PronounceButton, { text: expression.example, label: `朗读例句 ${expression.example}` }))
               : null,
             h('div', { className: 'ec-muted', style: { marginTop: 5 } }, expression.meaning)
           )
@@ -1209,10 +1381,9 @@ window.__ModuleLoader__.load({
               h('div', { className: 'ec-sub', style: { marginBottom: 6 } }, t('lessonCards')),
               cards.map((card) => {
                 const revealed = Boolean(openCards[card.id])
-                return h(
+                return h('div', { key: card.id }, h(
                   'button',
                   {
-                    key: card.id,
                     type: 'button',
                     className: 'ec-flash',
                     'data-open': revealed,
@@ -1227,7 +1398,7 @@ window.__ModuleLoader__.load({
                         card.explanation ? h('div', { className: 'ec-muted' }, card.explanation) : null
                       )
                     : h('div', { className: 'ec-flash-hint' }, t('tapAnswer'))
-                )
+                ), h(PronounceButton, { text: card.front }))
               })
             )
           : null
@@ -1335,9 +1506,20 @@ window.__ModuleLoader__.load({
      * The review session. It snapshots the due items when it opens, so answering
      * one does not slide the next card out from under the feedback panel.
      */
-    function WordDeck({ words, now, compact, limit = 10, reloadWords, onAnswered, onGoWords }) {
-      const items = words?.data?.items ?? []
+    function batchNotice(batch) {
+      if (!batch) return ''
+      const reasons = { all_joined: '当前词库全部已加入；已加入不等于已掌握。', unavailable: '当前词库剩余词条暂不可练。', all_mastered: '当前词库已全部掌握；到期抽检仍会优先安排。' }
+      const reason = reasons[batch.exhaustion] ?? (batch.mode === 'profile_required' ? '尚未指定当前词库，可选择词库或按画像补词。' : '')
+      const count = batch.shortfall > 0 ? `本批取得 ${batch.items?.length ?? 0} / ${batch.batchSize} 项。` : ''
+      return `${count}${reason}`
+    }
+
+    function WordDeck({ words, now, compact, limit = 10, reloadWords, onAnswered, onGoWords, onChooseList }) {
       const [ids, setIds] = useState(null)
+      const [batch, setBatch] = useState(null)
+      const [batchRetry, setBatchRetry] = useState(0)
+      const [conflict, setConflict] = useState(false)
+      const requestLock = useRef(false)
       const [index, setIndex] = useState(0)
       const [picked, setPicked] = useState(null)
       const [feedback, setFeedback] = useState(null)
@@ -1347,8 +1529,9 @@ window.__ModuleLoader__.load({
       const [job, setJob] = useState(null)
 
       const begin = (list) => {
-        const due = (list?.items ?? []).filter((item) => item.due)
-        setIds(due.slice(0, limit).map((item) => item.id))
+        setBatch(list)
+        setConflict(false)
+        setIds(list?.items ?? [])
         setIndex(0)
         setPicked(null)
         setFeedback(null)
@@ -1357,13 +1540,17 @@ window.__ModuleLoader__.load({
       }
 
       useEffect(() => {
-        if (ids !== null || !words?.data) return
-        begin(words.data)
-        // begin is intentionally not a dependency: the snapshot should happen once
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, [ids, words, items])
+        let alive = true
+        setError(null)
+        void call('study.batch').then((result) => {
+          if (!alive) return
+          if (result.ok) begin(result.data)
+          else setError(result.message)
+        })
+        return () => { alive = false }
+      }, [batchRetry])
 
-      const word = ids && ids[index] ? items.find((item) => item.id === ids[index]) : null
+      const word = ids?.[index] ?? null
       const finished = ids !== null && ids.length > 0 && index >= ids.length
       const isLast = ids !== null && index + 1 >= ids.length
       const dueLeft = words?.data?.dueCount ?? 0
@@ -1379,9 +1566,8 @@ window.__ModuleLoader__.load({
         if (!result.ok) {
           setPicked(null)
           setFeedback(null)
-          // 这张可能已经在悬浮层里答过了：跳过它，不要用报错拦人
-          if (result.code === 'not_due') next()
-          else setError(result.message)
+          setConflict(result.code === 'not_due')
+          setError(result.message)
           return
         }
         if (result.data.correct) setCorrect((value) => value + 1)
@@ -1392,19 +1578,23 @@ window.__ModuleLoader__.load({
       const next = () => {
         setPicked(null)
         setFeedback(null)
+        setConflict(false)
+        setError(null)
         setIndex((value) => value + 1)
       }
 
-      /** Ask the Agent for another batch of words, then start a session on them. */
-      const generateMore = async () => {
-        if (generating) return
+      const generateMore = async (profile = false) => {
+        if (requestLock.current || generating) return
+        requestLock.current = true
+        setBusy(true)
         setError(null)
-        const result = await call('generate.vocab')
-        if (!result.ok) {
-          setError(result.message)
-          return
-        }
-        setJob(result.data)
+        const result = await call(profile === true ? 'generate.vocab' : 'study.supplement', profile === true ? { profile: true } : {})
+        requestLock.current = false
+        setBusy(false)
+        if (!result.ok) { setError(result.message); return }
+        if (result.data.mode === 'generated') setJob(result.data)
+        else begin(result.data)
+        if (reloadWords) void reloadWords()
       }
 
       useEffect(() => {
@@ -1418,11 +1608,12 @@ window.__ModuleLoader__.load({
             setError(status.data.failure ?? t('generateFailed'))
             return
           }
-          const fresh = reloadWords ? await reloadWords() : null
-          if (fresh?.ok) {
-            if ((fresh.data.items ?? []).some((item) => item.due)) begin(fresh.data)
-            else setError(t('vocabEmpty'))
-          }
+          const fresh = await call('study.batch')
+          if (fresh.ok) {
+            begin(fresh.data)
+            if (!fresh.data.items?.length) setError(t('vocabEmpty'))
+          } else setError(fresh.message)
+          if (reloadWords) void reloadWords()
           if (onAnswered) void onAnswered()
         }, 4000)
         return () => clearInterval(timer)
@@ -1433,7 +1624,7 @@ window.__ModuleLoader__.load({
         if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return undefined
         const onKey = (event) => {
           const tag = (event.target?.tagName || '').toLowerCase()
-          if (tag === 'input' || tag === 'textarea' || event.target?.isContentEditable) return
+          if (['input', 'textarea', 'select', 'button', 'a'].includes(tag) || event.target?.isContentEditable || event.target?.closest?.('[role="dialog"]')) return
           if (!word || picked !== null || busy) {
             if (event.key === 'Enter' && feedback) next()
             return
@@ -1450,13 +1641,13 @@ window.__ModuleLoader__.load({
       const generateButton = (label) =>
         h(
           Btn,
-          { primary: true, small: true, disabled: generating, onClick: generateMore },
+          { primary: true, small: true, disabled: generating || busy, onClick: () => generateMore() },
           generating ? t('generatingWords') : label
         )
 
       let body = null
       if (!ids) {
-        body = h('div', { className: 'ec-empty' }, t('loading'))
+        body = error ? h('div', null, h(Notice, { tone: 'error' }, error), h(Btn, { onClick: () => setBatchRetry((value) => value + 1) }, t('retry'))) : h('div', { className: 'ec-empty' }, t('loading'))
       } else if (finished) {
         body = h(
           'div',
@@ -1470,7 +1661,7 @@ window.__ModuleLoader__.load({
             dueLeft > 0
               ? h(
                   Btn,
-                  { primary: true, small: true, onClick: () => begin(words.data) },
+                  { primary: true, small: true, disabled: busy, onClick: generateMore },
                   t('continueReview', { n: dueLeft })
                 )
               : generateButton(t('continueLearning')),
@@ -1529,15 +1720,17 @@ window.__ModuleLoader__.load({
             h('span', { className: 'ec-sub' }, `${index + 1} / ${ids.length}`)
           ),
           h('div', { className: 'ec-deck-term' }, word.term),
+          h(PronounceButton, { text: word.term }),
           h('div', { className: 'ec-deck-prompt' }, t('pickMeaning')),
           h(ChoiceList, {
             choices: word.choices ?? [],
             answerIndex: word.answerIndex,
             picked,
             onPick: (choice) => void answer(choice),
-            disabled: busy
+            disabled: busy || conflict
           }),
           error ? h(Notice, { tone: 'error' }, error) : null,
+          conflict ? h(Btn, { onClick: next }, t('nextWord')) : null,
           feedback
             ? h(
                 'div',
@@ -1569,117 +1762,129 @@ window.__ModuleLoader__.load({
             dueLeft ? `${Math.min(dueLeft, limit)} / ${dueLeft}` : t('nothingDueShort')
           )
         ),
-        body
+        batchNotice(batch) ? h(Notice, null, batchNotice(batch)) : null,
+        body,
+        (!word || finished) && ids !== null ? h('div', { className: 'ec-row', style: { marginTop: 10 } },
+          h(Btn, { ghost: true, small: true, onClick: onChooseList ?? onGoWords }, '选择词库'),
+          h(Btn, { small: true, disabled: busy || generating, onClick: () => generateMore(true) }, '按画像补词')) : null
       )
     }
 
-    function Library({ words, now }) {
-      const [filter, setFilter] = useState('all')
-      const [openId, setOpenId] = useState(null)
-      const items = words?.data?.items ?? []
-      const open = openId ? items.find((item) => item.id === openId) : null
-
+    const libraryBrowse = new Map()
+    let libraryTab = 'personal'
+    let libraryList = 'cet4'
+    function Library({ words, now, openThemed = 0 }) {
+      const [tab, setTab] = useState(libraryTab)
+      const [listId, setListId] = useState(libraryList)
+      const key = tab === 'personal' ? 'personal' : listId
+      const defaults = { search: '', filter: 'all', page: 1, pageSize: 50 }
+      const [query, setQuery] = useState(() => libraryBrowse.get(key) ?? defaults)
+      const [result, setResult] = useState(null)
+      const [catalog, setCatalog] = useState(null)
+      const [error, setError] = useState(null)
+      const [loading, setLoading] = useState(true)
+      const [retry, setRetry] = useState(0)
+      const [open, setOpen] = useState(null)
+      const [selection, setSelection] = useState('')
+      const [saving, setSaving] = useState(false)
+      const [notice, setNotice] = useState(null)
+      const trigger = useRef(null)
+      const closeButton = useRef(null)
       useEffect(() => {
-        if (!openId) return undefined
-        if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return undefined
-        const onKey = (event) => {
-          if (event.key === 'Escape') setOpenId(null)
-        }
-        window.addEventListener('keydown', onKey)
-        return () => window.removeEventListener('keydown', onKey)
-      }, [openId])
-      const list = items.filter((item) =>
-        filter === 'all' ? true : filter === 'learning' ? item.status !== 'mastered' : item.status === 'mastered'
-      )
-      const counts = {
-        all: items.length,
-        learning: items.filter((item) => item.status !== 'mastered').length,
-        mastered: items.filter((item) => item.status === 'mastered').length
+        let alive = true
+        call('wordlists.list').then(response => {
+          if (!alive) return
+          if (response.ok) { setCatalog(response.data); setSelection(response.data.activeWordListId ?? '') }
+          else setError(response.message)
+        })
+        return () => { alive = false }
+      }, [retry])
+      useEffect(() => {
+        let alive = true
+        setLoading(true)
+        setError(null)
+        const command = tab === 'personal' ? 'vocabulary.query' : 'wordlists.query'
+        call(command, { ...query, ...(tab === 'themed' ? { id: listId } : {}) }).then(response => {
+          if (!alive) return
+          setLoading(false)
+          if (!response.ok) { setError(response.message); return }
+          setResult(response.data)
+          libraryBrowse.set(key, { ...query, page: response.data.page })
+        })
+        return () => { alive = false }
+      }, [key, query, retry, words?.data])
+      const change = patch => {
+        const next = { ...query, ...patch }
+        libraryBrowse.set(key, next)
+        setQuery(next)
       }
-      return h(
-        'section',
-        { className: 'ec-card' },
-        h(
-          'div',
-          { className: 'ec-card-head' },
-          h('h2', null, t('library')),
-          h('span', { className: 'ec-sub' }, String(items.length))
-        ),
-        h(
-          'div',
-          { className: 'ec-lib-filter' },
-          [
-            ['all', t('libraryAll')],
-            ['learning', t('libraryLearning')],
-            ['mastered', t('libraryMastered')]
-          ].map(([id, label]) =>
-            h(
-              'button',
-              { key: id, type: 'button', 'data-on': filter === id, onClick: () => setFilter(id) },
-              `${label} ${counts[id]}`
-            )
-          )
-        ),
-        list.length
-          ? h(
-              'div',
-              { className: 'ec-lib-list' },
-              list.map((item) =>
-                h(
-                  'button',
-                  {
-                    key: item.id,
-                    type: 'button',
-                    className: 'ec-lib-row',
-                    onClick: () => setOpenId(item.id)
-                  },
-                  h('span', { className: 'ec-lib-term' }, item.term),
-                  h('span', { className: 'ec-chip' }, item.kind === 'word' ? t('wordKind') : t('expressionKind')),
-                  h(BoxDots, { box: item.box }),
-                  h('span', { className: 'ec-when' }, dueLabel(item, now))
-                )
-              )
-            )
-          : h('div', { className: 'ec-empty' }, t('libraryEmpty')),
-        h('div', { className: 'ec-sub', style: { marginTop: 10 } }, t('libraryHint')),
-        open
-          ? h(
-              'div',
-              { className: 'ec-modal-back', onClick: () => setOpenId(null) },
-              h(
-                'div',
-                { className: 'ec-modal', onClick: (event) => event.stopPropagation() },
-                h(
-                  'div',
-                  { className: 'ec-modal-head' },
-                  h(
-                    Btn,
-                    {
-                      ghost: true,
-                      small: true,
-                      onClick: () => setOpenId(null)
-                    },
-                    t('collapse')
-                  )
-                ),
-                h('div', { className: 'ec-modal-term' }, open.term),
-                h('div', { className: 'ec-modal-meaning' }, open.meaning),
-                open.explanation ? h('div', { className: 'ec-note' }, open.explanation) : null,
-                h(
-                  'dl',
-                  { className: 'ec-kv' },
-                  h('dt', null, t('nextReview')),
-                  h('dd', null, open.due ? t('dueTodayShort') : formatDay(open.dueAt)),
-                  h('dt', null, t('attemptsLabel')),
-                  h('dd', null, t('attemptsValue', { n: open.answerCount ?? 0, wrong: open.lapses ?? 0 }))
-                )
-              )
-            )
-          : null
-      )
+      const navigate = (nextTab, nextList = listId) => {
+        libraryTab = nextTab; libraryList = nextList
+        setTab(nextTab); setListId(nextList)
+        setQuery(libraryBrowse.get(nextTab === 'personal' ? 'personal' : nextList) ?? defaults)
+        setOpen(null); setResult(null)
+      }
+      useEffect(() => {
+        if (openThemed) navigate('themed')
+      }, [openThemed])
+      const close = () => { setOpen(null); trigger.current?.focus() }
+      useEffect(() => { if (open) closeButton.current?.focus() }, [open])
+      const save = async () => {
+        setSaving(true); setNotice(null)
+        const response = await call('wordlists.select', { id: selection || null })
+        setSaving(false)
+        if (!response.ok) { setNotice(response.message); return }
+        setCatalog(previous => ({ ...previous, activeWordListId: response.data.activeWordListId }))
+        setNotice('偏好已保存，下一批生效；本轮题目和旧课程不变。')
+      }
+      return h('section', { className: 'ec-card' },
+        h('div', { className: 'ec-card-head' }, h('h2', null, '词汇浏览'), h('span', { className: 'ec-sub' }, result ? `共 ${result.total} 条` : '')),
+        h('div', { className: 'ec-row', role: 'group', 'aria-label': '词汇来源' },
+          h(Btn, { small: true, primary: tab === 'personal', onClick: () => navigate('personal') }, '我的词汇'),
+          h(Btn, { small: true, primary: tab === 'themed', onClick: () => navigate('themed') }, '主题词库')),
+        tab === 'themed' ? h('div', null,
+          h('label', null, '浏览词库 ', h('select', { className: 'ec-input', 'aria-label': '浏览词库', value: listId, onChange: e => navigate('themed', e.target.value) },
+            (catalog?.lists ?? []).map(list => h('option', { key: list.id, value: list.id }, list.title)))),
+          h('p', { className: 'ec-sub' }, result?.list ? `开源学习参考，非官方考试全集。目录 ${result.list.total} · 可练 ${result.list.playableCount} · 暂不可练 ${result.list.unavailableCount}` : '正在加载目录…'),
+          h('div', { className: 'ec-row', style: { flexWrap: 'wrap' } },
+            h('label', null, '当前词库偏好 ', h('select', { className: 'ec-input', 'aria-label': '当前词库偏好', value: selection, onChange: e => setSelection(e.target.value), disabled: saving },
+              h('option', { value: '' }, '不指定'), (catalog?.lists ?? []).map(list => h('option', { key: list.id, value: list.id }, list.title)))),
+            h(Btn, { small: true, onClick: save, disabled: saving || !catalog }, saving ? '保存中…' : '保存词库偏好')),
+          h('p', { className: 'ec-sub' }, `已保存当前词库：${catalog?.lists.find(list => list.id === catalog.activeWordListId)?.title ?? '不指定'}；浏览不会加入个人学习。`),
+          notice ? h(Notice, null, notice) : null
+        ) : null,
+        h('div', { className: 'ec-row', style: { flexWrap: 'wrap', marginTop: 12 } },
+          h('input', { className: 'ec-input', 'aria-label': '搜索词汇或中文释义', placeholder: '搜索英文或中文释义', value: query.search, onChange: e => change({ search: e.target.value, page: 1 }), style: { minWidth: 0, flex: '1 1 150px' } }),
+          h('select', { className: 'ec-input', 'aria-label': '词汇状态筛选', value: query.filter, onChange: e => change({ filter: e.target.value, page: 1 }) },
+            (tab === 'personal' ? [['all', '全部'], ['learning', '在学'], ['mastered', '已掌握']] : [['all', '全部'], ['joined', '已加入'], ['unjoined', '未加入']]).map(([value, label]) => h('option', { key: value, value }, label))),
+          h('select', { className: 'ec-input', 'aria-label': '每页条数', value: query.pageSize, onChange: e => change({ pageSize: Number(e.target.value), page: 1 }) }, h('option', { value: 50 }, '每页 50 条'), h('option', { value: 20 }, '每页 20 条'))),
+        error ? h(Notice, { tone: 'error' }, error, h(Btn, { small: true, onClick: () => setRetry(n => n + 1) }, '重试')) : null,
+        loading ? h('div', { role: 'status' }, '加载中…') : !error ? h('div', { className: 'ec-lib-list' },
+          result?.items.length ? result.items.map(item => h('div', { key: item.id, className: 'ec-row', style: { alignItems: 'center' } },
+            h('button', { type: 'button', className: 'ec-lib-row', style: { flex: 1, minWidth: 0 }, onClick: e => { trigger.current = e.currentTarget; setOpen(item) } },
+              h('span', { className: 'ec-lib-term' }, item.term),
+              h('span', { className: 'ec-sub' }, item.meaning),
+              tab === 'themed' ? h('span', { className: 'ec-chip' }, `${item.joined ? '已加入' : '未加入'} · ${item.practice.status === 'ready' ? '可练' : '暂不可练'}`) : h('span', { className: 'ec-when' }, dueLabel(item, now))),
+            typeof PronounceButton === 'function' ? h(PronounceButton, { text: item.term }) : null
+          )) : h('div', { className: 'ec-empty' }, '没有匹配的词汇。')) : null,
+        h('div', { className: 'ec-row', style: { flexWrap: 'wrap', marginTop: 12 } },
+          h(Btn, { small: true, disabled: loading || !result || result.page <= 1, onClick: () => change({ page: result.page - 1 }) }, '上一页'),
+          h('span', { role: 'status' }, `第 ${result?.page ?? 1} / ${result?.pages ?? 1} 页`),
+          h(Btn, { small: true, disabled: loading || !result || result.page >= result.pages, onClick: () => change({ page: result.page + 1 }) }, '下一页')),
+        open ? h('div', { className: 'ec-modal-back', onClick: close },
+          h('div', { className: 'ec-modal', role: 'dialog', 'aria-modal': true, 'aria-label': `${open.term} 词汇详情`, onClick: e => e.stopPropagation(), onKeyDown: e => {
+            if (e.key === 'Escape') { e.stopPropagation(); close() }
+            if (e.key === 'Tab') { const nodes = [...e.currentTarget.querySelectorAll('button,input,select,a[href]')].filter(node => !node.disabled); const first = nodes[0], last = nodes.at(-1); if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus() } else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus() } }
+          } },
+            h('button', { type: 'button', className: 'ec-btn', ref: closeButton, onClick: close }, '关闭词汇详情'),
+            h('div', { className: 'ec-modal-term' }, open.term),
+            typeof PronounceButton === 'function' ? h(PronounceButton, { text: open.term }) : null,
+            h('div', { className: 'ec-modal-meaning' }, open.translation || open.meaning),
+            open.practice ? h('div', null, h('p', null, `所属词库：${open.listIds.join(' / ')}；原始标签：${open.sourceTags.join(' / ')}`), h('p', null, open.practice.status === 'ready' ? '可练：已准备基础四选练习' : `暂不可练：${open.practice.reason}`), h('p', null, open.joined ? '已加入我的词汇' : '尚未加入个人学习')) : h('p', null, `${dueLabel(open, now)} · 作答 ${open.answerCount ?? 0} 次`),
+            open.explanation ? h('p', { className: 'ec-note' }, open.explanation) : null)) : null)
     }
 
-    function TodayTab({ data, words, reload, reloadWords, onTab }) {
+    function TodayTab({ data, words, reload, reloadWords, onTab, onChooseList }) {
       const [job, setJob] = useState(null)
       const [notice, setNotice] = useState(null)
       const [busy, setBusy] = useState(false)
@@ -1773,6 +1978,7 @@ window.__ModuleLoader__.load({
                 await reload()
                 await reloadWords()
               },
+              onChooseList,
               onGoWords: () => onTab('words')
             }),
             h(WeeklyCard, { data, reload })
@@ -1954,23 +2160,73 @@ window.__ModuleLoader__.load({
      * 下半是"我练到哪了"，直接复用进度那两张栏。画像只有一份，编辑放在这里，
      * 设置页只留学习节奏和运行相关的开关。
      */
-    function ProfileTab({ data, reload }) {
-      const [draft, setDraft] = useState(null)
+    function ProfileTab({ data, reload, leaveGuard }) {
+      const [editing, setEditing] = useState(false)
+      const [draft, setDraft] = useState(data.profile ?? null)
       const [dirty, setDirty] = useState(false)
       const [status, setStatus] = useState(null)
       const [busy, setBusy] = useState(false)
       const [interestText, setInterestText] = useState('')
+      const savedProfile = useRef(data.profile)
+      const editButton = useRef(null)
+      const firstField = useRef(null)
+      const restoreFocus = useRef(false)
+      const saving = useRef(false)
+      const [pendingLeave, setPendingLeave] = useState(null)
+      const continueEditingButton = useRef(null)
+      useEffect(() => { if (pendingLeave) continueEditingButton.current?.focus() }, [pendingLeave])
 
       useEffect(() => {
-        // 正在改的时候，不让每 20 秒一次的刷新把输入吞掉
+        if (!leaveGuard) return
+        leaveGuard.current = (proceed) => {
+          if (saving.current) {
+            setStatus({ tone: 'info', text: '正在保存，请等待保存结果后再离开。' })
+            return false
+          }
+          if (!editing || !dirty) { proceed(); return true }
+          setPendingLeave(() => proceed)
+          return false
+        }
+        return () => { leaveGuard.current = null }
+      }, [leaveGuard, editing, dirty])
+
+      useEffect(() => {
+        if (!editing || !dirty) return
+        const beforeUnload = (event) => { event.preventDefault(); event.returnValue = '' }
+        window.addEventListener('beforeunload', beforeUnload)
+        return () => window.removeEventListener('beforeunload', beforeUnload)
+      }, [editing, dirty])
+
+      useEffect(() => {
+        if (editing) firstField.current?.focus()
+        else if (restoreFocus.current) {
+          editButton.current?.focus()
+          restoreFocus.current = false
+        }
+      }, [editing])
+
+      useEffect(() => {
+        // 不让迟到的轮询快照覆盖刚保存的结果；编辑草稿独立保留。
+        const incoming = data.profile
+        if (savedProfile.current?.updatedAt && (!incoming?.updatedAt || incoming.updatedAt < savedProfile.current.updatedAt)) return
+        savedProfile.current = incoming
         if (dirty || busy) return
-        setDraft(data.profile ?? null)
+        setDraft(incoming ?? null)
       }, [data.profile])
 
       if (!draft) {
         return h('section', { className: 'ec-card' }, h('div', { className: 'ec-empty' }, t('loading')))
       }
 
+      const cancel = () => {
+        setDraft(savedProfile.current)
+        setInterestText('')
+        setDirty(false)
+        setStatus(null)
+        setPendingLeave(null)
+        restoreFocus.current = true
+        setEditing(false)
+      }
       const interests = Array.isArray(draft.interests) ? draft.interests : []
       const update = (patch) => {
         setDraft({ ...draft, ...patch })
@@ -1995,9 +2251,10 @@ window.__ModuleLoader__.load({
       }
 
       const save = async () => {
-        if (busy) return
+        if (saving.current) return
         const next = collectInterests()
         if (!next) return
+        saving.current = true
         setBusy(true)
         const result = await call('profile.save', {
           ...draft,
@@ -2008,15 +2265,24 @@ window.__ModuleLoader__.load({
         if (!result.ok) {
           setBusy(false)
           setStatus({ tone: 'error', text: result.message })
+          saving.current = false
           return
         }
+        saving.current = false
         // Use the saved value immediately, rather than briefly restoring the old polling snapshot.
+        savedProfile.current = result.data.profile
         setDraft(result.data.profile)
         setInterestText('')
         setStatus({ tone: 'success', text: t('saved') })
-        if (reload) await reload()
         setDirty(false)
         setBusy(false)
+        restoreFocus.current = true
+        setEditing(false)
+        if (pendingLeave) {
+          setPendingLeave(null)
+          pendingLeave()
+        }
+        if (reload) void reload()
       }
 
       return h(
@@ -2031,7 +2297,12 @@ window.__ModuleLoader__.load({
             h('h2', null, t('profileTitle')),
             h('span', { className: 'ec-sub' }, t('profileHint'))
           ),
-          h(
+          !editing ? h(React.Fragment, null,
+            h('div', { style: { marginTop: 12, overflowWrap: 'anywhere' } },
+              h('div', null, `${t(`goal${String(draft.goal ?? 'other')[0].toUpperCase()}${String(draft.goal ?? 'other').slice(1)}`)} · 每天 ${draft.minutesPerDay ?? 30} 分钟 · 目标 ${draft.targetBand || '暂未设定'}`),
+              h('div', { className: 'ec-muted', title: draft.goalNote || '' }, draft.goalNote ? (draft.goalNote.length > 80 ? `${draft.goalNote.slice(0, 80)}…` : draft.goalNote) : '还没有填写具体目标'),
+              h('div', { className: 'ec-muted', title: interests.join('、') }, `兴趣：${interests.slice(0, 3).map(text => text.length > 16 ? `${text.slice(0, 16)}…` : text).join('、') || '暂未填写'}${interests.length > 3 ? ` 等 ${interests.length} 项` : ''}`)),
+            h('button', { type: 'button', className: 'ec-btn', ref: editButton, onClick: () => { setDraft(savedProfile.current); setStatus(null); setEditing(true) }, style: { marginTop: 12 } }, '编辑个人目标')) : h(
             'fieldset',
             { className: 'ec-form', disabled: busy, style: { border: 0, padding: 0, minWidth: 0 } },
             h(
@@ -2042,6 +2313,8 @@ window.__ModuleLoader__.load({
                 'select',
                 {
                   className: 'ec-select',
+                  ref: firstField,
+                  'aria-label': t('goal'),
                   value: draft.goal ?? 'work',
                   onChange: (event) => update({ goal: event.target.value })
                 },
@@ -2063,6 +2336,7 @@ window.__ModuleLoader__.load({
                 type: 'number',
                 min: 5,
                 max: 180,
+                'aria-label': t('minutes'),
                 value: draft.minutesPerDay ?? 30,
                 onChange: (event) => update({ minutesPerDay: event.target.value })
               })
@@ -2075,6 +2349,7 @@ window.__ModuleLoader__.load({
                 'select',
                 {
                   className: 'ec-select',
+                  'aria-label': t('targetBand'),
                   value: draft.targetBand ?? '',
                   onChange: (event) => update({ targetBand: event.target.value })
                 },
@@ -2089,6 +2364,7 @@ window.__ModuleLoader__.load({
               h('input', {
                 className: 'ec-input',
                 type: 'text',
+                'aria-label': t('goalNote'),
                 value: draft.goalNote ?? '',
                 placeholder: t('goalNotePlaceholder'),
                 onChange: (event) => update({ goalNote: event.target.value })
@@ -2139,12 +2415,18 @@ window.__ModuleLoader__.load({
               h('div', { className: 'ec-muted', style: { marginTop: 6 } }, t('profileInterestsHint'))
             )
           ),
-          h(
+          editing ? h(
             'div',
             { className: 'ec-row', style: { marginTop: 16 } },
-            h(Btn, { primary: true, onClick: save, disabled: busy || !dirty }, busy ? t('saving') : t('save'))
-          ),
-          status ? h('div', { style: { marginTop: 10 } }, h(Notice, { tone: status.tone }, status.text)) : null
+            h(Btn, { primary: true, onClick: save, disabled: busy || !dirty }, busy ? t('saving') : t('save')),
+            h(Btn, { ghost: true, onClick: cancel, disabled: busy }, '取消')
+          ) : null,
+          status ? h('div', { role: status.tone === 'error' ? 'alert' : 'status', style: { marginTop: 10 } }, h(Notice, { tone: status.tone }, status.text)) : null,
+          pendingLeave ? h('div', { role: 'alert', className: 'ec-feedback' },
+            h('p', null, '个人目标有未保存的修改。继续编辑，或放弃修改后离开。'),
+            h('div', { className: 'ec-row' },
+              h('button', { type: 'button', className: 'ec-btn', ref: continueEditingButton, onClick: () => { setPendingLeave(null); firstField.current?.focus() } }, '继续编辑'),
+              h(Btn, { ghost: true, onClick: () => { const proceed = pendingLeave; setPendingLeave(null); cancel(); proceed() } }, '放弃修改并离开'))) : null
         ),
         h('div', { style: { marginTop: 16 } }, h(ProgressTab, { data }))
       )
@@ -2456,11 +2738,21 @@ window.__ModuleLoader__.load({
     function Panel() {
       const [tab, setTab] = useState('today')
       const [mode, setMode] = useState('normal')
+      const [openThemed, setOpenThemed] = useState(0)
+      const leaveGuard = useRef(null)
+      const navigate = useCallback((proceed) => {
+        if (leaveGuard.current) return leaveGuard.current(proceed)
+        proceed()
+        return true
+      }, [])
+      const changeTab = (next) => { if (next !== tab) navigate(() => setTab(next)) }
+      const chooseList = () => navigate(() => { setTab('words'); setMode('normal'); setOpenThemed(value => value + 1) })
+      const startAssessment = () => navigate(() => setMode('assessment'))
       const { data, error, loading, reload } = useRefresh(loadState, 20000)
       const words = useRefresh(loadWords, 0)
 
       useEffect(() => {
-        const goHome = () => { setTab('today'); setMode('normal') }
+        const goHome = (nextTab = 'today') => navigate(() => { setTab(nextTab); setMode('normal'); if (nextTab === 'words') setOpenThemed(value => value + 1) })
         homeListeners.add(goHome)
         return () => homeListeners.delete(goHome)
       }, [])
@@ -2476,7 +2768,7 @@ window.__ModuleLoader__.load({
         return h('div', { className: 'ec-root' }, h(Style), h('div', { className: 'ec-wrap' },
           h('div', { className: 'ec-empty' }, t('loading'))))
       }
-      if (error) {
+      if (error && !data) {
         return h('div', { className: 'ec-root' }, h(Style), h('div', { className: 'ec-wrap' },
           h('section', { className: 'ec-card' },
             h(Notice, { tone: 'error' }, error),
@@ -2519,15 +2811,15 @@ window.__ModuleLoader__.load({
                   h('div', null,
                     h('div', { style: { fontSize: 13 } }, t('assessmentFirst')),
                     h('div', { className: 'ec-sub' }, t('assessmentFirstHint'))),
-                  h(Btn, { primary: true, style: { marginLeft: 'auto' }, onClick: () => setMode('assessment') },
+                  h(Btn, { primary: true, style: { marginLeft: 'auto' }, onClick: startAssessment },
                     t('startAssessment'))))
             : null,
-          h(TodayTab, { data, words, reload, reloadWords: words.reload, onTab: setTab }))
+          h(TodayTab, { data, words, reload, reloadWords: words.reload, onTab: changeTab, onChooseList: chooseList }))
       } else if (tab === 'words') {
         // The review card keeps the same right-rail home it has on 今天, so the
         // words tab reads as "the library, plus the session you are in".
         content = h('div', { className: 'ec-grid' },
-          h('div', { className: 'ec-col' }, h(Library, { words, now: data.now })),
+          h('div', { className: 'ec-col' }, h(Library, { words, now: data.now, openThemed })),
           h('div', { className: 'ec-col' },
             h(WordDeck, {
               words,
@@ -2535,6 +2827,7 @@ window.__ModuleLoader__.load({
               compact: true,
               limit: data.settings?.study?.wordsPerDay ?? 10,
               reloadWords: words.reload,
+              onChooseList: chooseList,
               onAnswered: async () => {
                 await reload()
                 await words.reload()
@@ -2543,7 +2836,7 @@ window.__ModuleLoader__.load({
       } else if (tab === 'plan') {
         content = h(PlanTab, { data, reload })
       } else {
-        content = h(ProfileTab, { data, reload })
+        content = h(ProfileTab, { data, reload, leaveGuard })
       }
 
       return h(
@@ -2563,7 +2856,7 @@ window.__ModuleLoader__.load({
               tabs.map(([id, label]) =>
                 h(
                   'button',
-                  { key: id, type: 'button', 'data-on': tab === id, onClick: () => setTab(id) },
+                  { key: id, type: 'button', 'data-on': tab === id, onClick: () => changeTab(id) },
                   label
                 )
               )
@@ -2574,9 +2867,10 @@ window.__ModuleLoader__.load({
               h('span', null, `${t('dueShort')} `, h('b', null, String(due))),
               h('span', null, `${t('streakShort')} `, h('b', null, String(streak))),
               band ? h('span', null, `${t('bandShort')} `, h('b', null, band)) : null,
-              h('button', { type: 'button', onClick: () => setMode('assessment') }, t('assessmentShort'))
+              h('button', { type: 'button', onClick: startAssessment }, t('assessmentShort'))
             )
           ),
+          error ? h(Notice, { tone: 'error' }, `刷新失败：${error}。当前内容和未保存修改已保留。`) : null,
           content
         )
       )
@@ -2662,10 +2956,10 @@ window.__ModuleLoader__.load({
               const words = Number(event.target.value)
               if (!Number.isInteger(words) || words < 3 || words > 30) {
                 setStatus({ tone: 'error', text: t('wordsPerDayHint') })
-                setSettings({ ...settings, study: { wordsPerDay: settings.study?.wordsPerDay ?? 10 } })
+                setSettings({ ...settings, study: { ...settings.study, wordsPerDay: data.settings?.study?.wordsPerDay ?? 10 } })
                 return
               }
-              if (words !== (settings.study?.wordsPerDay ?? 10)) void saveSettings({ study: { wordsPerDay: words } })
+              if (words !== (data.settings?.study?.wordsPerDay ?? 10)) void saveSettings({ study: { ...settings.study, wordsPerDay: words } })
             }
           })
         ),
@@ -2768,6 +3062,11 @@ window.__ModuleLoader__.load({
       const [error, setError] = useState(null)
       const [job, setJob] = useState(null)
       const [lastDue, setLastDue] = useState(null)
+      const batchLock = useRef(false)
+      const batchGeneration = useRef(0)
+      const [initialLoading, setInitialLoading] = useState(true)
+      const [initialRetry, setInitialRetry] = useState(0)
+      const [conflict, setConflict] = useState(false)
 
       // Where the learner dragged the pill: null means "the default corner".
       const [pos, setPosState] = useState(null)
@@ -2871,13 +3170,16 @@ window.__ModuleLoader__.load({
       const finished = Boolean(session) && session.cards.length > 0 && !card
 
       const startSession = (list) => {
-        const due = (list?.items ?? []).filter((item) => item.due && (item.choices?.length ?? 0) === 4)
-        setSession({ cards: due.slice(0, limit), at: 0, picked: null, feedback: null, correct: 0 })
+        setSession({ cards: list?.items ?? [], at: 0, picked: null, feedback: null, correct: 0 })
+        setConflict(false)
         setError(null)
       }
 
-      const next = () =>
+      const next = () => {
+        setConflict(false)
+        setError(null)
         setSession((prev) => (prev ? { ...prev, at: prev.at + 1, picked: null, feedback: null } : prev))
+      }
 
       const answer = async (choice) => {
         if (!card || session.picked !== null || busy) return
@@ -2887,11 +3189,7 @@ window.__ModuleLoader__.load({
         const result = await call('review.answer', { itemId: card.id, choice })
         setBusy(false)
         if (!result.ok) {
-          // 这张可能刚在面板里答过：算过去了，不要用报错拦人
-          if (result.code === 'not_due') {
-            next()
-            return
-          }
+          setConflict(result.code === 'not_due')
           setSession((prev) => ({ ...prev, picked: null }))
           setError(result.message)
           return
@@ -2921,26 +3219,23 @@ window.__ModuleLoader__.load({
         }
       }
 
-      const continueRemaining = async () => {
-        const result = await call('review.list')
-        if (!result.ok) {
-          setError(result.message)
-          return
-        }
-        setQueue(result.data)
-        startSession(result.data)
+      const continueRemaining = async (profile = false) => {
+        if (batchLock.current || busy || generating || initialLoading || session === null) return
+        const generation = ++batchGeneration.current
+        batchLock.current = true
+        setBusy(true)
+        setError(null)
+        const result = await call(profile === true ? 'generate.vocab' : 'study.supplement', profile === true ? { profile: true } : {})
+        if (generation !== batchGeneration.current) return
+        batchLock.current = false
+        setBusy(false)
+        if (!result.ok) { setError(result.message); return }
+        if (result.data.mode === 'generated') setJob(result.data)
+        else { setQueue(result.data); startSession(result.data) }
+        notifyReview()
       }
 
-      const generateMore = async () => {
-        if (generating) return
-        setError(null)
-        const result = await call('generate.vocab')
-        if (!result.ok) {
-          setError(result.message)
-          return
-        }
-        setJob(result.data)
-      }
+      const generateMore = continueRemaining
 
       useEffect(() => {
         if (!job || job.status !== 'pending') return undefined
@@ -2953,38 +3248,34 @@ window.__ModuleLoader__.load({
             setError(status.data.failure ?? t('generateFailed'))
             return
           }
-          const fresh = await call('review.list')
-          if (!fresh.ok) return
+          const fresh = await call('study.batch')
+          if (!fresh.ok) { setError(fresh.message); return }
           setQueue(fresh.data)
-          if ((fresh.data.items ?? []).some((item) => item.due)) startSession(fresh.data)
-          else setError(t('vocabEmpty'))
+          startSession(fresh.data)
+          if (!fresh.data.items?.length) setError(t('vocabEmpty'))
         }, 4000)
         return () => clearInterval(timer)
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [job])
 
       useEffect(() => {
-        if (!open) return undefined
-        let alive = true
+        // 已有快照（包括已结束或空批次）只由显式继续操作替换。
+        if (!open || session !== null) return undefined
+        const generation = ++batchGeneration.current
+        setInitialLoading(true)
+        setError(null)
         void (async () => {
-          const result = await call('review.list')
-          if (!alive || !result.ok) return
+          const result = await call('study.batch')
+          if (generation !== batchGeneration.current) return
+          setInitialLoading(false)
+          if (!result.ok) { setError(result.message); return }
           setQueue(result.data)
-          setSession((prev) => {
-            // 收起再打开时接着没答完的那一轮，不要从头开始
-            if (prev && prev.at < prev.cards.length) return prev
-            const due = (result.data.items ?? []).filter(
-              (item) => item.due && (item.choices?.length ?? 0) === 4
-            )
-            if (!due.length) return null
-            return { cards: due.slice(0, limit), at: 0, picked: null, feedback: null, correct: 0 }
-          })
+          setSession((prev) => prev ?? { cards: result.data.items ?? [], at: 0, picked: null, feedback: null, correct: 0 })
         })()
         return () => {
-          alive = false
+          if (generation === batchGeneration.current) batchGeneration.current++
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, [open])
+      }, [open, initialRetry])
 
       useEffect(() => {
         if (!open) return undefined
@@ -3008,13 +3299,13 @@ window.__ModuleLoader__.load({
           ? t('draftReady')
           : t('nothingDueHint')
 
-      const openPanel = () => {
+      const openPanel = (nextTab = 'today') => {
         // Resolved at click time: on a cold boot the layout service may not
         // have existed when this component was registered.
         try {
           const layout = typeof getLayout === 'function' ? getLayout() : null
           if (layout && layout.selectPanel) {
-            for (const goHome of homeListeners) goHome()
+            for (const goHome of homeListeners) goHome(nextTab === 'words' ? 'words' : 'today')
             layout.selectPanel('english-coach')
           }
         } catch {
@@ -3051,19 +3342,21 @@ window.__ModuleLoader__.load({
                         : t('nothingDueShort')
                   )
                 ),
-                card
+                initialLoading ? h('div', { role: 'status', className: 'ec-pop-hint' }, t('loading')) : session === null ? h(Btn, { onClick: () => setInitialRetry((value) => value + 1) }, t('retry')) : card
                   ? h(
                       'div',
                       null,
                       h('div', { className: 'ec-pop-term' }, card.term),
+                      h(PronounceButton, { text: card.term }),
                       h('div', { className: 'ec-pop-prompt' }, t('pickMeaning')),
                       h(ChoiceList, {
                         choices: card.choices ?? [],
                         answerIndex: card.answerIndex,
                         picked: session.picked,
                         onPick: (choice) => void answer(choice),
-                        disabled: busy
+                        disabled: busy || conflict
                       }),
+                      conflict ? h(Btn, { onClick: next }, t('nextWord')) : null,
                       session.feedback
                         ? h(
                             'div',
@@ -3118,6 +3411,10 @@ window.__ModuleLoader__.load({
                       generating ? h('div', { className: 'ec-pop-hint' }, t('generatingWordsHint')) : null,
                       nextText ? h('div', { className: 'ec-pop-hint' }, nextText) : null
                     ),
+                batchNotice(queue) ? h(Notice, null, batchNotice(queue)) : null,
+                !card && !initialLoading && session !== null ? h('div', { className: 'ec-row', style: { marginTop: 10 } },
+                  h(Btn, { small: true, onClick: () => openPanel('words') }, '选择词库'),
+                  h(Btn, { small: true, disabled: busy || generating, onClick: () => continueRemaining(true) }, '按画像补词')) : null,
                 error ? h(Notice, { tone: 'error' }, error) : null,
                 h(
                   'div',

@@ -21,7 +21,9 @@ import {
   seededShuffle,
   validateLesson
 } from './lesson.js'
-import { advance, countMastered, dueItems, isDue, newReviewItem } from './review.js'
+import { advance, countMastered, dueItems, hasAnswered, isDue } from './review.js'
+import { enrol, termKey } from './vocabulary.js'
+import { getWordCatalog } from './catalog.js'
 import { scoreAssessment, nextDrift } from './scoring.js'
 import {
   appendJsonl,
@@ -40,14 +42,15 @@ export const DEFAULTS = {
     version: 1,
     dataRoot: null,
     automation: { enabled: false, time: '08:00', timeZone: 'Asia/Shanghai' },
-    audio: { provider: 'web-speech' },
-    study: { wordsPerDay: 10 },
+    audio: { provider: 'web-speech', voiceURI: null, rate: 1 },
+    study: { wordsPerDay: 10, activeWordListId: null },
     display: { locale: 'system' }
   },
   level: { version: 1, points: [], drift: { baseline: null, streak: 0, note: null } },
   syllabus: { version: 1, phases: [], currentPhaseId: null, weekly: { weekStart: null, goals: [] } },
   progress: { version: 1, completions: [], expiredDrafts: 0 },
-  review: { version: 1, items: [] }
+  review: { version: 1, items: [] },
+  bookmarks: { version: 1, items: [] }
 }
 
 const FILES = {
@@ -57,6 +60,7 @@ const FILES = {
   syllabus: 'syllabus.json',
   progress: 'progress.json',
   review: 'review/items.json',
+  bookmarks: 'audio/bookmarks.json',
   reviewLog: 'review/log.jsonl',
   anchors: 'anchors/items.json',
   anchorLog: 'anchors/responses.jsonl',
@@ -86,12 +90,16 @@ async function load(ctx, key, fallback = DEFAULTS[key]) {
 /** Settings gained keys over time; a file written earlier must still load today. */
 async function loadSettings(ctx) {
   const stored = await load(ctx, 'settings')
+  const words = stored.study?.wordsPerDay
+  const active = stored.study?.activeWordListId
   return {
     ...DEFAULTS.settings,
     ...stored,
     automation: { ...DEFAULTS.settings.automation, ...(stored.automation ?? {}) },
     audio: { ...DEFAULTS.settings.audio, ...(stored.audio ?? {}) },
-    study: { ...DEFAULTS.settings.study, ...(stored.study ?? {}) },
+    study: { ...DEFAULTS.settings.study, ...(stored.study ?? {}),
+      wordsPerDay: Number.isInteger(words) && words >= 3 && words <= 30 ? words : 10,
+      activeWordListId: ['cet4', 'cet6', 'ielts'].includes(active) ? active : null },
     display: { ...DEFAULTS.settings.display, ...(stored.display ?? {}) }
   }
 }
@@ -211,11 +219,11 @@ function deriveReviewItems(lesson) {
   const meanings = [...new Set(expressions.map((entry) => entry.meaning.trim()).filter(Boolean))]
   if (expressions.length < 4 || meanings.length < 4) return []
 
-  const known = new Set((lesson.reviewItems ?? []).map((entry) => entry.term.trim().toLowerCase()))
+  const known = new Set((lesson.reviewItems ?? []).map((entry) => termKey(entry.term)))
   const derived = []
   for (const expression of expressions) {
     const term = expression.term.trim()
-    const key = term.toLowerCase()
+    const key = termKey(term)
     if (!term || known.has(key)) continue
     const answer = expression.meaning.trim()
     const distractors = meanings.filter((meaning) => meaning !== answer).slice(0, 3)
@@ -452,6 +460,46 @@ async function regenerateSyllabus(ctx) {
   return store
 }
 
+function listCandidates(items, settings) {
+  const catalog = getWordCatalog()
+  const list = catalog.lists.find(list => list.id === settings.study.activeWordListId) ?? null
+  if (!list) return { list: null, candidates: [], exhaustion: null, remainingPlayable: 0 }
+  const byTerm = new Map(items.map(item => [termKey(item.term), item]))
+  const byId = new Map(catalog.entries.map(entry => [entry.id, entry]))
+  const members = list.entryIds.map(id => byId.get(id))
+  const unjoined = members.filter(entry => !byTerm.has(entry.key))
+  const candidates = list.studyOrder.map(id => byId.get(id)).filter(entry => !byTerm.has(entry.key) && entry.practice.status === 'ready')
+  const allMastered = members.every(entry => byTerm.get(entry.key)?.status === 'mastered')
+  return { list, candidates, remainingPlayable: candidates.length,
+    exhaustion: candidates.length ? null : allMastered ? 'all_mastered' : unjoined.length ? 'unavailable' : 'all_joined' }
+}
+
+function studyBatch(items, settings, now) {
+  const activeWordListId = settings.study.activeWordListId
+  const members = activeWordListId ? new Set(getWordCatalog().entries.filter(entry => entry.listIds.includes(activeWordListId)).map(entry => entry.key)) : new Set()
+  const due = dueItems(items, now)
+  const old = due.filter(hasAnswered)
+  const fresh = due.filter(item => !hasAnswered(item)).map(item => ({ ...item, fresh: true }))
+    .sort((a, b) => Number(members.has(termKey(b.term))) - Number(members.has(termKey(a.term))))
+  return { items: [...old, ...fresh].slice(0, settings.study.wordsPerDay).map(item => ({ ...publicReviewItem(item), due: true })), dueCount: due.length, batchSize: settings.study.wordsPerDay, activeWordListId }
+}
+
+function bookmarkIdentity(payload) {
+  for (const field of ['materialId', 'contentFingerprint']) {
+    if (typeof payload?.[field] !== 'string' || !payload[field].trim() || payload[field].length > 500) fail('invalid_field', `${field} 必须是非空标识`, field)
+  }
+  return { materialId: payload.materialId, contentFingerprint: payload.contentFingerprint }
+}
+
+function queryPage(items, payload) {
+  const pageSize = payload.pageSize === undefined ? 50 : Number(payload.pageSize)
+  if (![20, 50].includes(pageSize)) fail('invalid_field', '每页条数必须是 20 或 50', 'pageSize')
+  const pages = Math.max(1, Math.ceil(items.length / pageSize))
+  const requested = Number(payload.page ?? 1)
+  const page = Number.isFinite(requested) ? Math.min(pages, Math.max(1, Math.floor(requested))) : 1
+  return { total: items.length, pages, page, pageSize, items: items.slice((page - 1) * pageSize, page * pageSize) }
+}
+
 // ---------------------------------------------------------------- handlers
 
 const handlers = {
@@ -466,6 +514,7 @@ const handlers = {
     const shape = requireProfileShape(payload ?? {})
     const at = ctx.now.toISOString()
     store.profile = {
+      ...store.profile,
       ...shape,
       createdAt: store.profile?.createdAt ?? at,
       updatedAt: at,
@@ -486,6 +535,7 @@ const handlers = {
       const time = String(payload.automation.time ?? settings.automation.time)
       if (!/^\d{2}:\d{2}$/.test(time)) fail('invalid_field', 'time 必须是 HH:MM', 'automation.time')
       settings.automation = {
+        ...settings.automation,
         enabled,
         time,
         timeZone: String(payload.automation.timeZone ?? settings.automation.timeZone)
@@ -496,18 +546,46 @@ const handlers = {
       if (!['web-speech', 'source-audio'].includes(provider)) {
         fail('invalid_field', 'provider 必须是 web-speech 或 source-audio', 'audio.provider')
       }
-      settings.audio = { provider }
+      settings.audio = { ...settings.audio, provider }
+    }
+    if (payload?.audio?.voiceURI !== undefined) {
+      const voice = payload.audio.voiceURI
+      if (voice !== null && (typeof voice !== 'string' || voice.length > 1000)) fail('invalid_field', '音色标识必须是字符串或空值', 'audio.voiceURI')
+      settings.audio.voiceURI = voice
+    }
+    if (payload?.audio?.rate !== undefined) {
+      const rate = Number(payload.audio.rate)
+      if (![0.5, 1, 1.5, 2].includes(rate)) fail('invalid_field', '语速必须是 0.5、1、1.5 或 2', 'audio.rate')
+      settings.audio.rate = rate
     }
     if (payload?.study?.wordsPerDay !== undefined) {
       const words = Number(payload.study.wordsPerDay)
       if (!Number.isInteger(words) || words < 3 || words > 30) {
         fail('invalid_field', 'wordsPerDay 必须是 3 到 30 的整数', 'study.wordsPerDay')
       }
-      settings.study = { wordsPerDay: words }
+      settings.study = { ...settings.study, wordsPerDay: words }
     }
-    if (payload?.display?.locale) settings.display = { locale: String(payload.display.locale) }
+    if (payload?.display?.locale) settings.display = { ...settings.display, locale: String(payload.display.locale) }
     await save(ctx, 'settings', settings)
     return settings
+  },
+
+  async 'audio.bookmark.get'(ctx, payload) {
+    const { materialId, contentFingerprint } = bookmarkIdentity(payload)
+    const store = await load(ctx, 'bookmarks')
+    const bookmark = store.items.find(item => item.materialId === materialId) ?? null
+    const invalidated = Boolean(bookmark && bookmark.contentFingerprint !== contentFingerprint)
+    return { bookmark: invalidated ? null : bookmark, invalidated }
+  },
+
+  async 'audio.bookmark.save'(ctx, payload) {
+    const identity = bookmarkIdentity(payload)
+    if (!Number.isSafeInteger(payload.position) || payload.position < 0) fail('invalid_field', '书签位置必须是非负整数', 'position')
+    const store = await load(ctx, 'bookmarks')
+    const bookmark = { ...identity, position: payload.position }
+    store.items = [...store.items.filter(item => item.materialId !== identity.materialId), bookmark]
+    await save(ctx, 'bookmarks', store)
+    return { bookmark }
   },
 
   /**
@@ -916,6 +994,10 @@ const handlers = {
       }
     }
     merged.cards = enrichable
+    merged.reviewItems = [...(merged.reviewItems ?? []), ...deriveReviewItems(merged)]
+    const review = await load(ctx, 'review')
+    // Validate all additions before any course or provenance write.
+    const enrolled = enrol(review, merged.reviewItems, ctx.now, { kind: 'lesson', id: merged.date }, 'reviewItems')
     await saveLesson(ctx, merged)
 
     // The provenance log answers "where did this day's text come from", so a
@@ -933,31 +1015,17 @@ const handlers = {
       }))
     ])
 
-    merged.reviewItems = [
-      ...(merged.reviewItems ?? []),
-      ...deriveReviewItems(merged)
-    ]
-
-    const review = await load(ctx, 'review')
-    const reviewStore = { version: 1, items: review.items ?? [] }
-    let added = 0
-    for (const candidate of merged.reviewItems ?? []) {
-      if (reviewStore.items.some((item) => item.id === candidate.id)) continue
-      // 课上的词就是当天的第一批新词，所以当天就到期：面板和悬浮层抓到的是
-      // 这一课要学的词，而不是另外生成的一批。第一次作答按「认识一下」处理
-      // （只排 1 天后的复习，不推盒子），所以当天学完不会把间隔提前。
-      reviewStore.items.push(newReviewItem(candidate, ctx.now, merged.date, { freshNow: true }))
-      added += 1
-    }
-    if (added) await save(ctx, 'review', reviewStore)
+    if (enrolled.addedCount || enrolled.linkedCount) await save(ctx, 'review', review)
 
     return {
       date: merged.date,
       status: merged.status,
       itemCount: merged.items.length,
       cardCount: merged.cards.length,
-      reviewAdded: added,
-      dueCount: dueItems(reviewStore.items, ctx.now).length
+      reviewAdded: enrolled.addedCount,
+      reviewLinked: enrolled.linkedCount,
+      reviewSkipped: enrolled.skipped,
+      dueCount: dueItems(review.items, ctx.now).length
     }
   },
 
@@ -1013,62 +1081,9 @@ const handlers = {
     const incoming = Array.isArray(payload?.items) ? payload.items : []
     if (!incoming.length) fail('invalid_field', '至少要有一个词', 'items')
     const review = await load(ctx, 'review')
-    const items = review.items ?? []
-    const known = new Set(items.map((item) => String(item.term).trim().toLowerCase()))
-    const ids = new Set(items.map((item) => item.id))
-    const added = []
-    const skipped = []
-
-    for (const [index, raw] of incoming.entries()) {
-      const field = `items[${index}]`
-      const term = String(raw?.term ?? '').trim()
-      if (!term) fail('invalid_field', `${field}.term 不能为空`, `${field}.term`)
-      const key = term.toLowerCase()
-      if (known.has(key)) {
-        skipped.push({ term, reason: 'duplicate' })
-        continue
-      }
-      const meaning = String(raw?.meaning ?? '').trim()
-      if (!meaning) fail('invalid_field', `${field}.meaning 不能为空`, `${field}.meaning`)
-      const choices = (Array.isArray(raw?.choices) ? raw.choices : []).map((choice) => String(choice).trim())
-      if (choices.length !== 4 || new Set(choices).size !== 4) {
-        fail('invalid_field', `${field}.choices 必须是 4 个不同的中文选项`, `${field}.choices`)
-      }
-      const answerIndex = Number(raw?.answerIndex)
-      if (!Number.isInteger(answerIndex) || answerIndex < 0 || answerIndex > 3) {
-        fail('invalid_field', `${field}.answerIndex 必须是 0 到 3 的整数`, `${field}.answerIndex`)
-      }
-      if (choices[answerIndex] !== meaning) {
-        fail('invalid_field', `${field}.choices[answerIndex] 必须与 meaning 完全相同`, `${field}.choices`)
-      }
-
-      const slug = key.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32) || 'word'
-      let id = `rv-${slug}`
-      let suffix = 2
-      while (ids.has(id)) id = `rv-${slug}-${suffix++}`
-      ids.add(id)
-      known.add(key)
-
-      const item = newReviewItem(
-        {
-          id,
-          term,
-          kind: raw?.kind === 'word' || term.split(/\s+/).length === 1 ? 'word' : 'expression',
-          meaning,
-          choices,
-          answerIndex,
-          explanation: raw?.explanation
-        },
-        ctx.now,
-        null,
-        { freshNow: true }
-      )
-      items.push(item)
-      added.push(publicReviewItem(item))
-    }
-
-    if (added.length) await save(ctx, 'review', { version: 1, items })
-    return { added, skipped, addedCount: added.length }
+    const result = enrol(review, incoming, ctx.now, { kind: 'supplement' })
+    if (result.addedCount || result.linkedCount) await save(ctx, 'review', review)
+    return { ...result, added: result.added.map(publicReviewItem) }
   },
 
   async 'review.queue'(ctx) {
@@ -1123,6 +1138,86 @@ const handlers = {
     }
   },
 
+  async 'study.preference'(ctx) {
+    const settings = await loadSettings(ctx)
+    const review = await load(ctx, 'review')
+    const { list, candidates } = listCandidates(review.items ?? [], settings)
+    return { activeWordList: list ? { id: list.id, title: list.title, total: list.total, playableCount: list.playableCount } : null,
+      candidates: candidates.slice(0, 60).map(entry => ({ term: entry.term, meaning: entry.meaning })), candidateCount: candidates.length, batchSize: settings.study.wordsPerDay }
+  },
+
+  async 'study.supplement'(ctx) {
+    const settings = await loadSettings(ctx)
+    const review = await load(ctx, 'review')
+    const before = studyBatch(review.items ?? [], settings, ctx.now)
+    const available = listCandidates(review.items ?? [], settings)
+    if (!available.list) return { ...before, addedCount: 0, remainingPlayable: 0, exhaustion: null, shortfall: before.batchSize - before.items.length, mode: 'profile_required' }
+    const needed = Math.max(0, before.batchSize - before.items.length)
+    const incoming = available.candidates.slice(0, needed).map(entry => ({ id: entry.id, term: entry.term, kind: entry.kind, meaning: entry.meaning, ...entry.practice }))
+    const enrolled = enrol(review, incoming, ctx.now, { kind: 'wordlist', id: available.list.id })
+    if (enrolled.addedCount || enrolled.linkedCount) await save(ctx, 'review', review)
+    const after = studyBatch(review.items ?? [], settings, ctx.now)
+    const remaining = listCandidates(review.items ?? [], settings)
+    return { ...after, addedCount: enrolled.addedCount, remainingPlayable: remaining.remainingPlayable, exhaustion: remaining.exhaustion, shortfall: after.batchSize - after.items.length }
+  },
+
+  async 'study.batch'(ctx) {
+    const review = await load(ctx, 'review')
+    const settings = await loadSettings(ctx)
+    return studyBatch(review.items ?? [], settings, ctx.now)
+  },
+
+  async 'wordlists.list'(ctx) {
+    const catalog = getWordCatalog()
+    const settings = await loadSettings(ctx)
+    return { lists: catalog.lists.map(({ entryIds, studyOrder, ...summary }) => summary), version: catalog.version, activeWordListId: settings.study.activeWordListId }
+  },
+
+  async 'wordlists.select'(ctx, payload) {
+    const id = payload?.id
+    if (id !== null && !getWordCatalog().lists.some(list => list.id === id)) fail('invalid_field', '请选择有效词库或不指定', 'id')
+    const settings = await loadSettings(ctx)
+    settings.study.activeWordListId = id
+    await save(ctx, 'settings', settings)
+    return { activeWordListId: id }
+  },
+
+  async 'wordlists.query'(ctx, payload = {}) {
+    const catalog = getWordCatalog()
+    const list = catalog.lists.find(list => list.id === payload.id)
+    if (!list) fail('invalid_field', '未知主题词库', 'id')
+    const review = await load(ctx, 'review')
+    const byTerm = new Map((review.items ?? []).map(item => [termKey(item.term), item]))
+    const search = termKey(payload.search)
+    const filter = payload.filter ?? 'all'
+    if (!['all', 'joined', 'unjoined'].includes(filter)) fail('invalid_field', '未知加入状态筛选', 'filter')
+    const entries = catalog.entries.filter(entry => entry.listIds.includes(list.id)).map(entry => {
+      const personal = byTerm.get(entry.key)
+      return { ...entry, joined: Boolean(personal), personal: personal ? publicReviewItem(personal) : null }
+    }).filter(entry =>
+      (filter === 'all' || (filter === 'joined' ? entry.joined : !entry.joined)) &&
+      (!search || entry.key.includes(search) || entry.translation.toLowerCase().includes(search) || entry.meaning.toLowerCase().includes(search))
+    )
+    const { entryIds, studyOrder, ...summary } = list
+    return { ...queryPage(entries, payload), list: summary }
+  },
+
+  async 'vocabulary.query'(ctx, payload = {}) {
+    const review = await load(ctx, 'review')
+    const all = review.items ?? []
+    const search = termKey(payload.search)
+    const filter = payload.filter ?? 'all'
+    if (!['all', 'learning', 'mastered'].includes(filter)) fail('invalid_field', '未知学习状态筛选', 'filter')
+    const matched = all.filter(item =>
+      (filter === 'all' || (filter === 'mastered' ? item.status === 'mastered' : item.status !== 'mastered')) &&
+      (!search || termKey(item.term).includes(search) || String(item.meaning).toLowerCase().includes(search))
+    ).sort((a, b) => termKey(a.term).localeCompare(termKey(b.term), 'en') || a.id.localeCompare(b.id))
+    return {
+      ...queryPage(matched.map(item => ({ ...publicReviewItem(item), due: isDue(item, ctx.now) })), payload),
+      counts: { all: all.length, learning: all.filter(item => item.status !== 'mastered').length, mastered: countMastered(all) }
+    }
+  },
+
   async 'review.answer'(ctx, payload) {
     const itemId = String(payload?.itemId ?? '')
     const choice = Number(payload?.choice)
@@ -1145,7 +1240,7 @@ const handlers = {
     const correct = choice === item.answerIndex
     const updated = advance(item, correct, ctx.now)
     items[index] = updated
-    await save(ctx, 'review', { version: 1, items })
+    await save(ctx, 'review', { ...review, items })
     await appendJsonl(join(ctx.root, FILES.reviewLog), {
       at: ctx.now.toISOString(),
       itemId,
@@ -1222,7 +1317,7 @@ const handlers = {
       applied.push({ key, itemId, kind: 'review', correct })
     }
     if (applied.some((entry) => entry.kind === 'review')) {
-      await save(ctx, 'review', { version: 1, items })
+      await save(ctx, 'review', { ...review, items })
     }
 
     for (const entry of Array.isArray(payload?.lessonCompletions) ? payload.lessonCompletions : []) {
@@ -1414,7 +1509,20 @@ export const COMMANDS = Object.freeze(Object.keys(handlers))
  * it either resolves `{ ok: true, data, warnings }` or describes the refusal
  * as `{ ok: false, code, message, field? }`. It never throws across the seam.
  */
+const commandTails = new Map()
+
 export async function execute(root, command, payload = {}, options = {}) {
+  // All callers share one per-root transaction lane, including reads that can
+  // expire drafts. Atomic file replacement alone cannot prevent lost updates.
+  const key = resolve(root)
+  const previous = commandTails.get(key) ?? Promise.resolve()
+  const task = previous.then(() => executeCommand(root, command, payload, options))
+  const tail = task.catch(() => {})
+  commandTails.set(key, tail)
+  try { return await task } finally { if (commandTails.get(key) === tail) commandTails.delete(key) }
+}
+
+async function executeCommand(root, command, payload = {}, options = {}) {
   const warnings = []
   const ctx = {
     root,

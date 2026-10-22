@@ -9,9 +9,9 @@ import { readJson, writeJson } from './core/store.js'
 /**
  * Host half of 英语教练.
  *
- * Owns the data root, the four agent tools, the JSON-RPC surface the panel and
+ * Owns the data root, the agent tools, the JSON-RPC surface the panel and
  * the pill talk to, and the scheduled job that asks an agent to prepare a
- * lesson. Every data mutation goes through `core/execute`, so the four tools,
+ * lesson. Every data mutation goes through `core/execute`, so the tools,
  * the panel and the scheduler can never disagree about what a write means.
  */
 
@@ -127,7 +127,24 @@ export function apply(ctx, config) {
     void ensureAutomation()
     if (command === 'generate') return await startJob('lesson')
     if (command === 'generate.assessment') return await startJob('assessment')
-    if (command === 'generate.vocab') return await startJob('vocab')
+    if (command === 'generate.vocab') {
+      if (payload?.profile !== true) {
+        const result = await execute(root, 'study.supplement', {})
+        if (!result.ok) return result
+        if (result.data.activeWordListId || result.data.items.length) {
+          return { ...result, data: { ...result.data, mode: 'static' } }
+        }
+      }
+      const result = await startJob('vocab')
+      return result.ok ? { ...result, data: { ...result.data, mode: 'generated' } } : result
+    }
+    if (command === 'lesson.context') {
+      try {
+        return { ok: true, data: { prompt: await lessonPrompt() }, warnings: [] }
+      } catch (error) {
+        return { ok: false, code: 'lesson_context_failed', message: `读取新课程偏好失败：${error?.message ?? error}` }
+      }
+    }
     if (command === 'job.status') {
       const kind =
         payload?.kind === 'assessment' ? 'assessment' : payload?.kind === 'vocab' ? 'vocab' : 'lesson'
@@ -186,13 +203,24 @@ export function apply(ctx, config) {
   // ------------------------------------------------------- the daily agent
 
   async function lessonPrompt() {
-    const snapshot = await execute(root, 'state.get').catch(() => null)
-    const count = snapshot?.ok ? snapshot.data.settings?.study?.wordsPerDay ?? 10 : 10
+    const preference = await execute(root, 'study.preference', {})
+    if (!preference.ok) throw new Error(preference.message || '无法读取当前词库偏好')
+    const { activeWordList, candidates, candidateCount, batchSize } = preference.data
+    const count = batchSize ?? 10
+    const preferenceLines = activeWordList ? [
+      `当前词库：${activeWordList.title}（id=${activeWordList.id}；目录 ${activeWordList.total}，可练 ${activeWordList.playableCount}）。`,
+      `实际候选 ${candidates.length} 个（可用候选总数 ${candidateCount}；最多展示 60 个，不受浏览分页影响）：${JSON.stringify(candidates)}`,
+      '尽量从真实阅读/听力材料中选取这些词或当前库相关表达；没有合适命中也可以完成课程，不设命中配额。',
+      '候选不足时如实说明；不能伪造词语出处、改写来源原文或硬塞无关词来提高命中率。'
+    ] : ['当前词库：不指定。沿用画像、兴趣和真实材料选择重点词。']
     return [
       '你是「英语教练」的素材采购员。按下面的步骤工作，不要输出与任务无关的内容。',
       '',
       '1. 先调用 english_state，读出 today、画像、当前阶段与阶段目标、最近水平估计、到期复习数量、近 7 天用过的素材链接。',
+      '   今天已有草稿、进行中或已完成课程就保留，不重复生成或覆盖；说明已有课程即可。',
       '   不要用任何工具在本机写文件；所有内容只能通过 english_save_lesson 提交。',
+      ...preferenceLines,
+      'review.terms 的前 60 个已有词只是提示摘要，不是完整去重依据；课程 reviewItems 与表达派生仍由插件统一领域写入执行全量同词保护。',
       '2. 按画像和近期工作方向搜索 1 篇阅读素材与 1 段听力素材。验收标准：',
       '   - 有公开可访问的原始页面（http/https）；',
       '   - 最近 30 天内发布；',
@@ -235,7 +263,7 @@ export function apply(ctx, config) {
       '',
       '1. 先调用 english_state，读出画像、当前档位、目标档位和 review.terms（已经有的词）。',
       `2. 出 ${count} 个新词或整块表达，要求：`,
-      '   - 不与 review.terms 里的任何一个重复（大小写、单复数都算重复）；',
+      '   - 避免重复已有词；忽略大小写及多余空白，同词最终由插件全量去重，review.terms 只是有限摘要，不自动合并不同词形或英美拼写；',
       '   - 贴近画像里的工作方向和兴趣，整块表达优先于孤立单词；',
       `   - 难度略高于「${band}」、但不高于目标档位；`,
       '   - 每个词给中文释义、4 个不同的中文选项，以及一句中文讲解（常见搭配、和近义词的区别）；',
@@ -244,6 +272,10 @@ export function apply(ctx, config) {
       '4. 提交后用一句中文说明这次补的是哪一类词。'
     ].join('\n')
   }
+
+  // Schedules store literal text, not a callback. Resolve the live preference
+  // through the public tool when a delivery starts, never at rule creation.
+  const LESSON_REFRESH_PROMPT = '开始准备新课前，先调用 english_vocabulary，action="lesson_context"，取得本次生成时最新课程要求。成功后按返回的 data.prompt 工作；失败则报告原因并停止，不使用旧偏好或旧候选。今天已有课程时保留，不覆盖。'
 
   const JOB_SPECS = {
     lesson: { title: '英语教练 · 生成今天', prompt: lessonPrompt },
@@ -270,6 +302,10 @@ export function apply(ctx, config) {
     }
 
     try {
+      const preparedPrompt = await spec.prompt()
+      const prompt = kind === 'lesson'
+        ? `${LESSON_REFRESH_PROMPT}\n\n以下是请求时的参考快照；以 lesson_context 返回的最新文本为准：\n${preparedPrompt}`
+        : preparedPrompt
       let sessionId = jobs.dailySessionId
       if (!sessionId) {
         const created = await sessionController.create({ cwd: root })
@@ -277,7 +313,7 @@ export function apply(ctx, config) {
       }
       const record = await schedule.create(sessionId, {
         title: spec.title,
-        prompt: await spec.prompt(),
+        prompt,
         after_seconds: 2
       })
       const job = {
@@ -321,17 +357,25 @@ export function apply(ctx, config) {
       )
       if (ended.length) {
         const reason = ended[ended.length - 1].data?.reason ?? { kind: 'completed' }
-        const failed = reason.kind === 'error' || reason.kind === 'aborted'
+        let failed = reason.kind !== 'completed'
+        let missingLesson = false
+        if (!failed && kind === 'lesson') {
+          const saved = await execute(root, 'lesson.get', { date: job.date })
+          missingLesson = !saved.ok || !saved.data.lesson
+          failed = missingLesson
+        }
         const next = {
           ...job,
           status: failed ? 'failed' : 'done',
           endedAt: Date.now(),
           failure:
-            reason.kind === 'error'
-              ? String(reason.error?.message ?? '模型调用失败')
-              : reason.kind === 'aborted'
-                ? '这一轮被中断了'
-                : null
+            missingLesson
+              ? '生成会话已结束，但未保存今天的课程，请检查会话说明后重试。'
+              : reason.kind === 'error'
+                ? String(reason.error?.message ?? '模型调用失败')
+                : reason.kind === 'aborted'
+                  ? '这一轮被中断了'
+                  : failed ? `生成会话未完成（${reason.kind}），请检查会话后重试。` : null
         }
         await persist(next)
         return { ok: true, data: next, warnings: [] }
@@ -385,7 +429,7 @@ export function apply(ctx, config) {
       return warnings
     }
 
-    const key = `${automation.time}|${automation.timeZone}`
+    const key = `live-lesson-context-v1|${automation.time}|${automation.timeZone}`
     if (jobs.dailyScheduleId && jobs.dailyScheduleKey === key) return warnings
     // A changed time means the stored rule is stale: drop it and make a new one
     // rather than leaving the learner with yesterday's schedule.
@@ -405,7 +449,7 @@ export function apply(ctx, config) {
       }
       const record = await schedule.create(sessionId, {
         title: '英语教练 · 每日一课',
-        prompt: lessonPrompt(),
+        prompt: LESSON_REFRESH_PROMPT,
         daily: { time: clockTime(automation.time), time_zone: automation.timeZone }
       })
       await writeJobs({
@@ -429,10 +473,41 @@ export function apply(ctx, config) {
     {
       name: 'english_state',
       description:
-        '读取学习者的全部状态：画像、大纲与本阶段目标、最近水平估计、到期复习数、近 7 天用过的素材、今天是否已有课程。只读，不改变任何数据。准备每日课程前先调用它。',
+        '读取画像、大纲、水平估计、到期复习数、近 7 天素材和今日课程。准备每日课程前调用；读取时可能更新过期草稿状态。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       output,
       execute: async () => await dispatch('state.get', {})
+    },
+    {
+      name: 'english_vocabulary',
+      description: '浏览学习参考词库、读取新课要求、选择当前库或补充学习。select 改变后续新词偏好，supplement 把一批词加入个人学习；这两项仅在学习者提出对应要求时调用。',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['list', 'query', 'select', 'supplement', 'lesson_context'], description: 'list 列出词库；query 分页查询；select 保存偏好；supplement 补词；lesson_context 读取生成时最新课程要求。' },
+          id: { oneOf: [{ type: 'string', enum: ['cet4', 'cet6', 'ielts'] }, { type: 'null' }], description: 'query/select 必填；select 用 null 清除偏好。' },
+          search: { type: 'string', description: 'query 的英文或中文包含搜索。' },
+          filter: { type: 'string', enum: ['all', 'joined', 'unjoined'], description: 'query 的加入状态筛选，默认 all。' },
+          page: { type: 'integer', minimum: 1, description: 'query 页码，默认 1。' },
+          pageSize: { type: 'integer', enum: [20, 50], description: 'query 每页条数，默认 50。' },
+          profile: { type: 'boolean', description: '仅 supplement 使用。学习者明确选择按画像生成时设 true；否则所选库直接使用预备题，不创建模型任务。' }
+        },
+        required: ['action'],
+        additionalProperties: false
+      },
+      output,
+      execute: async (args) => {
+        const commands = { list: 'wordlists.list', query: 'wordlists.query', select: 'wordlists.select', supplement: 'generate.vocab', lesson_context: 'lesson.context' }
+        const allowed = { list: [], query: ['id', 'search', 'filter', 'page', 'pageSize'], select: ['id'], supplement: ['profile'], lesson_context: [] }
+        if (!args || !Object.hasOwn(commands, args.action) || Object.keys(args).some(key => key !== 'action' && !allowed[args.action].includes(key))) {
+          return { ok: false, code: 'invalid_vocabulary_action', message: '请选择支持的词库操作及其对应参数。' }
+        }
+        if ((args.action === 'query' || args.action === 'select') && !Object.hasOwn(args, 'id')) {
+          return { ok: false, code: 'invalid_vocabulary_action', field: 'id', message: '该操作需要明确指定词库；清除偏好请传 null。' }
+        }
+        const { action, ...payload } = args
+        return await dispatch(commands[action], payload)
+      }
     },
     {
       name: 'english_save_lesson',
@@ -593,7 +668,7 @@ export function apply(ctx, config) {
     {
       name: 'english_add_words',
       description:
-        '把新词加入复习队列，加进来立刻就能学。term 与已有词重复（不分大小写）的会被跳过；choices 必须是 4 个不同的中文选项，answerIndex 指向与 meaning 完全相同的那一项。只在学习者要求补充词汇时调用。',
+        '提交已准备的词汇练习，立即可学；同词忽略大小写和多余空白，保留原释义与进度，只补来源。仅在学习者要求补词时调用；所选词库的常规补词用 english_vocabulary 的 supplement。',
       parameters: {
         type: 'object',
         properties: {
