@@ -13,6 +13,7 @@ window.__ModuleLoader__.load({
     // locale once flipped the whole panel to English for a Chinese learner.
     const TEXT = {
       title: '英语教练',
+      speechSettings: '朗读设置',
       today: '今日',
       plan: '计划',
       progress: '进度',
@@ -601,9 +602,23 @@ window.__ModuleLoader__.load({
 .ec-progress > i { display: block; height: 100%; background: var(--dsw-alias-brand-primary); }
 
 /* Shared speech controls remain usable in a narrow panel and with a keyboard. */
-.ec-pronounce { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px; max-width: 100%; }
-.ec-speech-options { width: 100%; min-width: 0; margin: 6px 0; }
-.ec-speech-options > .ec-row > label { flex: 1 1 140px; min-width: 0; }
+.ec-term-line { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; overflow-wrap: anywhere; }
+.ec-term-line > .ec-deck-term, .ec-term-line > .ec-pop-term { min-width: 0; }
+.ec-pronounce { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px; max-width: 100%; vertical-align: middle; }
+.ec-pronounce-icon { display: inline-grid; place-items: center; flex: none; width: 32px; height: 32px;
+  padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--dsw-alias-label-secondary); cursor: pointer; }
+.ec-pronounce-icon:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
+.ec-pronounce-error { font: 12px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--dsw-alias-state-error-primary); }
+.ec-flash-toggle { appearance: none; border: 0; padding: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.ec-flash-toggle > span { display: block; }
+.ec-flash-toggle:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; border-radius: 4px; }
+.ec-speech-options { min-width: 0; }
+.ec-speech-options > .ec-card-head { margin-bottom: 12px; }
+.ec-speech-options > .ec-row { align-items: flex-end; }
+.ec-speech-options > .ec-row > label { display: flex; flex-direction: column; gap: 6px; flex: 1 1 140px; min-width: 0;
+  font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.ec-speech-options select { width: 100%; min-width: 0; max-width: 100%; }
+.ec-speech-options > [role=status], .ec-speech-options > .ec-notice { margin-top: 10px; }
 .ec-pronounce button:focus-visible, .ec-speech-options select:focus-visible,
 .ec-speech-options button:focus-visible, .ec-root input[type=range]:focus-visible,
 .ec-item-body .ec-btn:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
@@ -633,7 +648,7 @@ window.__ModuleLoader__.load({
 
 /* --------------------------------------------------------------- flash card */
 .ec-flash { display: block; width: 100%; text-align: left; border: 0; border-top: 1px dashed var(--dsw-alias-border-l1);
-  background: none; padding: 8px 0; cursor: pointer; font: inherit; color: inherit; }
+  background: none; padding: 8px 0; font: inherit; color: inherit; }
 .ec-flash:first-of-type { border-top: 0; }
 .ec-flash-front { font-size: 14px; line-height: 1.45;
   font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif; }
@@ -733,8 +748,9 @@ window.__ModuleLoader__.load({
 .ec-pop-head { display: flex; align-items: center; gap: 8px; font-size: 11.5px;
   color: var(--dsw-alias-label-secondary); }
 .ec-pop-head b { color: var(--dsw-alias-label-primary); font-size: 12.5px; }
+.ec-pop .ec-term-line { margin: 12px 0 2px; }
 .ec-pop-term { font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
-  font-size: 24px; margin: 12px 0 2px; letter-spacing: -.01em; }
+  font-size: 24px; letter-spacing: -.01em; }
 .ec-pop-hint { font-size: 12px; color: var(--dsw-alias-label-secondary); line-height: 1.6; margin-top: 6px; }
 .ec-pop-prompt { font-size: 11.5px; color: var(--dsw-alias-label-secondary); margin-top: 3px; }
 /* 306px 的悬浮层里，选项比面板里紧一档，四行释义一屏放得下 */
@@ -966,7 +982,8 @@ window.__ModuleLoader__.load({
 
     function SpeechOptions() {
       const audio = useSpeech(), prefs = audio.preferences
-      return h('div', { className: 'ec-speech-options' },
+      return h('section', { className: 'ec-card ec-speech-options', 'aria-label': t('speechSettings') },
+        h('div', { className: 'ec-card-head' }, h('h2', null, t('speechSettings'))),
         h('div', { className: 'ec-row' },
           h('label', null, '英语音色', h('select', { className: 'ec-select', 'aria-label': '英语音色', value: audio.selectedVoice()?.voiceURI ?? '', onChange: event => audio.configure({ voiceURI: event.target.value }) },
             !prefs.voices.length ? h('option', { value: '' }, '暂无英语音色') : null,
@@ -975,22 +992,20 @@ window.__ModuleLoader__.load({
             [0.5, 1, 1.5, 2].map(rate => h('option', { key: rate, value: rate }, `${rate.toFixed(1)} 倍`)))),
           h(Btn, { small: true, onClick: () => audio.short('Hello. Let us practise English together.', 'audition') }, '试听音色'),
           h(Btn, { small: true, onClick: audio.refreshVoices }, '重试声源')),
-        h('div', { className: 'ec-muted' }, '联网音色可能向声源服务外发朗读文本；倍速相对所选声源，不保证不同声源词速相同。'),
         prefs.notice ? h('div', { role: 'status', className: 'ec-muted' }, prefs.notice) : null,
         prefs.error ? h(Notice, { tone: 'error' }, prefs.error) : null)
     }
 
     function PronounceButton({ text, label }) {
       const audio = useSpeech(), owner = useRef({})
-      const [options, setOptions] = useState(false)
       useEffect(() => () => audio.release(owner.current), [])
       if (typeof text !== 'string' || !/[A-Za-z]/.test(text) || /[\u3400-\u9fff]/.test(text)) return null
       return h('span', { className: 'ec-pronounce', onKeyDown: event => { if (['Enter', ' ', '1', '2', '3', '4'].includes(event.key)) event.stopPropagation() }, onClick: event => event.stopPropagation() },
-        h('button', { type: 'button', className: 'ec-btn ec-btn-sm', 'aria-label': label ?? `朗读 ${text}`, onClick: event => { event.stopPropagation(); audio.short(text, owner.current) } }, '发音'),
-        h('button', { type: 'button', className: 'ec-btn ec-btn-sm', 'aria-label': `语音选项 ${text}`, onClick: () => setOptions(value => !value) }, '语音选项'),
-        h('span', { className: 'ec-muted' }, ' 联网音色可能外发朗读文本'),
-        audio.preferences.error ? h('span', { role: 'status' }, audio.preferences.error) : null,
-        options ? h(SpeechOptions) : null)
+        h('button', { type: 'button', className: 'ec-pronounce-icon', 'aria-label': label ?? `朗读 ${text}`, title: label ?? `朗读 ${text}`, onClick: event => { event.stopPropagation(); audio.short(text, owner.current) } },
+          h('svg', { width: 18, height: 18, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true, focusable: false },
+            h('path', { d: 'M11 5 6 9H3v6h3l5 4V5Z' }),
+            h('path', { d: 'M15 8a6 6 0 0 1 0 8M18 5a10 10 0 0 1 0 14' }))),
+        audio.preferences.error ? h('span', { className: 'ec-pronounce-error', role: 'status' }, audio.preferences.error) : null)
     }
 
     function Speak({ text = '', materialId }) {
@@ -999,7 +1014,6 @@ window.__ModuleLoader__.load({
       useEffect(() => { void audio.restore(article); return () => audio.pause(article) }, [article])
       const status = { idle: '待播放', playing: '播放中', paused: '已暂停', completed: '朗读已完成', error: '朗读错误' }[article.status]
       return h('div', { style: { margin: '10px 0' } },
-        h(SpeechOptions),
         h('div', { className: 'ec-row' },
           h('span', { role: 'status' }, status),
           h(Btn, { disabled: !text.trim() || article.status === 'playing' || article.status === 'completed', onClick: () => audio.play(article) }, article.status === 'paused' ? '继续' : article.status === 'error' ? '重试朗读' : '播放'),
@@ -1055,8 +1069,8 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { key: index, style: { marginBottom: 12 } },
-            h('div', { style: { fontSize: 14.5, fontWeight: 600 } }, expression.term),
-            h(PronounceButton, { text: expression.term }),
+            h('div', { className: 'ec-term-line', style: { fontSize: 14.5, fontWeight: 600 } },
+              h('span', null, expression.term), h(PronounceButton, { text: expression.term })),
             expression.example
               ? h('div', { className: 'ec-body', style: { fontSize: 13.5, marginTop: 4 } }, expression.example,
                   h(PronounceButton, { text: expression.example, label: `朗读例句 ${expression.example}` }))
@@ -1381,24 +1395,17 @@ window.__ModuleLoader__.load({
               h('div', { className: 'ec-sub', style: { marginBottom: 6 } }, t('lessonCards')),
               cards.map((card) => {
                 const revealed = Boolean(openCards[card.id])
-                return h('div', { key: card.id }, h(
-                  'button',
-                  {
-                    type: 'button',
-                    className: 'ec-flash',
-                    'data-open': revealed,
-                    onClick: () => setOpenCards({ ...openCards, [card.id]: !revealed })
-                  },
-                  h('div', { className: 'ec-flash-front' }, card.front),
-                  revealed
-                    ? h(
-                        'div',
-                        { className: 'ec-flash-back' },
-                        card.back,
-                        card.explanation ? h('div', { className: 'ec-muted' }, card.explanation) : null
-                      )
-                    : h('div', { className: 'ec-flash-hint' }, t('tapAnswer'))
-                ), h(PronounceButton, { text: card.front }))
+                return h('div', { key: card.id, className: 'ec-flash', 'data-open': revealed },
+                  h('div', { className: 'ec-term-line' },
+                    h('button', {
+                      type: 'button', className: 'ec-flash-toggle', 'aria-expanded': revealed,
+                      onClick: () => setOpenCards({ ...openCards, [card.id]: !revealed })
+                    },
+                    h('span', { className: 'ec-flash-front' }, card.front)),
+                    h(PronounceButton, { text: card.front })),
+                  !revealed ? h('div', { className: 'ec-flash-hint' }, t('tapAnswer')) : null,
+                  revealed ? h('div', { className: 'ec-flash-back' }, card.back,
+                    card.explanation ? h('div', { className: 'ec-muted' }, card.explanation) : null) : null)
               })
             )
           : null
@@ -1719,8 +1726,8 @@ window.__ModuleLoader__.load({
             h(BoxDots, { box: word.box }),
             h('span', { className: 'ec-sub' }, `${index + 1} / ${ids.length}`)
           ),
-          h('div', { className: 'ec-deck-term' }, word.term),
-          h(PronounceButton, { text: word.term }),
+          h('div', { className: 'ec-term-line' },
+            h('div', { className: 'ec-deck-term' }, word.term), h(PronounceButton, { text: word.term })),
           h('div', { className: 'ec-deck-prompt' }, t('pickMeaning')),
           h(ChoiceList, {
             choices: word.choices ?? [],
@@ -1981,6 +1988,7 @@ window.__ModuleLoader__.load({
               onChooseList,
               onGoWords: () => onTab('words')
             }),
+            h(SpeechOptions),
             h(WeeklyCard, { data, reload })
           )
         )
@@ -3346,8 +3354,8 @@ window.__ModuleLoader__.load({
                   ? h(
                       'div',
                       null,
-                      h('div', { className: 'ec-pop-term' }, card.term),
-                      h(PronounceButton, { text: card.term }),
+                      h('div', { className: 'ec-term-line' },
+                        h('div', { className: 'ec-pop-term' }, card.term), h(PronounceButton, { text: card.term })),
                       h('div', { className: 'ec-pop-prompt' }, t('pickMeaning')),
                       h(ChoiceList, {
                         choices: card.choices ?? [],
