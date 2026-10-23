@@ -18,7 +18,11 @@ async function open(t, count = 121, slot = 'main') {
   const api = { intercept: null }
   const request = (command, payload) => {
     requests.push({ command, payload })
-    const promise = Promise.resolve(api.intercept?.(command, payload) ?? run(command, payload))
+    // The Host's ordinary continue command first consumes the shared domain batch.
+    const response = api.intercept?.(command, payload) ?? (command === 'generate.vocab'
+      ? run('study.supplement', payload).then(result => result.ok ? { ...result, data: { ...result.data, mode: 'static' } } : result)
+      : run(command, payload))
+    const promise = Promise.resolve(response)
     pending.add(promise)
     promise.then(() => pending.delete(promise), () => pending.delete(promise))
     return promise
@@ -85,7 +89,7 @@ test('学习安排和浏览共用已保存来源，取消不写入、失败留�
   await ui.click('继续学习'); await settle()
   assert.match(ui.text(), /本轮第 1 \/ 3 项/)
   assert.ok((await run('wordlists.query', { id: 'cet6', filter: 'joined' })).data.total > 0)
-  assert.equal(requests.some(({ command }) => command === 'generate.vocab'), false)
+  assert.deepEqual(requests.filter(({ command }) => command === 'generate.vocab').map(({ payload }) => payload), [{}])
 })
 
 test('在学习安排调整每批数量，非法值拒绝、取消不写、失败留稿、当前轮不变', async t => {

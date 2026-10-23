@@ -203,7 +203,6 @@ window.__ModuleLoader__.load({
       wordsPerDay: '每批学习 / 每次补充词数',
       wordsPerDayHint: '3 到 30 个，默认 10 个。课程建议出词量也用这个数；不是每日上限，可同日继续学习。',
       continueLearning: '继续学习',
-      continueLearningHint: '下一批最多 {n} 个，先复习旧词；词库新词可直接学习。',
       generatingWords: '正在出词…',
       generatingWordsHint: '正在出词，大约一分钟；出好后会自动接着学。',
       continueReview: '继续复习剩下的 {n} 个',
@@ -850,7 +849,8 @@ window.__ModuleLoader__.load({
 .ec-pop .ec-choice { font-size: 12.8px; padding: 8px 9px; gap: 8px; }
 .ec-pop .ec-fb { margin-top: 12px; }
 .ec-pop .ec-acts { margin-top: 10px; }
-.ec-pop-acts { display: flex; gap: 8px; margin-top: 14px; }
+.ec-pop-acts { display: flex; align-items: center; justify-content: flex-start; gap: 8px; margin-top: 14px; }
+.ec-pop-acts > .ec-btn { flex: none; white-space: nowrap; margin-left: 0; }
 `
     function Style() {
       return h('style', { dangerouslySetInnerHTML: { __html: CSS } })
@@ -1608,7 +1608,7 @@ window.__ModuleLoader__.load({
     function batchNotice(batch) {
       if (!batch) return ''
       const reasons = { all_joined: '当前词库全部已加入；已加入不等于已掌握。', unavailable: '当前词库剩余词条暂不可练。', all_mastered: '当前词库已全部掌握；到期抽检仍会优先安排。' }
-      const reason = reasons[batch.exhaustion] ?? (batch.mode === 'profile_required' ? '尚未指定当前词库，可选择词库或按画像补词。' : '')
+      const reason = reasons[batch.exhaustion] ?? (batch.mode === 'profile_required' ? '尚未指定当前词库，继续学习会按画像准备新词。' : '')
       const count = batch.shortfall > 0 ? `本批取得 ${batch.items?.length ?? 0} / ${batch.batchSize} 项。` : ''
       return `${count}${reason}`
     }
@@ -1655,7 +1655,6 @@ window.__ModuleLoader__.load({
       const word = ids?.[index] ?? null
       const finished = ids !== null && ids.length > 0 && index >= ids.length
       const isLast = ids !== null && index + 1 >= ids.length
-      const dueLeft = words?.data?.dueCount ?? 0
       const generating = job?.status === 'pending'
 
       const answer = async (choice) => {
@@ -1688,12 +1687,12 @@ window.__ModuleLoader__.load({
         setIndex((value) => value + 1)
       }
 
-      const generateMore = async (profile = false) => {
+      const generateMore = async () => {
         if (requestLock.current || generating) return
         requestLock.current = true
         setBusy(true)
         setError(null)
-        const result = await call(profile === true ? 'generate.vocab' : 'study.supplement', profile === true ? { profile: true } : {})
+        const result = await call('generate.vocab', {})
         requestLock.current = false
         setBusy(false)
         if (!result.ok) { setError(result.message); return }
@@ -1768,9 +1767,6 @@ window.__ModuleLoader__.load({
             generateButton(t('continueLearning')),
             onGoWords ? h(Btn, { ghost: true, small: true, onClick: onGoWords }, t('openLibrary')) : null
           ),
-          dueLeft > 0 || generating
-            ? null
-            : h('div', { className: 'ec-sub', style: { marginTop: 8 } }, t('continueLearningHint', { n: limit })),
           error ? h(Notice, { tone: 'error' }, error) : null
         )
       } else if (!word) {
@@ -1793,11 +1789,7 @@ window.__ModuleLoader__.load({
             'div',
             { style: { textAlign: 'center', marginTop: 14 } },
             generateButton(t('continueLearning')),
-            h(
-              'div',
-              { className: 'ec-sub', style: { marginTop: 6 } },
-              generating ? t('generatingWordsHint') : t('continueLearningHint', { n: limit })
-            )
+            generating ? h('div', { className: 'ec-sub', style: { marginTop: 6 } }, t('generatingWordsHint')) : null
           ),
           onGoWords
             ? h(
@@ -1866,8 +1858,7 @@ window.__ModuleLoader__.load({
         batchNotice(batch) ? h(Notice, null, batchNotice(batch)) : null,
         body,
         (!word || finished) && ids !== null ? h('div', { className: 'ec-row', style: { marginTop: 10 } },
-          h(Btn, { ghost: true, small: true, onClick: onChooseList ?? onGoWords }, '选择词库'),
-          h(Btn, { small: true, disabled: busy || generating, onClick: () => generateMore(true) }, '按画像补词')) : null
+          h(Btn, { ghost: true, small: true, onClick: onChooseList ?? onGoWords }, '选择词库')) : null
       )
     }
 
@@ -3408,13 +3399,13 @@ window.__ModuleLoader__.load({
         }
       }
 
-      const continueRemaining = async (profile = false) => {
+      const continueRemaining = async () => {
         if (batchLock.current || busy || generating || initialLoading || session === null) return
         const generation = ++batchGeneration.current
         batchLock.current = true
         setBusy(true)
         setError(null)
-        const result = await call(profile === true ? 'generate.vocab' : 'study.supplement', profile === true ? { profile: true } : {})
+        const result = await call('generate.vocab', {})
         if (generation !== batchGeneration.current) return
         batchLock.current = false
         setBusy(false)
@@ -3423,8 +3414,6 @@ window.__ModuleLoader__.load({
         else { setQueue(result.data); startSession(result.data) }
         notifyReview()
       }
-
-      const generateMore = continueRemaining
 
       useEffect(() => {
         if (!job || job.status !== 'pending') return undefined
@@ -3545,7 +3534,6 @@ window.__ModuleLoader__.load({
                         onPick: (choice) => void answer(choice),
                         disabled: busy || conflict
                       }),
-                      conflict ? h(Btn, { onClick: next }, t('nextWord')) : null,
                       session.feedback
                         ? h(
                             'div',
@@ -3561,18 +3549,7 @@ window.__ModuleLoader__.load({
                             h('div', { className: 'ec-meaning' }, card.meaning),
                             session.feedback.explanation
                               ? h('div', { className: 'ec-note' }, session.feedback.explanation)
-                              : null,
-                            h(
-                              'div',
-                              { className: 'ec-acts' },
-                              h(
-                                Btn,
-                                { primary: true, small: true, onClick: next },
-                                session.at + 1 >= session.cards.length
-                                  ? t('finishReview')
-                                  : t('nextWord')
-                              )
-                            )
+                              : null
                           )
                         : null
                     )
@@ -3580,34 +3557,21 @@ window.__ModuleLoader__.load({
                       'div',
                       null,
                       h('div', { className: 'ec-pop-hint' }, quietText),
-                      dueCount > 0
-                        ? h(
-                            Btn,
-                            { primary: true, small: true, style: { marginTop: 12 }, onClick: continueRemaining },
-                            t('continueReview', { n: dueCount })
-                          )
-                        : h(
-                            Btn,
-                            {
-                              primary: true,
-                              small: true,
-                              style: { marginTop: 12 },
-                              disabled: generating,
-                              onClick: generateMore
-                            },
-                            generating ? t('generatingWords') : t('continueLearning')
-                          ),
                       generating ? h('div', { className: 'ec-pop-hint' }, t('generatingWordsHint')) : null,
                       nextText ? h('div', { className: 'ec-pop-hint' }, nextText) : null
                     ),
                 batchNotice(queue) ? h(Notice, null, batchNotice(queue)) : null,
                 !card && !initialLoading && session !== null ? h('div', { className: 'ec-row', style: { marginTop: 10 } },
-                  h(Btn, { small: true, onClick: () => openPanel('words') }, '选择词库'),
-                  h(Btn, { small: true, disabled: busy || generating, onClick: () => continueRemaining(true) }, '按画像补词')) : null,
+                  h(Btn, { small: true, onClick: () => openPanel('words') }, '选择词库')) : null,
                 error ? h(Notice, { tone: 'error' }, error) : null,
                 h(
                   'div',
                   { className: 'ec-pop-acts' },
+                  card && (session.feedback || conflict)
+                    ? h(Btn, { primary: true, small: true, onClick: next }, session.at + 1 >= session.cards.length && !conflict ? t('finishReview') : t('nextWord'))
+                    : !card && !initialLoading && session !== null
+                      ? h(Btn, { primary: true, small: true, disabled: busy || generating, onClick: continueRemaining }, generating ? t('generatingWords') : t('continueLearning'))
+                      : null,
                   h(Btn, { ghost: true, small: true, onClick: openPanel }, t('studyInPanel')),
                   h(Btn, { ghost: true, small: true, onClick: () => setOpen(false) }, t('collapse'))
                 )

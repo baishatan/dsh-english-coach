@@ -18,7 +18,10 @@ function fixture() {
       if (command === 'wordlists.list') return { ok: true, data: { lists: [{ id: 'cet4', title: '四级' }, { id: 'ielts', title: '雅思' }], activeWordListId: api.activeWordListId } }
       if (command === 'wordlists.select') { api.activeWordListId = payload.id; api.batch = [card('next', 'ielts-next', true)]; return { ok: true, data: { activeWordListId: payload.id } } }
       if (command === 'vocabulary.query' || command === 'wordlists.query') return { ok: true, data: { items: [], total: 0, page: 1, pageSize: 50, pageCount: 1 } }
-      if (command === 'generate.vocab') return { ok: true, data: { mode: 'generated', status: 'pending' } }
+      if (command === 'generate.vocab') {
+        if (payload?.profile === true || (!api.activeWordListId && !api.batch.length)) return { ok: true, data: { mode: 'generated', status: 'pending' } }
+        return { ok: true, data: { mode: 'static', items: structuredClone(api.batch), dueCount: api.dueCount, batchSize: 3, activeWordListId: api.activeWordListId, exhaustion: api.exhaustion, shortfall: 3 - api.batch.length, addedCount: 0 } }
+      }
       throw new Error(`Unexpected host call ${command}`)
     }
   }
@@ -33,6 +36,73 @@ async function open(t, api, entry = 'today') {
 }
 const term = (ui) => ui.container.querySelector('.ec-deck-term,.ec-pop-term')?.textContent
 async function answer(ui) { await ui.click(ui.container.querySelector('.ec-choice')); await ui.click(ui.buttons('下一个')[0] ?? ui.button('完成复习')) }
+
+for (const entry of ['today', 'words', 'overlay']) {
+  test(`${entry} 只有继续学习入口，无词库时由统一请求进入画像生成`, async t => {
+    const api = fixture()
+    api.batch = []; api.personal = []; api.dueCount = 0; api.activeWordListId = null
+    const ui = await open(t, api, entry)
+    assert.equal(ui.buttons('按画像补词').length, 0)
+    assert.equal(api.calls.filter(({ command }) => command === 'generate.vocab').length, 0)
+    await ui.click('继续学习')
+    assert.match(ui.text(), /正在出词/)
+    assert.deepEqual(api.calls.filter(({ command }) => command === 'generate.vocab').map(({ payload }) => payload), [{}])
+  })
+}
+
+for (const entry of ['today', 'words', 'overlay']) {
+  test(`${entry} 无词库续学失败可重试，生成失败可恢复且重复点击不叠加请求`, async t => {
+    const api = fixture()
+    api.batch = []; api.personal = []; api.dueCount = 0; api.activeWordListId = null
+    let fail = true
+    const original = api.request
+    api.request = (command, payload) => {
+      if (command === 'generate.vocab' && fail) { api.calls.push({ command, payload }); return { ok: false, message: '画像新词请求暂时失败' } }
+      if (command === 'job.status') return { ok: true, data: { status: 'failed', failure: '画像新词生成失败' } }
+      return original(command, payload)
+    }
+    const ui = await open(t, api, entry)
+    await ui.click('继续学习')
+    assert.match(ui.text(), /画像新词请求暂时失败/)
+    fail = false
+    const retry = ui.button('继续学习')
+    await ui.flush(() => { retry.click(); retry.click() })
+    assert.equal(api.calls.filter(({ command }) => command === 'generate.vocab').length, 2)
+    assert.match(ui.text(), /正在出词/)
+    await ui.poll()
+    assert.match(ui.text(), /画像新词生成失败/)
+    assert.equal(ui.button('继续学习').disabled, false)
+    await ui.click('继续学习')
+    assert.match(ui.text(), /正在出词/)
+  })
+}
+
+test('悬浮窗推进动作与打开主页共用最左侧操作行', async t => {
+  const api = fixture()
+  const ui = await open(t, api, 'overlay')
+  const home = () => ui.button('打开主页')
+  await ui.click(ui.container.querySelector('.ec-choice'))
+  assert.ok(ui.button('下一个').parentElement === home().parentElement)
+  assert.equal(home().parentElement.querySelector('button').textContent.trim(), '下一个')
+  await ui.click('下一个')
+  await ui.click(ui.container.querySelector('.ec-choice'))
+  assert.ok(ui.button('完成复习').parentElement === home().parentElement)
+  await ui.click('完成复习')
+  assert.ok(ui.button('继续学习').parentElement === home().parentElement)
+  assert.equal(home().parentElement.querySelector('button').textContent.trim(), '继续学习')
+  assert.equal(ui.buttons('按画像补词').length, 0)
+})
+
+test('学习空态与完成态不再显示下一批数量说明', async t => {
+  const api = fixture()
+  api.batch = []; api.personal = []; api.dueCount = 0
+  const ui = await open(t, api)
+  assert.doesNotMatch(ui.text(), /下一批最多 .*先复习旧词；词库新词可直接学习/)
+  api.batch = [card('single', 'single-word')]
+  await ui.click('继续学习')
+  await answer(ui)
+  assert.doesNotMatch(ui.text(), /下一批最多 .*先复习旧词；词库新词可直接学习/)
+})
 
 for (const entry of ['today', 'words', 'overlay']) {
   test(`${entry} 从统一批次展示旧词优先，目录顺序不改变候选`, async (t) => {
@@ -61,8 +131,8 @@ for (const entry of ['today', 'overlay']) {
     await answer(ui)
     await ui.click('继续学习')
     assert.equal(term(ui), 'next-library-word')
-    assert.equal(api.calls.filter(({ command }) => command === 'study.supplement').length, 1)
-    assert.equal(api.calls.some(({ command }) => command === 'generate.vocab'), false)
+    assert.deepEqual(api.calls.filter(({ command }) => command === 'generate.vocab').map(({ payload }) => payload), [{}])
+    assert.equal(api.calls.some(({ command, payload }) => command === 'generate.vocab' && payload.profile === true), false)
   })
 }
 
@@ -217,16 +287,16 @@ test('静态补充失败可重试且不模型回退，连续点击只发送一�
   const original = api.request
   const pending = deferred()
   api.request = (command, payload) => {
-    if (command === 'study.supplement') { api.calls.push({ command, payload }); return pending.promise }
+    if (command === 'generate.vocab') { api.calls.push({ command, payload }); return pending.promise }
     return original(command, payload)
   }
   const ui = await open(t, api)
   const button = ui.button('继续学习')
   await ui.flush(async () => { button.click(); button.click() })
-  assert.equal(api.calls.filter(({ command }) => command === 'study.supplement').length, 1)
+  assert.equal(api.calls.filter(({ command }) => command === 'generate.vocab').length, 1)
   await ui.flush(async () => pending.resolve({ ok: false, message: '静态补充暂时失败' }))
   assert.match(ui.text(), /静态补充暂时失败/)
-  assert.equal(api.calls.some(({ command }) => command === 'generate.vocab'), false)
+  assert.equal(api.calls.some(({ command, payload }) => command === 'generate.vocab' && payload.profile === true), false)
   api.request = original
   api.batch = [card('retry', 'retried', true)]
   await ui.click('继续学习')
@@ -320,20 +390,20 @@ for (const [exhaustion, notice] of [['all_joined', /全部已加入.*不等于�
   })
 }
 
-test('显式画像任务完成后同样从只读批次取候选，不按目录顺序挑题', async (t) => {
+test('无词库继续学习的画像任务完成后从只读批次取候选，不按目录顺序挑题', async (t) => {
   const api = fixture()
-  api.batch = []; api.personal = []; api.dueCount = 0
+  api.batch = []; api.personal = []; api.dueCount = 0; api.activeWordListId = null
   const original = api.request
   api.request = (command, payload) => command === 'job.status' ? { ok: true, data: { status: 'done' } } : original(command, payload)
   const ui = await open(t, api)
-  await ui.click('按画像补词')
+  await ui.click('继续学习')
   api.batch = [card('generated', 'generated-candidate', true)]
   await ui.poll()
   assert.equal(term(ui), 'generated-candidate')
 })
 
 for (const entry of ['today', 'overlay']) {
-  test(`${entry} 没有合格静态候选说明原因，只有显式按画像补词才请求模型`, async (t) => {
+  test(`${entry} 所选词库没有合格静态候选时说明原因且不强制画像回退`, async (t) => {
     const api = fixture()
     api.batch = []
     api.personal = []
@@ -343,9 +413,11 @@ for (const entry of ['today', 'overlay']) {
     await ui.click('继续学习')
     assert.match(ui.text(), /暂不可练/)
     assert.ok(ui.button('选择词库'))
-    assert.equal(api.calls.some(({ command }) => command === 'generate.vocab'), false)
-    await ui.click('按画像补词')
-    assert.deepEqual(api.calls.filter(({ command }) => command === 'generate.vocab').map(({ payload }) => payload), [{ profile: true }])
+    assert.equal(ui.buttons('按画像补词').length, 0)
+    await ui.click('继续学习')
+    assert.deepEqual(api.calls.filter(({ command }) => command === 'generate.vocab').map(({ payload }) => payload), [{}, {}])
+    assert.doesNotMatch(ui.text(), /正在出词/)
+    assert.equal(api.activeWordListId, 'cet4')
   })
 
   test(`${entry} 已失效作答明确提示，不静默跳过且可主动下一题`, async (t) => {

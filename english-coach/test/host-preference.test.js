@@ -168,6 +168,17 @@ test('no preference keeps model supplementation; generation failures remain visi
   assert.equal((await execute(h.root, 'state.get')).data.todayLesson, null)
 })
 
+test('unselected-list HTTP continuation reports vocabulary scheduling failure without a false batch', async () => {
+  const h = await host()
+  h.failSchedule()
+  const result = await h.request('generate.vocab', {})
+  assert.equal(result.ok, false)
+  assert.equal(result.code, 'generate_failed')
+  assert.match(result.message, /isolated schedule unavailable/)
+  assert.equal((await execute(h.root, 'review.list')).data.total, 0)
+  assert.equal(h.records.length, 0)
+})
+
 test('a completed agent turn without a saved lesson is not reported as generation success', async () => {
   const h = await host()
   assert.equal((await h.request('generate')).ok, true)
