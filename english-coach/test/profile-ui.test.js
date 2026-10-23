@@ -49,7 +49,10 @@ test('长具体目标和兴趣摘要保持简短，完整文本可查看且编�
   const { ui } = await openProfile(t, api)
   const section = ui.button('编辑个人目标').closest('section')
   assert.ok(section.textContent.length < 300, 'summary should stay compact for long saved goals')
-  assert.ok([...section.querySelectorAll('[title]')].some((node) => node.title === api.state.profile.goalNote))
+  await ui.click('查看完整目标')
+  assert.ok(section.textContent.includes(api.state.profile.goalNote))
+  assert.ok(section.textContent.includes('跨学科研究主题11'))
+  await ui.click('收起完整目标')
   await ui.click('编辑个人目标')
   assert.equal(ui.field('为什么学英语').value, api.state.profile.goalNote)
 })
@@ -184,7 +187,7 @@ test('首次引导仍直接显示填写表单，不要求先点编辑', async (t
 
 test('编辑兴趣支持回车添加和移除，保存只修改画像不重置进度展示', async (t) => {
   const { ui } = await openProfile(t)
-  const progressBefore = [...ui.container.querySelectorAll('.ec-stats')].map((node) => node.textContent)
+  const progressBefore = ui.container.querySelector('[aria-label="学习概况"]').textContent
   await ui.click('编辑个人目标')
   await ui.input('感兴趣的主题', '天文学')
   await ui.key(ui.field('感兴趣的主题'), 'Enter')
@@ -194,7 +197,7 @@ test('编辑兴趣支持回车添加和移除，保存只修改画像不重置�
   await ui.click(remove)
   await ui.click('保存')
   assert.match(ui.text(), /兴趣：产品设计、天文学/)
-  assert.deepEqual([...ui.container.querySelectorAll('.ec-stats')].map((node) => node.textContent), progressBefore)
+  assert.equal(ui.container.querySelector('[aria-label="学习概况"]').textContent, progressBefore)
 })
 
 test('离开提示出现后保存成功才进入原目标视图', async (t) => {

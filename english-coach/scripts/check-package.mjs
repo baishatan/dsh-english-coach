@@ -41,8 +41,10 @@ for (const file of ['index.js', 'client.js', 'package.json', 'cordis.patch.yml',
 for (const file of await fs.readdir(join(root, 'core'))) {
   if (file.endsWith('.js')) assert.ok(listed.has(`core/${file}`), `Missing core/${file}`)
 }
-assert.ok(![...listed].some((file) => /^(test|scripts|node_modules|\.scratch)\//.test(file)),
-  'Development files must not enter the archive')
+assert.ok(![...listed].some((file) => /^(test|scripts|prototypes|node_modules|\.scratch)\//.test(file)),
+  'Development files and throwaway prototypes must not enter the archive')
+assert.ok(![...listed].some((file) => /(^|\/)(AGENTS\.md|.*\.prototype\.html)$/.test(file)),
+  'Local instructions and prototype HTML must not enter the archive')
 
 const archive = resolve(work, pack.filename)
 assert.equal(dirname(archive), work, 'Archive must stay in the audit directory')

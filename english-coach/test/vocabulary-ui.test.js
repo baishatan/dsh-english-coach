@@ -43,6 +43,8 @@ async function open(t, count = 121) {
   await settled(ui)
   await ui.click('单词')
   await settled(ui)
+  await ui.click('我的词汇')
+  await settled(ui)
   return { ui, run, api, requests }
 }
 
@@ -59,6 +61,7 @@ test('我的词汇分页完整搜索，切视图保留浏览条件且不改学�
   assert.match(ui.text(), /entry-120/)
   await ui.click('今日')
   await ui.click('单词')
+  await ui.click('我的词汇')
   await settled(ui)
   assert.equal(ui.field('搜索词汇或中文释义').value, '远处')
   assert.equal((await run('review.list')).data.total, 121)
@@ -83,8 +86,8 @@ test('主题目录独立分页与可练状态，选库不入队且详情返回�
   assert.match(ui.text(), /原始标签：/)
   await ui.click('关闭词汇详情')
   assert.equal(ui.window.document.activeElement === row, true)
-  await ui.input('当前词库偏好', 'cet6')
-  await ui.click('保存词库偏好')
+  await ui.input('浏览词库', 'cet6'); await settled(ui)
+  await ui.click('设为当前词库')
   await settled(ui)
   assert.match(ui.text(), /偏好已保存，下一批生效/)
   assert.equal((await run('settings.get')).data.study.activeWordListId, 'cet6')

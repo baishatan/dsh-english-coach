@@ -10,6 +10,7 @@ function fixture() {
     calls: [], batch: [old, fresh], personal: [fresh, old], dueCount: 1, activeWordListId: 'cet4', exhaustion: null,
     request: async (command, payload) => {
       api.calls.push({ command, payload })
+      if (command === 'settings.get') return { ok: true, data: { study: { wordsPerDay: 3 } } }
       if (command === 'state.get') return { ok: true, data: { onboarded: true, now: '2026-10-22', profile: { goal: 'work', interests: [] }, settings: { study: { wordsPerDay: 3 } }, review: { dueCount: api.dueCount }, streak: { current: 0 } } }
       if (command === 'review.list') return { ok: true, data: { items: structuredClone(api.personal), dueCount: api.dueCount } }
       if (command === 'study.batch' || command === 'study.supplement') return { ok: true, data: { items: structuredClone(api.batch), dueCount: api.dueCount, batchSize: 3, activeWordListId: api.activeWordListId, exhaustion: api.exhaustion, shortfall: 3 - api.batch.length, addedCount: 0 } }
@@ -65,10 +66,24 @@ for (const entry of ['today', 'overlay']) {
   })
 }
 
+test('单词页先到本轮学习，实际项数与全部待复习分开呈现', async (t) => {
+  const api = fixture()
+  api.dueCount = 31
+  const ui = await open(t, api, 'words')
+  const sections = [...ui.container.querySelectorAll('section')]
+  assert.match(sections[0].textContent, /单词学习/)
+  assert.match(sections[0].textContent, /本轮第 1 \/ 2 项/)
+  assert.doesNotMatch(sections[0].textContent, /3 \/ 31/)
+  assert.match(ui.text(), /全部待复习 31 项/)
+  await answer(ui)
+  await answer(ui)
+  assert.match(ui.text(), /本轮 2 项，已作答 2 项/)
+})
+
 test('单词页实际保存新词库偏好只影响下一批，不替换当前和剩余题目', async (t) => {
   const api = fixture()
   const ui = await open(t, api, 'words')
-  await ui.click('主题词库')
+  await ui.click('更换新词来源')
   await ui.input('当前词库偏好', 'ielts')
   await ui.click('保存词库偏好')
   assert.match(ui.text(), /下一批生效/)
@@ -82,9 +97,30 @@ test('单词页实际保存新词库偏好只影响下一批，不替换当前�
   assert.equal(term(ui), 'ielts-next')
 })
 
+test('今天页去词库明确展开我的词汇，不只停在折叠入口', async (t) => {
+  const api = fixture()
+  api.batch = []; api.personal = []; api.dueCount = 0
+  const ui = await open(t, api)
+  await ui.click('去词库')
+  assert.ok(ui.container.querySelector('[aria-label="我的词汇浏览"]'))
+  assert.equal(ui.button('我的词汇').getAttribute('aria-expanded'), 'true')
+})
+
+test('查个人词汇后再从今天选择词库，最近的明确浏览意图不会被旧入口吞掉', async (t) => {
+  const api = fixture()
+  api.batch = []; api.personal = []; api.dueCount = 0
+  const ui = await open(t, api)
+  await ui.click('去词库')
+  await ui.click('今日')
+  await ui.click('选择词库')
+  assert.ok(ui.container.querySelector('[aria-label="主题词库浏览"]'))
+  assert.equal(ui.button('主题词库').getAttribute('aria-expanded'), 'true')
+})
+
 test('词汇浏览输入与选择框内的数字键不提交学习答案', async (t) => {
   const api = fixture()
   const ui = await open(t, api, 'words')
+  await ui.click('我的词汇')
   await ui.key(ui.field('每页条数'), '1')
   await ui.key(ui.button('主题词库'), '1')
   assert.equal(api.calls.filter(({ command }) => command === 'review.answer').length, 0)
@@ -197,12 +233,40 @@ test('静态补充失败可重试且不模型回退，连续点击只发送一�
   assert.equal(term(ui), 'retried')
 })
 
+test('中文输入法和组合快捷键不作答，失败保留当前题且重复点击只提交一次', async (t) => {
+  const api = fixture()
+  const ui = await open(t, api, 'words')
+  await ui.flush(() => {
+    for (const options of [{ isComposing: true }, { ctrlKey: true }, { metaKey: true }, { altKey: true }]) {
+      ui.container.dispatchEvent(new ui.window.KeyboardEvent('keydown', { key: '1', bubbles: true, ...options }))
+    }
+  })
+  assert.equal(api.calls.filter(({ command }) => command === 'review.answer').length, 0)
+  const original = api.request
+  const pending = deferred()
+  api.request = (command, payload) => {
+    if (command === 'review.answer') { api.calls.push({ command, payload }); return pending.promise }
+    return original(command, payload)
+  }
+  const choice = ui.container.querySelector('.ec-choice')
+  await ui.flush(() => { choice.click(); choice.click() })
+  assert.equal(api.calls.filter(({ command }) => command === 'review.answer').length, 1)
+  await ui.flush(() => pending.resolve({ ok: false, message: '作答未保存，请重试' }))
+  assert.equal(term(ui), 'overdue')
+  assert.match(ui.text(), /作答未保存/)
+  assert.equal(ui.container.querySelector('.ec-choice').disabled, false)
+  api.request = original
+  await ui.click(ui.container.querySelector('.ec-choice'))
+  assert.match(ui.text(), /答对了/)
+})
+
 test('每批输入越界恢复保存值，合法保存保留未知学习偏好', async (t) => {
   const api = fixture()
   let saved = { wordsPerDay: 3, futurePreference: 'keep' }
   const original = api.request
   api.request = async (command, payload) => {
-    if (command === 'settings.save') { api.calls.push({ command, payload }); saved = payload.study; return { ok: true, data: { study: saved } } }
+    if (command === 'settings.get') return { ok: true, data: { study: structuredClone(saved) } }
+    if (command === 'settings.save') { api.calls.push({ command, payload }); saved = { ...saved, ...payload.study }; return { ok: true, data: { study: saved } } }
     const response = await original(command, payload)
     if (command === 'state.get') response.data.settings.study = saved
     return response
@@ -217,6 +281,19 @@ test('每批输入越界恢复保存值，合法保存保留未知学习偏好',
   await ui.input(input, 7)
   await ui.flush(async () => input.dispatchEvent(new ui.window.FocusEvent('focusout', { bubbles: true })))
   assert.deepEqual(saved, { wordsPerDay: 7, futurePreference: 'keep' })
+})
+
+test('设置偏好先返回而状态首读仍加载时不崩溃', async (t) => {
+  const api = fixture()
+  const waiting = deferred()
+  const original = api.request
+  api.request = (command, payload) => command === 'state.get' ? waiting.promise : original(command, payload)
+  const ui = await mountClient({ request: api.request, slot: 'settings.section' })
+  t.after(() => ui.close())
+  assert.match(ui.text(), /加载中/)
+  await ui.flush(() => waiting.resolve({ ok: true, data: { settings: { study: { wordsPerDay: 3 } }, dataRoot: 'isolated-test-root' } }))
+  assert.equal(ui.container.querySelector('input[type="number"]').value, '3')
+  assert.match(ui.text(), /isolated-test-root/)
 })
 
 test('每批设置明确不是每日上限，保留既有批量值', async (t) => {

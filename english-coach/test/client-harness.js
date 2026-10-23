@@ -41,15 +41,26 @@ export async function mountClient({ request, slot = 'main', setupWindow, layout 
       register: (options, Component) => { registrations.push({ options, Component }); return () => {} }
     }
   })
-  const entry = registrations.find(({ options }) => options.name === slot)
-  assert.ok(entry, `Missing registered UI slot: ${slot}`)
+  const slots = Array.isArray(slot) ? slot : [slot]
+  const entries = slots.map(name => {
+    const entry = registrations.find(({ options }) => options.name === name)
+    assert.ok(entry, `Missing registered UI slot: ${name}`)
+    return entry
+  })
   const container = dom.window.document.getElementById('test-root')
   const root = createRoot(container)
-  await act(async () => root.render(React.createElement(entry.Component)))
+  await act(async () => root.render(Array.isArray(slot)
+    ? React.createElement(React.Fragment, null, ...entries.map(({ options, Component }) => React.createElement('div', { key: options.name, 'data-test-slot': options.name }, React.createElement(Component))))
+    : React.createElement(entries[0].Component)))
   const ui = {
     window: dom.window, container,
     text: () => { const visible = container.cloneNode(true); visible.querySelectorAll('style,script').forEach((node) => node.remove()); return visible.textContent },
-    buttons: (text) => [...container.querySelectorAll('button')].filter((button) => button.textContent.trim() === text),
+    buttons: (text) => [...container.querySelectorAll('button')].filter((button) => {
+      if (button.closest('[hidden]')) return false
+      const content = button.cloneNode(true)
+      content.querySelectorAll('[aria-hidden="true"]').forEach(node => node.remove())
+      return (button.getAttribute('aria-label') ?? content.textContent).trim() === text
+    }),
     button(text) { const matches = this.buttons(text); assert.equal(matches.length, 1, `Expected one visible button: ${text}`); return matches[0] },
     field(label) {
       const field = [...container.querySelectorAll('input,select,textarea')].find((node) => node.getAttribute('aria-label') === label || [...node.labels ?? []].some((item) => item.textContent === label))
@@ -59,7 +70,8 @@ export async function mountClient({ request, slot = 'main', setupWindow, layout 
     async click(target) { const node = typeof target === 'string' ? this.button(target) : target; await act(async () => node.click()) },
     async input(label, value) {
       const node = typeof label === 'string' ? this.field(label) : label
-      const prototype = node.tagName === 'SELECT' ? dom.window.HTMLSelectElement.prototype : dom.window.HTMLInputElement.prototype
+      const prototype = node.tagName === 'SELECT' ? dom.window.HTMLSelectElement.prototype
+        : node.tagName === 'TEXTAREA' ? dom.window.HTMLTextAreaElement.prototype : dom.window.HTMLInputElement.prototype
       await act(async () => {
         Object.getOwnPropertyDescriptor(prototype, 'value').set.call(node, String(value))
         node.dispatchEvent(new dom.window.Event(node.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }))

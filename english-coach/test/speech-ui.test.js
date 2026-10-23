@@ -390,6 +390,7 @@ test('单词页学习卡、我的词汇及三套主题库列表详情发音不�
   const cardButton = ui.container.querySelector('.ec-deck button[aria-label="朗读 apple"]')
   await ui.click(cardButton)
   assert.equal(synth.spoken.at(-1).text, 'apple')
+  await ui.click('我的词汇')
   const listButton = ui.container.querySelector('.ec-lib-list button[aria-label="朗读 apple"]')
   await ui.click(listButton)
   assert.equal(ui.container.querySelector('[role="dialog"]'), null)

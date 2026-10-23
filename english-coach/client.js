@@ -228,6 +228,7 @@ window.__ModuleLoader__.load({
     // 免得面板上还挂着已经被答掉的词。
     const homeListeners = new Set()
     const reviewListeners = new Set()
+    const settingsListeners = new Set()
     const notifyReview = () => {
       for (const listener of reviewListeners) listener()
     }
@@ -252,7 +253,11 @@ window.__ModuleLoader__.load({
         }
       }
       try {
-        return await response.json()
+        const result = await response.json()
+        if (result.ok && ['settings.save', 'wordlists.select'].includes(command)) {
+          for (const listener of settingsListeners) listener()
+        }
+        return result
       } catch {
         return { ok: false, code: 'bad_response', message: '插件后台返回了无法解析的内容' }
       }
@@ -646,6 +651,42 @@ window.__ModuleLoader__.load({
 .ec-done-card h2 { font-size: 16px; }
 .ec-done-card .ec-acts { display: flex; gap: 8px; justify-content: center; margin-top: 16px; }
 
+.ec-browse-gates { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-bottom: 14px; }
+.ec-browse-gate { display: flex; flex-direction: column; gap: 3px; padding: 16px 18px; min-width: 0;
+  border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; font: inherit; color: inherit;
+  background: transparent; cursor: pointer; text-align: left; overflow-wrap: anywhere; }
+.ec-browse-gate span { color: var(--dsw-alias-label-secondary); font-size: 12px; }
+.ec-browse-gate[aria-expanded=true] { border-color: var(--dsw-alias-brand-primary); background: var(--dsw-alias-bg-layer-2); }
+.ec-library { min-width: 0; overflow-wrap: anywhere; }
+.ec-library .ec-card-head { flex-wrap: wrap; }
+.ec-library .ec-lib-row { flex-wrap: wrap; min-height: 44px; }
+.ec-library .ec-lib-row .ec-sub { min-width: 0; overflow-wrap: anywhere; }
+.ec-library .ec-lib-term { overflow-wrap: anywhere; }
+.ec-library .ec-modal { box-sizing: border-box; overflow-wrap: anywhere; }
+.ec-library .ec-card select { width: auto; max-width: 100%; }
+@media (max-width: 480px) { .ec-browse-gates { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .ec-library > .ec-card { padding: 16px; } .ec-library .ec-card-head .ec-sub { margin-left: 0; } }
+
+/* A: a readable study surface first; browsing and preferences stay secondary. */
+.ec-words-page { min-width: 0; container-type: inline-size; }
+.ec-study-focus { display: grid; grid-template-columns: minmax(0, 1fr) 228px; gap: 24px; align-items: start; margin-bottom: 22px; }
+.ec-study-focus > .ec-card { padding: 24px 28px; min-width: 0; }
+.ec-study-focus .ec-deck-term { font-size: clamp(30px, 4vw, 42px); overflow-wrap: anywhere; }
+.ec-study-focus .ec-choice { min-height: 44px; padding: 12px 14px; overflow-wrap: anywhere; }
+.ec-study-arrangement { padding: 14px 0; min-width: 0; overflow-wrap: anywhere; }
+.ec-study-arrangement h2 { font-size: 13px; margin: 0; font-weight: 600; }
+.ec-study-arrangement p { margin: 9px 0; }
+.ec-words-page button:focus-visible, .ec-words-page input:focus-visible, .ec-words-page select:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 3px; }
+.ec-study-focus .ec-acts { flex-wrap: wrap; }
+@container (max-width: 700px) { .ec-study-focus { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .ec-study-focus > .ec-card { padding: 20px; } }
+@media (max-width: 700px) { .ec-study-focus { grid-template-columns: minmax(0, 1fr); gap: 4px; } }
+@media (max-width: 480px) { .ec-wrap { padding: 18px 14px 70px; } .ec-top { gap: 10px; }
+  .ec-status { margin-left: 0; gap: 12px; flex-wrap: wrap; } .ec-seg button { padding: 7px 10px; }
+  .ec-study-focus > .ec-card { padding: 18px 16px; } }
+@media (prefers-reduced-motion: reduce) { .ec-words-page *, .ec-profile-page * { transition: none; } }
+
 /* --------------------------------------------------------------- flash card */
 .ec-flash { display: block; width: 100%; text-align: left; border: 0; border-top: 1px dashed var(--dsw-alias-border-l1);
   background: none; padding: 8px 0; font: inherit; color: inherit; }
@@ -708,6 +749,57 @@ window.__ModuleLoader__.load({
 .ec-goal { display: flex; align-items: flex-start; gap: 9px; padding: 6px 0; font-size: 12.8px; cursor: pointer; }
 .ec-goal input { margin: 2px 0 0; accent-color: var(--dsw-alias-brand-primary); }
 .ec-goal[data-done="true"] { color: var(--dsw-alias-label-secondary); }
+
+/* A profile: the saved goal is primary; estimate and intention remain distinct. */
+.ec-profile-page { max-width: 940px; }
+.ec-profile-goal { padding: 24px 28px; overflow-wrap: anywhere; }
+.ec-profile-page-editing { max-width: 740px; margin: 0 auto; }
+.ec-profile-page-editing .ec-form { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; margin-top: 24px; }
+.ec-profile-page-editing .ec-wide { grid-column: 1 / -1; }
+.ec-profile-page .ec-input, .ec-profile-page .ec-select { min-width: 0; }
+.ec-profile-note-input { resize: vertical; min-height: 96px; }
+.ec-profile-page button:focus-visible, .ec-profile-page input:focus-visible, .ec-profile-page select:focus-visible, .ec-profile-page textarea:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 3px; }
+.ec-profile-suggestion { color: var(--dsw-alias-label-secondary); font-size: 12.5px; margin: 18px 0 0; line-height: 1.8; }
+.ec-profile-read-error { border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; padding: 12px 16px; margin-bottom: 14px; font-size: 12.5px; }
+.ec-profile-read-error p { color: var(--dsw-alias-state-error-primary); margin: 0 0 8px; }
+@media (max-width: 600px) { .ec-profile-goal { padding: 20px; } .ec-profile-page-editing .ec-form { grid-template-columns: minmax(0, 1fr); gap: 16px; } }
+
+.ec-profile-comparison { display: flex; gap: 28px; flex-wrap: wrap; margin-top: 18px; padding-top: 16px;
+  border-top: 1px solid var(--dsw-alias-border-l1); }
+.ec-profile-comparison > div { display: grid; gap: 3px; min-width: 100px; }
+.ec-profile-comparison span { color: var(--dsw-alias-label-secondary); font-size: 12px; }
+.ec-profile-comparison b { font-size: 21px; font-weight: 600; }
+.ec-profile-goal-note { font-size: 20px; line-height: 1.65; margin: 12px 0; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 65ch; }
+.ec-profile-link { display: inline-block; border: 0; background: transparent; color: var(--dsw-alias-brand-primary); font: inherit;
+  padding: 8px 0; min-height: 36px; cursor: pointer; text-align: left; }
+.ec-profile-link:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 3px; border-radius: 3px; }
+
+.ec-profile-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.ec-profile-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; margin: 18px 0 0; }
+.ec-profile-metrics dd { margin: 0; font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.ec-profile-metrics dt { color: var(--dsw-alias-label-secondary); font-size: 12px; margin-top: 3px; }
+.ec-profile-records { margin-top: 16px; min-width: 0; overflow-wrap: anywhere; }
+.ec-profile-detail-facts { display: flex; flex-wrap: wrap; gap: 20px 36px; margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--dsw-alias-border-l1); }
+.ec-profile-detail-facts dt { color: var(--dsw-alias-label-secondary); font-size: 12px; }
+.ec-profile-detail-facts dd { margin: 2px 0 0; font-size: 15px; }
+.ec-profile-detail-heading { font-size: 13px; margin: 20px 0 6px; }
+.ec-profile-weaknesses { padding-left: 20px; font-size: 12.5px; color: var(--dsw-alias-label-secondary); }
+.ec-profile-diagnostics { font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.ec-profile-diagnostics p { margin: 6px 0; }
+@media (max-width: 480px) { .ec-profile-metrics { gap: 12px; } .ec-profile-metrics dd { font-size: 21px; } .ec-profile-goal-note { font-size: 18px; } }
+
+.ec-curve-wrap { margin-top: 18px; min-width: 0; }
+.ec-curve-scroll { overflow-x: auto; max-width: 100%; }
+.ec-curve-chart { display: block; width: 100%; min-width: 420px; height: auto; }
+.ec-curve-label { fill: var(--dsw-alias-label-secondary); font-size: 12px; font-family: inherit; }
+.ec-curve-grid { stroke: var(--dsw-alias-border-l1); stroke-width: 1; }
+.ec-curve-line { stroke: var(--dsw-alias-brand-primary); stroke-width: 2.4; stroke-linejoin: round; stroke-linecap: round; }
+.ec-curve-point { fill: var(--dsw-alias-brand-primary); }
+.ec-curve-records { list-style: none; padding: 0; margin: 10px 0; max-height: 300px; overflow: auto; }
+.ec-curve-records li { display: flex; align-items: baseline; flex-wrap: wrap; gap: 5px 16px; padding: 11px 0; border-top: 1px solid var(--dsw-alias-border-l1); font-size: 12px; }
+.ec-curve-records time, .ec-curve-records span { color: var(--dsw-alias-label-secondary); }
+.ec-curve-records time { flex: 1 1 160px; }
+.ec-curve-records strong { font-weight: 600; }
 
 /* ----------------------------------------------------------------- progress */
 .ec-curve { width: 100%; height: 96px; display: block; }
@@ -1527,10 +1619,12 @@ window.__ModuleLoader__.load({
       const [batchRetry, setBatchRetry] = useState(0)
       const [conflict, setConflict] = useState(false)
       const requestLock = useRef(false)
+      const answerLock = useRef(false)
       const [index, setIndex] = useState(0)
       const [picked, setPicked] = useState(null)
       const [feedback, setFeedback] = useState(null)
       const [correct, setCorrect] = useState(0)
+      const [answered, setAnswered] = useState(0)
       const [busy, setBusy] = useState(false)
       const [error, setError] = useState(null)
       const [job, setJob] = useState(null)
@@ -1543,6 +1637,7 @@ window.__ModuleLoader__.load({
         setPicked(null)
         setFeedback(null)
         setCorrect(0)
+        setAnswered(0)
         setError(null)
       }
 
@@ -1564,11 +1659,13 @@ window.__ModuleLoader__.load({
       const generating = job?.status === 'pending'
 
       const answer = async (choice) => {
-        if (!word || picked !== null || busy) return
+        if (!word || picked !== null || busy || answerLock.current || conflict) return
+        answerLock.current = true
         setPicked(choice)
         setBusy(true)
         setError(null)
         const result = await call('review.answer', { itemId: word.id, choice })
+        answerLock.current = false
         setBusy(false)
         if (!result.ok) {
           setPicked(null)
@@ -1578,6 +1675,7 @@ window.__ModuleLoader__.load({
           return
         }
         if (result.data.correct) setCorrect((value) => value + 1)
+        setAnswered((value) => value + 1)
         setFeedback({ correct: result.data.correct, explanation: result.data.explanation ?? word.explanation })
         if (onAnswered) void onAnswered()
       }
@@ -1630,6 +1728,7 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return undefined
         const onKey = (event) => {
+          if (event.isComposing || event.keyCode === 229 || event.ctrlKey || event.metaKey || event.altKey || event.repeat || document.querySelector('[role="dialog"]')) return
           const tag = (event.target?.tagName || '').toLowerCase()
           if (['input', 'textarea', 'select', 'button', 'a'].includes(tag) || event.target?.isContentEditable || event.target?.closest?.('[role="dialog"]')) return
           if (!word || picked !== null || busy) {
@@ -1661,17 +1760,12 @@ window.__ModuleLoader__.load({
           { className: 'ec-done-card' },
           h('div', { className: 'ec-done-mark' }, '✓'),
           h('h2', null, t('reviewDone')),
+          h('div', { className: 'ec-muted', style: { marginTop: 6 } }, `本轮 ${ids.length} 项，已作答 ${answered} 项${answered < ids.length ? `，跳过 ${ids.length - answered} 项` : ''}。`),
           h('div', { className: 'ec-muted', style: { marginTop: 6 } }, t('reviewDoneHint', { n: correct })),
           h(
             'div',
             { className: 'ec-acts' },
-            dueLeft > 0
-              ? h(
-                  Btn,
-                  { primary: true, small: true, disabled: busy, onClick: generateMore },
-                  t('continueReview', { n: dueLeft })
-                )
-              : generateButton(t('continueLearning')),
+            generateButton(t('continueLearning')),
             onGoWords ? h(Btn, { ghost: true, small: true, onClick: onGoWords }, t('openLibrary')) : null
           ),
           dueLeft > 0 || generating
@@ -1724,7 +1818,7 @@ window.__ModuleLoader__.load({
             word.fresh ? h('span', { className: 'ec-chip ec-chip-brand' }, t('newWord')) : null,
             h('span', { className: 'ec-chip' }, word.kind === 'word' ? t('wordKind') : t('expressionKind')),
             h(BoxDots, { box: word.box }),
-            h('span', { className: 'ec-sub' }, `${index + 1} / ${ids.length}`)
+            h('span', { className: 'ec-sub' }, `本轮第 ${index + 1} / ${ids.length} 项`)
           ),
           h('div', { className: 'ec-term-line' },
             h('div', { className: 'ec-deck-term' }, word.term), h(PronounceButton, { text: word.term })),
@@ -1766,7 +1860,7 @@ window.__ModuleLoader__.load({
           h(
             'span',
             { className: 'ec-sub' },
-            dueLeft ? `${Math.min(dueLeft, limit)} / ${dueLeft}` : t('nothingDueShort')
+            ids === null ? '' : finished ? '本轮完成' : ids.length ? `本轮 ${ids.length} 项` : '本轮尚未开始'
           )
         ),
         batchNotice(batch) ? h(Notice, null, batchNotice(batch)) : null,
@@ -1780,33 +1874,179 @@ window.__ModuleLoader__.load({
     const libraryBrowse = new Map()
     let libraryTab = 'personal'
     let libraryList = 'cet4'
-    function Library({ words, now, openThemed = 0 }) {
+    function PreferenceDialog({ title, busy, onClose, onSave, children, confirmLabel }) {
+      const dialog = useRef(null)
+      useEffect(() => { dialog.current?.querySelector('select,input,button')?.focus() }, [])
+      return h('div', { className: 'ec-modal-back', onClick: () => { if (!busy) onClose() } },
+        h('form', { className: 'ec-modal', role: 'dialog', 'aria-modal': true, 'aria-label': title, ref: dialog,
+          onClick: event => event.stopPropagation(), onSubmit: event => { event.preventDefault(); if (!busy) void onSave() },
+          onKeyDown: event => {
+            if (event.key === 'Escape') { event.stopPropagation(); if (!busy) onClose() }
+            if (event.key === 'Tab') {
+              const controls = [...event.currentTarget.querySelectorAll('button,input,select')].filter(node => !node.disabled)
+              const first = controls[0], last = controls.at(-1)
+              if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
+              else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
+            }
+          } },
+          h('h2', null, title), h('p', { className: 'ec-muted' }, '下一批生效，本轮题目和旧课程不变。'),
+          children,
+          h('div', { className: 'ec-row', style: { marginTop: 18 } },
+            h(Btn, { primary: true, type: 'submit', disabled: busy }, busy ? '保存中…' : confirmLabel),
+            h(Btn, { ghost: true, onClick: onClose, disabled: busy }, '取消'))))
+    }
+
+    function WordsTab({ data, words, reload, openThemed, openPersonal, onChooseList }) {
+      const [catalog, setCatalog] = useState(null)
+      const [catalogError, setCatalogError] = useState(null)
+      const [catalogRetry, setCatalogRetry] = useState(0)
+      const [sourceOpen, setSourceOpen] = useState(false)
+      const sourceWasOpen = useRef(false)
+      const [sourceDraft, setSourceDraft] = useState('')
+      const [saving, setSaving] = useState(false)
+      const saveLock = useRef(false)
+      const [notice, setNotice] = useState(null)
+      const [saveError, setSaveError] = useState(null)
+      const sourceTrigger = useRef(null)
+      const [batchSize, setBatchSize] = useState(data.settings?.study?.wordsPerDay ?? 10)
+      const preferenceRead = useRef(0)
+      const [batchOpen, setBatchOpen] = useState(false)
+      const batchWasOpen = useRef(false)
+      const [batchDraft, setBatchDraft] = useState('')
+      const [batchSaving, setBatchSaving] = useState(false)
+      const batchLock = useRef(false)
+      const [batchError, setBatchError] = useState(null)
+      const batchTrigger = useRef(null)
+      const savedBatchSize = batchSize
+      useEffect(() => {
+        if (sourceWasOpen.current && !sourceOpen) sourceTrigger.current?.focus()
+        sourceWasOpen.current = sourceOpen
+      }, [sourceOpen])
+      useEffect(() => {
+        if (batchWasOpen.current && !batchOpen) batchTrigger.current?.focus()
+        batchWasOpen.current = batchOpen
+      }, [batchOpen])
+      const closeBatch = () => { if (!batchLock.current) setBatchOpen(false) }
+      const saveBatch = async () => {
+        if (batchLock.current) return
+        const size = Number(batchDraft)
+        if (!String(batchDraft).trim() || !Number.isInteger(size) || size < 3 || size > 30) {
+          setBatchError('每批学习词数必须是 3 到 30 的整数。')
+          return
+        }
+        batchLock.current = true
+        preferenceRead.current++
+        setBatchSaving(true); setBatchError(null)
+        // Send only this field; the command preserves source, audio and unknown preferences.
+        const response = await call('settings.save', { study: { wordsPerDay: size } })
+        batchLock.current = false
+        setBatchSaving(false)
+        if (!response.ok) { setBatchError(response.message); return }
+        setBatchSize(response.data.study.wordsPerDay)
+        setNotice('每批数量已保存，下一批生效；本轮题目不变。')
+        closeBatch()
+        if (reload) void reload()
+      }
+      useEffect(() => {
+        let alive = true
+        const refreshPreferences = async () => {
+          const version = ++preferenceRead.current
+          const [settings, lists] = await Promise.all([call('settings.get'), call('wordlists.list')])
+          if (!alive || version !== preferenceRead.current) return
+          if (settings.ok) setBatchSize(settings.data.study?.wordsPerDay ?? 10)
+          if (lists.ok) { setCatalog(lists.data); setCatalogError(null) }
+          else setCatalogError(lists.message)
+        }
+        settingsListeners.add(refreshPreferences)
+        void refreshPreferences()
+        return () => { alive = false; preferenceRead.current++; settingsListeners.delete(refreshPreferences) }
+      }, [catalogRetry, data.settings])
+      const closeSource = () => { if (!saveLock.current) setSourceOpen(false) }
+      const selectSource = async id => {
+        if (saveLock.current) return false
+        saveLock.current = true
+        preferenceRead.current++
+        setSaving(true); setSaveError(null); setNotice(null)
+        const response = await call('wordlists.select', { id })
+        saveLock.current = false
+        setSaving(false)
+        if (!response.ok) { setSaveError(response.message); return false }
+        setCatalog(previous => ({ ...previous, activeWordListId: response.data.activeWordListId }))
+        setNotice('偏好已保存，下一批生效；本轮题目和旧课程不变。')
+        if (sourceOpen) closeSource()
+        return true
+      }
+      const activeTitle = catalog?.lists?.find(list => list.id === catalog.activeWordListId)?.title ?? '不指定'
+      return h('div', { className: 'ec-words-page' },
+        h('div', { className: 'ec-study-focus' },
+          h(WordDeck, { words, now: data.now, limit: savedBatchSize,
+            reloadWords: words.reload, onChooseList,
+            onAnswered: async () => { await reload(); await words.reload() } }),
+          h('aside', { className: 'ec-study-arrangement', 'aria-label': '学习安排' },
+            h('h2', null, '学习安排'),
+            h('p', null, `全部待复习 ${words.data?.dueCount ?? data.review?.dueCount ?? 0} 项`),
+            h('p', { className: 'ec-sub' }, `每批学习 ${savedBatchSize} 项；不是每日上限。`),
+            h('button', { type: 'button', className: 'ec-btn ec-btn-ghost ec-btn-sm', ref: batchTrigger, disabled: batchSaving,
+              onClick: () => { setBatchDraft(String(savedBatchSize)); setBatchError(null); setBatchOpen(true) } }, '调整每批数量'),
+            h('p', null, `新词优先来自：${catalog ? activeTitle : '加载中…'}`),
+            h('button', { type: 'button', className: 'ec-btn ec-btn-ghost ec-btn-sm', disabled: !catalog || saving, ref: sourceTrigger,
+              onClick: () => { setSourceDraft(catalog.activeWordListId ?? ''); setSaveError(null); setSourceOpen(true) } }, '更换新词来源'),
+            catalogError ? h(Notice, { tone: 'error' }, catalogError, h(Btn, { onClick: () => setCatalogRetry(n => n + 1) }, '重试词库来源')) : null,
+            notice ? h('p', { className: 'ec-sub', role: 'status' }, notice) : null,
+            saveError && !sourceOpen ? h(Notice, { tone: 'error' }, saveError) : null)),
+        h(Library, { words, now: data.now, openThemed, openPersonal, catalog, onSelect: selectSource, saving }),
+        sourceOpen ? h(PreferenceDialog, { title: '更换新词来源', busy: saving, onClose: closeSource,
+          onSave: () => selectSource(sourceDraft || null), confirmLabel: '保存词库偏好' },
+          h('label', { className: 'ec-label' }, '当前词库偏好',
+            h('select', { className: 'ec-input', 'aria-label': '当前词库偏好', value: sourceDraft, disabled: saving, onChange: event => setSourceDraft(event.target.value) },
+              h('option', { value: '' }, '不指定'), (catalog?.lists ?? []).map(list => h('option', { key: list.id, value: list.id }, list.title)))),
+          h('p', { className: 'ec-sub' }, '选择不会加入整库；不指定时沿用画像和课程方向，不会自动生成新词。'),
+          saveError ? h('div', { role: 'alert' }, h(Notice, { tone: 'error' }, saveError)) : null) : null,
+        batchOpen ? h(PreferenceDialog, { title: '调整每批数量', busy: batchSaving, onClose: closeBatch,
+          onSave: saveBatch, confirmLabel: '保存每批数量' },
+          h('label', { className: 'ec-label' }, '每批学习词数',
+            h('input', { className: 'ec-input', type: 'number', min: 3, max: 30, step: 1, 'aria-label': '每批学习词数',
+              value: batchDraft, disabled: batchSaving, onChange: event => setBatchDraft(event.target.value) })),
+          h('p', { className: 'ec-sub' }, '3 到 30 项，默认 10 项；不是每日上限，也不影响词表每页数量。'),
+          batchError ? h('div', { role: 'alert' }, h(Notice, { tone: 'error' }, batchError)) : null) : null)
+    }
+
+    function Library({ words, now, openThemed = 0, openPersonal = 0, catalog, onSelect, saving }) {
+      const [expanded, setExpanded] = useState(false)
+      const personalGate = useRef(null)
+      const themedGate = useRef(null)
       const [tab, setTab] = useState(libraryTab)
       const [listId, setListId] = useState(libraryList)
       const key = tab === 'personal' ? 'personal' : listId
       const defaults = { search: '', filter: 'all', page: 1, pageSize: 50 }
       const [query, setQuery] = useState(() => libraryBrowse.get(key) ?? defaults)
       const [result, setResult] = useState(null)
-      const [catalog, setCatalog] = useState(null)
       const [error, setError] = useState(null)
       const [loading, setLoading] = useState(true)
       const [retry, setRetry] = useState(0)
       const [open, setOpen] = useState(null)
-      const [selection, setSelection] = useState('')
-      const [saving, setSaving] = useState(false)
-      const [notice, setNotice] = useState(null)
       const trigger = useRef(null)
       const closeButton = useRef(null)
+      const browseSelect = useRef(null)
+      const sourceAction = useRef(null)
+      const selectionPending = useRef(false)
+      const restoreBrowseFocus = useRef(false)
       useEffect(() => {
-        let alive = true
-        call('wordlists.list').then(response => {
-          if (!alive) return
-          if (response.ok) { setCatalog(response.data); setSelection(response.data.activeWordListId ?? '') }
-          else setError(response.message)
-        })
-        return () => { alive = false }
-      }, [retry])
+        if (restoreBrowseFocus.current && catalog?.activeWordListId === listId) {
+          browseSelect.current?.focus()
+          restoreBrowseFocus.current = false
+        }
+      }, [catalog?.activeWordListId, listId])
+      const selectBrowsed = async () => {
+        if (selectionPending.current) return
+        selectionPending.current = true
+        restoreBrowseFocus.current = document.activeElement === sourceAction.current
+        const saved = await onSelect(listId)
+        selectionPending.current = false
+        if (!saved) restoreBrowseFocus.current = false
+      }
       useEffect(() => {
+        if (!expanded) return
         let alive = true
         setLoading(true)
         setError(null)
@@ -1819,13 +2059,14 @@ window.__ModuleLoader__.load({
           libraryBrowse.set(key, { ...query, page: response.data.page })
         })
         return () => { alive = false }
-      }, [key, query, retry, words?.data])
+      }, [key, query, retry, words?.data, expanded])
       const change = patch => {
         const next = { ...query, ...patch }
         libraryBrowse.set(key, next)
         setQuery(next)
       }
       const navigate = (nextTab, nextList = listId) => {
+        setExpanded(true)
         libraryTab = nextTab; libraryList = nextList
         setTab(nextTab); setListId(nextList)
         setQuery(libraryBrowse.get(nextTab === 'personal' ? 'personal' : nextList) ?? defaults)
@@ -1834,31 +2075,37 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         if (openThemed) navigate('themed')
       }, [openThemed])
+      useEffect(() => {
+        if (openPersonal) navigate('personal')
+      }, [openPersonal])
       const close = () => { setOpen(null); trigger.current?.focus() }
       useEffect(() => { if (open) closeButton.current?.focus() }, [open])
-      const save = async () => {
-        setSaving(true); setNotice(null)
-        const response = await call('wordlists.select', { id: selection || null })
-        setSaving(false)
-        if (!response.ok) { setNotice(response.message); return }
-        setCatalog(previous => ({ ...previous, activeWordListId: response.data.activeWordListId }))
-        setNotice('偏好已保存，下一批生效；本轮题目和旧课程不变。')
+      const collapse = () => {
+        setExpanded(false)
+        setOpen(null)
+        ;(tab === 'personal' ? personalGate : themedGate).current?.focus()
       }
-      return h('section', { className: 'ec-card' },
-        h('div', { className: 'ec-card-head' }, h('h2', null, '词汇浏览'), h('span', { className: 'ec-sub' }, result ? `共 ${result.total} 条` : '')),
-        h('div', { className: 'ec-row', role: 'group', 'aria-label': '词汇来源' },
-          h(Btn, { small: true, primary: tab === 'personal', onClick: () => navigate('personal') }, '我的词汇'),
-          h(Btn, { small: true, primary: tab === 'themed', onClick: () => navigate('themed') }, '主题词库')),
+      const toggle = nextTab => {
+        if (expanded && tab === nextTab) collapse()
+        else navigate(nextTab)
+      }
+      return h('div', { className: 'ec-library' },
+        h('div', { className: 'ec-browse-gates', role: 'group', 'aria-label': '词汇来源' },
+          h('button', { type: 'button', className: 'ec-browse-gate', ref: personalGate, 'aria-controls': 'ec-vocabulary-browser', 'aria-expanded': expanded && tab === 'personal', onClick: () => toggle('personal') },
+            h('strong', null, '我的词汇'), h('span', { 'aria-hidden': true }, '查找已加入的单词和表达')),
+          h('button', { type: 'button', className: 'ec-browse-gate', ref: themedGate, 'aria-controls': 'ec-vocabulary-browser', 'aria-expanded': expanded && tab === 'themed', onClick: () => toggle('themed') },
+            h('strong', null, '主题词库'), h('span', { 'aria-hidden': true }, '浏览四级、六级和雅思词汇'))),
+        expanded ? h('section', { className: 'ec-card', id: 'ec-vocabulary-browser', 'aria-label': tab === 'personal' ? '我的词汇浏览' : '主题词库浏览' },
+        h('div', { className: 'ec-card-head' }, h('h2', null, tab === 'personal' ? '我的词汇' : '主题词库'), h('span', { className: 'ec-sub' }, result ? `共 ${result.total} 条` : ''),
+          h(Btn, { ghost: true, small: true, onClick: collapse }, '收起词汇浏览')),
         tab === 'themed' ? h('div', null,
-          h('label', null, '浏览词库 ', h('select', { className: 'ec-input', 'aria-label': '浏览词库', value: listId, onChange: e => navigate('themed', e.target.value) },
+          h('label', null, '浏览词库 ', h('select', { className: 'ec-input', ref: browseSelect, 'aria-label': '浏览词库', value: listId, onChange: e => navigate('themed', e.target.value) },
             (catalog?.lists ?? []).map(list => h('option', { key: list.id, value: list.id }, list.title)))),
           h('p', { className: 'ec-sub' }, result?.list ? `开源学习参考，非官方考试全集。目录 ${result.list.total} · 可练 ${result.list.playableCount} · 暂不可练 ${result.list.unavailableCount}` : '正在加载目录…'),
-          h('div', { className: 'ec-row', style: { flexWrap: 'wrap' } },
-            h('label', null, '当前词库偏好 ', h('select', { className: 'ec-input', 'aria-label': '当前词库偏好', value: selection, onChange: e => setSelection(e.target.value), disabled: saving },
-              h('option', { value: '' }, '不指定'), (catalog?.lists ?? []).map(list => h('option', { key: list.id, value: list.id }, list.title)))),
-            h(Btn, { small: true, onClick: save, disabled: saving || !catalog }, saving ? '保存中…' : '保存词库偏好')),
-          h('p', { className: 'ec-sub' }, `已保存当前词库：${catalog?.lists.find(list => list.id === catalog.activeWordListId)?.title ?? '不指定'}；浏览不会加入个人学习。`),
-          notice ? h(Notice, null, notice) : null
+          h('div', { className: 'ec-row' },
+            catalog?.activeWordListId === listId ? h('span', { className: 'ec-chip ec-chip-brand', role: 'status' }, '这是当前词库') :
+              h('button', { type: 'button', className: 'ec-btn ec-btn-ghost ec-btn-sm', ref: sourceAction, disabled: saving || !catalog, onClick: () => void selectBrowsed() }, saving ? '保存中…' : '设为当前词库')),
+          h('p', { className: 'ec-sub' }, `已保存当前词库：${catalog?.lists?.find(list => list.id === catalog.activeWordListId)?.title ?? '不指定'}；浏览不会加入个人学习。`)
         ) : null,
         h('div', { className: 'ec-row', style: { flexWrap: 'wrap', marginTop: 12 } },
           h('input', { className: 'ec-input', 'aria-label': '搜索词汇或中文释义', placeholder: '搜索英文或中文释义', value: query.search, onChange: e => change({ search: e.target.value, page: 1 }), style: { minWidth: 0, flex: '1 1 150px' } }),
@@ -1873,7 +2120,8 @@ window.__ModuleLoader__.load({
               h('span', { className: 'ec-sub' }, item.meaning),
               tab === 'themed' ? h('span', { className: 'ec-chip' }, `${item.joined ? '已加入' : '未加入'} · ${item.practice.status === 'ready' ? '可练' : '暂不可练'}`) : h('span', { className: 'ec-when' }, dueLabel(item, now))),
             typeof PronounceButton === 'function' ? h(PronounceButton, { text: item.term }) : null
-          )) : h('div', { className: 'ec-empty' }, '没有匹配的词汇。')) : null,
+          )) : h('div', { className: 'ec-empty' }, '没有匹配的词汇。',
+            query.search || query.filter !== 'all' ? h('div', null, h(Btn, { small: true, ghost: true, onClick: () => change({ search: '', filter: 'all', page: 1 }) }, '清除搜索和筛选')) : null)) : null,
         h('div', { className: 'ec-row', style: { flexWrap: 'wrap', marginTop: 12 } },
           h(Btn, { small: true, disabled: loading || !result || result.page <= 1, onClick: () => change({ page: result.page - 1 }) }, '上一页'),
           h('span', { role: 'status' }, `第 ${result?.page ?? 1} / ${result?.pages ?? 1} 页`),
@@ -1888,10 +2136,10 @@ window.__ModuleLoader__.load({
             typeof PronounceButton === 'function' ? h(PronounceButton, { text: open.term }) : null,
             h('div', { className: 'ec-modal-meaning' }, open.translation || open.meaning),
             open.practice ? h('div', null, h('p', null, `所属词库：${open.listIds.join(' / ')}；原始标签：${open.sourceTags.join(' / ')}`), h('p', null, open.practice.status === 'ready' ? '可练：已准备基础四选练习' : `暂不可练：${open.practice.reason}`), h('p', null, open.joined ? '已加入我的词汇' : '尚未加入个人学习')) : h('p', null, `${dueLabel(open, now)} · 作答 ${open.answerCount ?? 0} 次`),
-            open.explanation ? h('p', { className: 'ec-note' }, open.explanation) : null)) : null)
+            open.explanation ? h('p', { className: 'ec-note' }, open.explanation) : null)) : null) : null)
     }
 
-    function TodayTab({ data, words, reload, reloadWords, onTab, onChooseList }) {
+    function TodayTab({ data, words, reload, reloadWords, onTab, onChooseList, onOpenVocabulary }) {
       const [job, setJob] = useState(null)
       const [notice, setNotice] = useState(null)
       const [busy, setBusy] = useState(false)
@@ -1986,7 +2234,7 @@ window.__ModuleLoader__.load({
                 await reloadWords()
               },
               onChooseList,
-              onGoWords: () => onTab('words')
+              onGoWords: onOpenVocabulary
             }),
             h(SpeechOptions),
             h(WeeklyCard, { data, reload })
@@ -2125,56 +2373,52 @@ window.__ModuleLoader__.load({
     }
 
     function Curve({ points }) {
-      if (!points || points.length < 2) {
-        return h('div', { className: 'ec-empty' }, t('noCurve'))
+      const records = (points ?? []).map((point, index) => ({ ...point, order: index }))
+        .sort((a, b) => String(a.at).localeCompare(String(b.at)) || a.order - b.order)
+      if (!records.length) return h('p', { className: 'ec-muted' }, '还没有测评记录，完成一次测评后可在这里回顾。')
+      const width = 600, height = 200, left = 68, right = 24, top = 18, bottom = 36
+      const valueOf = point => Number.isFinite(point.estimate) ? Math.min(6, Math.max(1, point.estimate)) : Math.max(1, BANDS.indexOf(point.band) + 1)
+      const xs = records.map((_, index) => records.length === 1 ? (left + width - right) / 2 : left + index * (width - left - right) / (records.length - 1))
+      const yOf = value => height - bottom - ((value - 1) / 5) * (height - top - bottom)
+      const d = xs.map((x, index) => `${index ? 'L' : 'M'}${x.toFixed(1)},${yOf(valueOf(records[index])).toFixed(1)}`).join(' ')
+      const dateIndexes = [...new Set([0, Math.floor((records.length - 1) / 2), records.length - 1])]
+      const dateLabel = at => {
+        const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(at))
+        return match ? `${Number(match[2])}月${Number(match[3])}日` : '日期未提供'
       }
-      const width = 560
-      const height = 120
-      const pad = 12
-      const xs = points.map(
-        (_, index) => pad + (index * (width - pad * 2)) / Math.max(1, points.length - 1)
-      )
-      const ys = points.map(
-        (point) => height - pad - ((Math.min(6, Math.max(1, point.estimate)) - 1) / 5) * (height - pad * 2)
-      )
-      const d = xs
-        .map((x, index) => `${index === 0 ? 'M' : 'L'}${x.toFixed(1)},${ys[index].toFixed(1)}`)
-        .join(' ')
-      return h(
-        'svg',
-        { className: 'ec-curve', viewBox: `0 0 ${width} ${height}`, preserveAspectRatio: 'none' },
-        h('path', {
-          d,
-          fill: 'none',
-          stroke: 'var(--dsw-alias-brand-primary)',
-          strokeWidth: 2.2,
-          strokeLinejoin: 'round',
-          strokeLinecap: 'round'
-        }),
-        points.map((point, index) =>
-          h('circle', {
-            key: index,
-            cx: xs[index],
-            cy: ys[index],
-            r: 3.4,
-            fill: 'var(--dsw-alias-brand-primary)'
-          })
-        )
-      )
+      return h('div', { className: 'ec-curve-wrap' },
+        h('div', { className: 'ec-curve-scroll' }, h('svg', { className: 'ec-curve-chart', viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': `水平变化，共 ${records.length} 次测评；完整日期和升降见下方测评记录` },
+          h('title', null, '水平变化：档位随历次测评变化，不是考试分数'),
+          BANDS.map((band, index) => h('g', { key: band },
+            h('line', { x1: left, x2: width - right, y1: yOf(index + 1), y2: yOf(index + 1), className: 'ec-curve-grid' }),
+            h('text', { x: left - 12, y: yOf(index + 1) + 4, textAnchor: 'end', className: 'ec-curve-label' }, band))),
+          records.length > 1 ? h('path', { d, fill: 'none', className: 'ec-curve-line' }) : null,
+          records.map((point, index) => h('circle', { key: `${point.at}-${point.order}`, cx: xs[index], cy: yOf(valueOf(point)), r: 3.5, className: 'ec-curve-point' }, h('title', null, `${point.at} ${point.band}`))),
+          dateIndexes.map(index => h('text', { key: index, x: xs[index], y: height - 10, textAnchor: records.length === 1 ? 'middle' : index === 0 ? 'start' : index === records.length - 1 ? 'end' : 'middle', className: 'ec-curve-label' }, dateLabel(records[index].at))))),
+        records.length === 1 ? h('p', { className: 'ec-muted' }, '目前有 1 次测评，再测一次后可比较变化。') : null,
+        h('h3', { className: 'ec-profile-detail-heading' }, '测评记录'),
+        h('ol', { className: 'ec-curve-records', 'aria-label': '测评记录' }, records.map((point, index) => {
+          const difference = index ? valueOf(point) - valueOf(records[index - 1]) : null
+          const change = difference === null ? '首次记录' : difference > 0 ? '较上次上升' : difference < 0 ? '较上次下降' : '与上次持平'
+          return h('li', { key: `${point.at}-${point.order}` },
+            h('time', { dateTime: point.at }, String(point.at ?? '').replace('T', ' ').replace(/(?:\.\d+)?Z$/, ' UTC') || '日期未提供'),
+            h('strong', null, point.band || '档位未提供'), h('span', null, change))
+        })))
     }
 
     /**
-     * 个人页：上半是关于"我"的——为什么学、能花多久、想要什么、关心什么；
-     * 下半是"我练到哪了"，直接复用进度那两张栏。画像只有一份，编辑放在这里，
-     * 设置页只留学习节奏和运行相关的开关。
+     * A 方案个人页：先看已保存的目标和当前估计，再按需回顾学习记录。
+     * 编辑草稿与只读查看分离；编辑时隐藏但不卸载进度，保留展开状态和读取结果。
+     * 画像仍由既有命令写入，局部导航与卸载保护沿用同一份草稿状态。
      */
-    function ProfileTab({ data, reload, leaveGuard }) {
+    function ProfileTab({ data, reload, leaveGuard, onAssess }) {
       const [editing, setEditing] = useState(false)
       const [draft, setDraft] = useState(data.profile ?? null)
       const [dirty, setDirty] = useState(false)
       const [status, setStatus] = useState(null)
       const [busy, setBusy] = useState(false)
       const [interestText, setInterestText] = useState('')
+      const [fullGoal, setFullGoal] = useState(false)
       const savedProfile = useRef(data.profile)
       const editButton = useRef(null)
       const firstField = useRef(null)
@@ -2295,21 +2539,26 @@ window.__ModuleLoader__.load({
 
       return h(
         'div',
-        { className: 'ec-page' },
+        { className: `ec-page ec-profile-page${editing ? ' ec-profile-page-editing' : ''}` },
         h(
           'section',
-          { className: 'ec-card' },
+          { className: 'ec-card ec-profile-goal' },
           h(
             'div',
-            { className: 'ec-card-head' },
-            h('h2', null, t('profileTitle')),
-            h('span', { className: 'ec-sub' }, t('profileHint'))
+            { className: 'ec-profile-section-head' },
+            h('h2', null, editing ? '编辑个人目标' : t('profileTitle')),
+            h('span', { className: 'ec-sub' }, editing ? '保存后用于安排后续学习，已有进度不变。' : t('profileHint'))
           ),
           !editing ? h(React.Fragment, null,
             h('div', { style: { marginTop: 12, overflowWrap: 'anywhere' } },
               h('div', null, `${t(`goal${String(draft.goal ?? 'other')[0].toUpperCase()}${String(draft.goal ?? 'other').slice(1)}`)} · 每天 ${draft.minutesPerDay ?? 30} 分钟 · 目标 ${draft.targetBand || '暂未设定'}`),
-              h('div', { className: 'ec-muted', title: draft.goalNote || '' }, draft.goalNote ? (draft.goalNote.length > 80 ? `${draft.goalNote.slice(0, 80)}…` : draft.goalNote) : '还没有填写具体目标'),
-              h('div', { className: 'ec-muted', title: interests.join('、') }, `兴趣：${interests.slice(0, 3).map(text => text.length > 16 ? `${text.slice(0, 16)}…` : text).join('、') || '暂未填写'}${interests.length > 3 ? ` 等 ${interests.length} 项` : ''}`)),
+              h('div', { className: 'ec-profile-goal-note' }, draft.goalNote ? (fullGoal || draft.goalNote.length <= 80 ? draft.goalNote : `${draft.goalNote.slice(0, 80)}…`) : '还没有填写具体目标'),
+              h('div', { className: 'ec-muted' }, `兴趣：${(fullGoal ? interests : interests.slice(0, 3)).map(text => fullGoal || text.length <= 16 ? text : `${text.slice(0, 16)}…`).join('、') || '暂未填写'}${!fullGoal && interests.length > 3 ? ` 等 ${interests.length} 项` : ''}`),
+              (draft.goalNote?.length > 80 || interests.length > 3 || interests.some(text => text.length > 16)) ? h('button', { type: 'button', className: 'ec-profile-link', 'aria-expanded': fullGoal, onClick: () => setFullGoal(value => !value) }, fullGoal ? '收起完整目标' : '查看完整目标') : null),
+            h('div', { className: 'ec-profile-comparison', role: 'group', 'aria-label': '当前与目标' },
+              h('div', null, h('span', null, '当前水平估计'), h('b', null, data.level?.latest?.band || '尚未测评')),
+              h('div', null, h('span', null, '目标档位'), h('b', null, draft.targetBand || '暂未设定')),
+              onAssess ? h('button', { type: 'button', className: 'ec-profile-link', onClick: onAssess }, data.level?.latest ? '重新测评' : '开始测评') : null),
             h('button', { type: 'button', className: 'ec-btn', ref: editButton, onClick: () => { setDraft(savedProfile.current); setStatus(null); setEditing(true) }, style: { marginTop: 12 } }, '编辑个人目标')) : h(
             'fieldset',
             { className: 'ec-form', disabled: busy, style: { border: 0, padding: 0, minWidth: 0 } },
@@ -2369,9 +2618,9 @@ window.__ModuleLoader__.load({
               'div',
               { className: 'ec-field ec-wide' },
               h('label', { className: 'ec-label' }, t('goalNote')),
-              h('input', {
-                className: 'ec-input',
-                type: 'text',
+              h('textarea', {
+                className: 'ec-input ec-profile-note-input',
+                rows: 3,
                 'aria-label': t('goalNote'),
                 value: draft.goalNote ?? '',
                 placeholder: t('goalNotePlaceholder'),
@@ -2436,138 +2685,67 @@ window.__ModuleLoader__.load({
               h('button', { type: 'button', className: 'ec-btn', ref: continueEditingButton, onClick: () => { setPendingLeave(null); firstField.current?.focus() } }, '继续编辑'),
               h(Btn, { ghost: true, onClick: () => { const proceed = pendingLeave; setPendingLeave(null); cancel(); proceed() } }, '放弃修改并离开'))) : null
         ),
-        h('div', { style: { marginTop: 16 } }, h(ProgressTab, { data }))
+        h('div', { hidden: editing, 'data-profile-progress': true, style: { marginTop: 16 } }, h(ProgressTab, { data }))
       )
     }
 
     function ProgressTab({ data }) {
-      const { data: progress, error } = useRefresh(loadProgress, 20000)
+      const [readState, setReadState] = useState({ data: null, error: null })
+      const readRequest = useRef(0)
+      const mounted = useRef(false)
+      const reloadProgress = useCallback(async () => {
+        const request = ++readRequest.current
+        const result = await loadProgress()
+        if (!mounted.current || request !== readRequest.current) return
+        setReadState(previous => result.ok ? { data: result.data, error: null } : { ...previous, error: result.message })
+      }, [])
+      useEffect(() => {
+        mounted.current = true
+        void reloadProgress()
+        const timer = setInterval(() => void reloadProgress(), 20000)
+        return () => { mounted.current = false; readRequest.current++; clearInterval(timer) }
+      }, [reloadProgress])
+      const { data: progress, error } = readState
+      const [showRecords, setShowRecords] = useState(false)
       const [showDiagnostics, setShowDiagnostics] = useState(false)
+      const failure = error ? h('div', { className: 'ec-profile-read-error', role: 'alert' },
+        h('p', null, `${error}${progress ? '。当前进度已保留。' : ''}`), h(Btn, { small: true, onClick: reloadProgress }, '重试读取进度')) : null
 
-      if (error) return h('section', { className: 'ec-card' }, h(Notice, { tone: 'error' }, error))
-      if (!progress) {
-        return h('section', { className: 'ec-card' }, h('div', { className: 'ec-empty' }, t('loading')))
-      }
+      if (!progress) return h('section', { className: 'ec-card' }, failure || h('div', { className: 'ec-empty', role: 'status' }, '正在读取学习进度…'))
 
       const latest = data.level?.latest
       const weaknesses = latest?.weaknesses ?? []
-      const biggest = weaknesses.reduce((max, item) => Math.max(max, item.missed ?? 0), 1)
-
-      return h(
-        'div',
-        { className: 'ec-grid' },
-        h(
-          'div',
-          { className: 'ec-col' },
-          h(
-            'section',
-            { className: 'ec-card' },
-            h('h2', null, t('progressTitle')),
-            h(
-              'div',
-              { className: 'ec-stats', style: { marginTop: 12 } },
-              h('div', { className: 'ec-stat' }, h('b', null, String(progress.completions.length)), h('span', null, t('completedDays'))),
-              h('div', { className: 'ec-stat' }, h('b', null, String(progress.streak.current)), h('span', null, t('streakDays'))),
-              h('div', { className: 'ec-stat' }, h('b', null, String(progress.mastered)), h('span', null, t('masteredWords'))),
-              h('div', { className: 'ec-stat' }, h('b', null, String(progress.learning)), h('span', null, t('learningWords')))
-            ),
-            progress.streak.best > progress.streak.current
-              ? h('div', { className: 'ec-sub', style: { marginTop: 10 } }, t('bestStreak', { n: progress.streak.best }))
-              : null
-          ),
-          h(
-            'section',
-            { className: 'ec-card' },
-            h(
-              'div',
-              { className: 'ec-card-head' },
-              h('h2', null, t('curve')),
-              h('span', { className: 'ec-sub' }, latest ? latest.band : '')
-            ),
-            h(Curve, { points: progress.curve }),
-            progress.drift && progress.drift.note
-              ? h('div', { className: 'ec-muted', style: { marginTop: 8 } }, `${t('driftNote')}：${progress.drift.note}`)
-              : null
-          )
-        ),
-        h(
-          'div',
-          { className: 'ec-col' },
-          h(
-            'section',
-            { className: 'ec-card' },
-            h(
-              'div',
-              { className: 'ec-card-head' },
-              h('h2', null, t('band')),
-              latest ? h('span', { className: 'ec-chip ec-chip-brand' }, latest.band) : null
-            ),
-            latest
-              ? h('div', { className: 'ec-muted', style: { marginTop: 8 } }, latest.reference ?? '')
-              : h('div', { className: 'ec-empty' }, t('assessmentFirst'))
-          ),
-          h(
-            'section',
-            { className: 'ec-card' },
-            h('h2', null, t('resultWeak')),
-            weaknesses.length
-              ? h(
-                  'div',
-                  { style: { marginTop: 8 } },
-                  weaknesses.map((item) => {
-                    const label = SKILL_LABEL[item.skill] ?? item.skill
-                    return h(
-                      'div',
-                      { key: item.skill, className: 'ec-weak' },
-                      h('span', { style: { width: 34 } }, label),
-                      h(
-                        'span',
-                        { className: 'ec-bar' },
-                        h('i', { style: { width: `${Math.round(((item.missed ?? 0) / biggest) * 100)}%` } })
-                      ),
-                      h('span', { className: 'ec-sub' }, t('missedCount', { n: item.missed ?? 0 }))
-                    )
-                  })
-                )
-              : h('div', { className: 'ec-empty' }, t('resultWeakNone'))
-          ),
-          h(
-            'section',
-            { className: 'ec-card' },
-            h(
-              'button',
-              {
-                type: 'button',
-                className: 'ec-btn ec-btn-ghost',
-                onClick: () => setShowDiagnostics(!showDiagnostics)
-              },
-              `${showDiagnostics ? '▾' : '▸'} ${t('diagnostics')}`
-            ),
-            showDiagnostics
-              ? h(
-                  'div',
-                  { style: { marginTop: 10 } },
-                  (progress.curve ?? [])
-                    .slice()
-                    .reverse()
-                    .map((point, index) =>
-                      h(
-                        'div',
-                        { key: index, className: 'ec-muted', style: { padding: '4px 0' } },
-                        `${String(point.at).slice(0, 10)}　${point.band}　${t('accuracy')} ${Math.round(
-                          (point.accuracy ?? 0) * 100
-                        )}%`
-                      )
-                    ),
-                  progress.expiredDrafts
-                    ? h('div', { className: 'ec-muted', style: { paddingTop: 6 } },
-                        `${t('expiredDrafts')}：${progress.expiredDrafts}`)
-                    : null
-                )
-              : null
-          )
-        )
-      )
+      const knownWeaknesses = weaknesses.filter(item => SKILL_LABEL[item.skill] && Number(item.missed) > 0)
+      const mostMissed = Math.max(0, ...knownWeaknesses.map(item => Number(item.missed)))
+      const focusSkills = knownWeaknesses.filter(item => Number(item.missed) === mostMissed).map(item => SKILL_LABEL[item.skill])
+      const suggestion = !latest ? '尚未测评，完成测评后可了解值得多练的方向。' : focusSkills.length
+        ? `最近测评中，${focusSkills.join('、')}${focusSkills.length > 1 ? '并列' : ''}丢分较多，可以优先练习。`
+        : '最近测评没有明确可判断的薄弱方向，可以继续按目标练习。'
+      return h('div', { className: 'ec-profile-progress' },
+        failure,
+        h('section', { className: 'ec-card ec-profile-overview' },
+          h('div', { className: 'ec-profile-section-head' }, h('h2', null, t('progressTitle')),
+            h('button', { type: 'button', className: 'ec-profile-link', 'aria-expanded': showRecords, onClick: () => setShowRecords(value => !value) }, showRecords ? '收起记录' : '查看记录')),
+          h('dl', { className: 'ec-profile-metrics', 'aria-label': '学习概况' },
+            h('div', null, h('dd', null, String(progress.completions.length)), h('dt', null, t('completedDays'))),
+            h('div', null, h('dd', null, String(progress.streak.current)), h('dt', null, t('streakDays'))),
+            h('div', null, h('dd', null, String(progress.mastered)), h('dt', null, t('masteredWords')))),
+          h('p', { className: 'ec-profile-suggestion', 'aria-label': '下一步建议' }, suggestion)),
+        showRecords ? h('section', { className: 'ec-card ec-profile-records', 'aria-label': '学习记录详情' },
+          h('h2', null, t('curve')), h(Curve, { points: progress.curve }),
+          h('p', { className: 'ec-muted' }, '水平估计只作学习参考，不与考试分数等价。'),
+          h('dl', { className: 'ec-profile-detail-facts' },
+            h('div', null, h('dt', null, t('learningWords')), h('dd', null, `${progress.learning} 项`)),
+            h('div', null, h('dt', null, '最长连续'), h('dd', null, `${progress.streak.best} 天`))),
+          h('h3', { className: 'ec-profile-detail-heading' }, '档位参照'),
+          h('p', { className: 'ec-muted' }, latest ? latest.reference || '本次测评未提供档位参照。' : '尚未测评，完成测评后可查看档位参照。'),
+          h('h3', { className: 'ec-profile-detail-heading' }, t('resultWeak')),
+          weaknesses.length ? h('ul', { className: 'ec-profile-weaknesses' }, weaknesses.map((item, index) => h('li', { key: `${item.skill}-${index}` }, `${SKILL_LABEL[item.skill] ?? item.skill}：${t('missedCount', { n: item.missed ?? 0 })}`))) : h('p', { className: 'ec-muted' }, latest ? t('resultWeakNone') : '尚无测评记录，不能判断薄弱项。'),
+          progress.drift?.note ? h('p', { className: 'ec-muted' }, `${t('driftNote')}：${progress.drift.note}`) : null,
+          h('button', { type: 'button', className: 'ec-profile-link', 'aria-expanded': showDiagnostics, onClick: () => setShowDiagnostics(value => !value) }, t('diagnostics')),
+          showDiagnostics ? h('div', { className: 'ec-profile-diagnostics' },
+            (progress.curve ?? []).slice().reverse().map((point, index) => h('p', { key: index }, `${String(point.at).slice(0, 10)}　${point.band}　${t('accuracy')} ${Math.round((point.accuracy ?? 0) * 100)}%`)),
+            h('p', null, `${t('expiredDrafts')}：${progress.expiredDrafts ?? 0}`)) : null) : null)
     }
 
     // -------------------------------------------------------------- assessment
@@ -2747,6 +2925,7 @@ window.__ModuleLoader__.load({
       const [tab, setTab] = useState('today')
       const [mode, setMode] = useState('normal')
       const [openThemed, setOpenThemed] = useState(0)
+      const [openPersonal, setOpenPersonal] = useState(0)
       const leaveGuard = useRef(null)
       const navigate = useCallback((proceed) => {
         if (leaveGuard.current) return leaveGuard.current(proceed)
@@ -2754,13 +2933,14 @@ window.__ModuleLoader__.load({
         return true
       }, [])
       const changeTab = (next) => { if (next !== tab) navigate(() => setTab(next)) }
-      const chooseList = () => navigate(() => { setTab('words'); setMode('normal'); setOpenThemed(value => value + 1) })
+      const openVocabulary = () => navigate(() => { setTab('words'); setOpenThemed(0); setOpenPersonal(value => value + 1) })
+      const chooseList = () => navigate(() => { setTab('words'); setMode('normal'); setOpenPersonal(0); setOpenThemed(value => value + 1) })
       const startAssessment = () => navigate(() => setMode('assessment'))
       const { data, error, loading, reload } = useRefresh(loadState, 20000)
       const words = useRefresh(loadWords, 0)
 
       useEffect(() => {
-        const goHome = (nextTab = 'today') => navigate(() => { setTab(nextTab); setMode('normal'); if (nextTab === 'words') setOpenThemed(value => value + 1) })
+        const goHome = (nextTab = 'today') => navigate(() => { setTab(nextTab); setMode('normal'); if (nextTab === 'words') { setOpenPersonal(0); setOpenThemed(value => value + 1) } })
         homeListeners.add(goHome)
         return () => homeListeners.delete(goHome)
       }, [])
@@ -2822,29 +3002,13 @@ window.__ModuleLoader__.load({
                   h(Btn, { primary: true, style: { marginLeft: 'auto' }, onClick: startAssessment },
                     t('startAssessment'))))
             : null,
-          h(TodayTab, { data, words, reload, reloadWords: words.reload, onTab: changeTab, onChooseList: chooseList }))
+          h(TodayTab, { data, words, reload, reloadWords: words.reload, onTab: changeTab, onChooseList: chooseList, onOpenVocabulary: openVocabulary }))
       } else if (tab === 'words') {
-        // The review card keeps the same right-rail home it has on 今天, so the
-        // words tab reads as "the library, plus the session you are in".
-        content = h('div', { className: 'ec-grid' },
-          h('div', { className: 'ec-col' }, h(Library, { words, now: data.now, openThemed })),
-          h('div', { className: 'ec-col' },
-            h(WordDeck, {
-              words,
-              now: data.now,
-              compact: true,
-              limit: data.settings?.study?.wordsPerDay ?? 10,
-              reloadWords: words.reload,
-              onChooseList: chooseList,
-              onAnswered: async () => {
-                await reload()
-                await words.reload()
-              }
-            })))
+        content = h(WordsTab, { data, words, reload, openThemed, openPersonal, onChooseList: chooseList })
       } else if (tab === 'plan') {
         content = h(PlanTab, { data, reload })
       } else {
-        content = h(ProfileTab, { data, reload, leaveGuard })
+        content = h(ProfileTab, { data, reload, leaveGuard, onAssess: startAssessment })
       }
 
       return h(
@@ -2874,7 +3038,7 @@ window.__ModuleLoader__.load({
               { className: 'ec-status' },
               h('span', null, `${t('dueShort')} `, h('b', null, String(due))),
               h('span', null, `${t('streakShort')} `, h('b', null, String(streak))),
-              band ? h('span', null, `${t('bandShort')} `, h('b', null, band)) : null,
+              band && tab !== 'profile' ? h('span', null, `${t('bandShort')} `, h('b', null, band)) : null,
               h('button', { type: 'button', onClick: startAssessment }, t('assessmentShort'))
             )
           ),
@@ -2892,28 +3056,42 @@ window.__ModuleLoader__.load({
       const [status, setStatus] = useState(null)
       const [busy, setBusy] = useState(false)
       const [migrateTarget, setMigrateTarget] = useState('')
-
+      const settingsRead = useRef(0)
+      const savedSettings = useRef(null)
+      const paceDraft = useRef(false)
       useEffect(() => {
-        if (!data) return
+        let alive = true
+        const refreshSettings = async () => {
+          const version = ++settingsRead.current
+          const response = await call('settings.get')
+          if (!alive || version !== settingsRead.current || !response.ok) return
+          savedSettings.current = response.data
+          setSettings(previous => paceDraft.current && previous ? { ...response.data, study: { ...response.data.study, wordsPerDay: previous.study.wordsPerDay } } : response.data)
+        }
+        settingsListeners.add(refreshSettings)
+        void refreshSettings()
+        return () => { alive = false; settingsRead.current++; settingsListeners.delete(refreshSettings) }
+      }, [])
+      useEffect(() => {
+        if (!data || savedSettings.current) return
+        savedSettings.current = data.settings
         setSettings(data.settings)
       }, [data])
 
       if (error) return h('div', { className: 'ec-settings' }, h(Style), h(Notice, { tone: 'error' }, error))
-      if (!settings) {
+      if (!settings || !data) {
         return h('div', { className: 'ec-settings' }, h(Style), h('div', { className: 'ec-empty' }, t('loading')))
       }
 
       const saveSettings = async (patch) => {
-        const next = {
-          automation: patch.automation ?? settings.automation,
-          audio: patch.audio ?? settings.audio,
-          study: patch.study ?? settings.study
-        }
-        const result = await call('settings.save', next)
+        settingsRead.current++
+        const result = await call('settings.save', patch)
         if (!result.ok) {
           setStatus({ tone: 'error', text: result.message })
           return
         }
+        savedSettings.current = result.data
+        paceDraft.current = false
         setSettings(result.data)
         setStatus({ tone: 'success', text: t('saved') })
         await reload()
@@ -2958,16 +3136,19 @@ window.__ModuleLoader__.load({
             value: settings.study?.wordsPerDay ?? 10,
             onChange: (event) => {
               const raw = event.target.value
+              paceDraft.current = true
               setSettings({ ...settings, study: { ...(settings.study ?? {}), wordsPerDay: raw } })
             },
             onBlur: (event) => {
               const words = Number(event.target.value)
               if (!Number.isInteger(words) || words < 3 || words > 30) {
                 setStatus({ tone: 'error', text: t('wordsPerDayHint') })
-                setSettings({ ...settings, study: { ...settings.study, wordsPerDay: data.settings?.study?.wordsPerDay ?? 10 } })
+                paceDraft.current = false
+                setSettings({ ...settings, study: { ...settings.study, wordsPerDay: savedSettings.current?.study?.wordsPerDay ?? 10 } })
                 return
               }
-              if (words !== (data.settings?.study?.wordsPerDay ?? 10)) void saveSettings({ study: { ...settings.study, wordsPerDay: words } })
+              paceDraft.current = false
+              if (words !== (savedSettings.current?.study?.wordsPerDay ?? 10)) void saveSettings({ study: { wordsPerDay: words } })
             }
           })
         ),
