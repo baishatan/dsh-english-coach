@@ -9,6 +9,16 @@ function str(value, field, { max = 20_000, allowEmpty = false } = {}) {
   return text
 }
 
+// Normalize line endings only for paragraph matching. Keep the adopted English
+// text unchanged so translation support does not alter article/bookmark identity.
+function normalizeTranslations(value, body, field) {
+  const paragraphs = body.replace(/\r\n?/g, '\n').split(/\n[\t ]*\n+/).map(text => text.trim()).filter(Boolean)
+  if (!Array.isArray(value) || value.length !== paragraphs.length) {
+    fail('invalid_field', `${field} 必须与英文的 ${paragraphs.length} 个非空段落一一对应`, field)
+  }
+  return Array.from(value, (translation, index) => str(translation, `${field}[${index}]`))
+}
+
 function isHttpUrl(value) {
   if (typeof value !== 'string' || !value.trim()) return false
   try {
@@ -113,7 +123,9 @@ function normalizeItem(item, index, sourceIds) {
     if (!sourceIds.has(sourceId)) {
       fail('item_source_missing', `${field}.sourceId 指向不存在的素材 ${sourceId}`, `${field}.sourceId`)
     }
-    return { ...base, sourceId, body: str(item.body, `${field}.body`) }
+    const result = { ...base, sourceId, body: str(item.body, `${field}.body`) }
+    if (Object.hasOwn(item, 'translations')) result.translations = normalizeTranslations(item.translations, result.body ?? result.transcript, `${field}.translations`)
+    return result
   }
 
   if (type === 'listening') {
@@ -121,7 +133,9 @@ function normalizeItem(item, index, sourceIds) {
     if (!sourceIds.has(sourceId)) {
       fail('item_source_missing', `${field}.sourceId 指向不存在的素材 ${sourceId}`, `${field}.sourceId`)
     }
-    return { ...base, sourceId, transcript: str(item.transcript, `${field}.transcript`) }
+    const result = { ...base, sourceId, transcript: str(item.transcript, `${field}.transcript`) }
+    if (Object.hasOwn(item, 'translations')) result.translations = normalizeTranslations(item.translations, result.body ?? result.transcript, `${field}.translations`)
+    return result
   }
 
   if (type === 'expressions') {
@@ -271,6 +285,11 @@ export function renderLessonMarkdown(lesson) {
     if (item.type === 'reading' || item.type === 'listening') {
       const body = item.body ?? item.transcript ?? ''
       lines.push(body, '')
+      if (Array.isArray(item.translations) && item.translations.length) {
+        lines.push('<details>', '<summary>中文译文（逐段对照）</summary>', '')
+        item.translations.forEach((translation, index) => lines.push(`${index + 1}. ${translation}`))
+        lines.push('', '</details>', '')
+      }
       const source = lesson.sources.find((candidate) => candidate.id === item.sourceId)
       if (source) lines.push(`原文：${source.url}（抓取于 ${source.fetchedAt}，${source.license}）`, '')
     } else if (item.type === 'expressions') {

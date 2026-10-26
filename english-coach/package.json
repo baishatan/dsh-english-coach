@@ -1,6 +1,6 @@
 {
   "name": "@lijingtong/dsh-english-coach",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "description": "英语教练：判断水平、每天准备一课、碎片时间复习。",
@@ -12,7 +12,7 @@
   },
   "scripts": {
     "test": "node --test test/*.test.js",
-    "test:core": "node --test test/core.test.js test/learning-experience.test.js test/host-preference.test.js",
+    "test:core": "node --test test/core.test.js test/learning-experience.test.js test/host-preference.test.js test/translation.test.js",
     "test:ui": "node --test test/*-ui.test.js",
     "check:package": "node scripts/check-package.mjs"
   },

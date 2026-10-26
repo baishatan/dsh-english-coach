@@ -74,6 +74,30 @@ function lesson(date) {
   }
 }
 
+test('lesson tool declares optional paragraph translations and shares domain validation', async () => {
+  const h = await host()
+  const tool = h.tools.get('english_save_lesson')
+  const itemSchema = tool.parameters.properties.items.items
+  const translations = itemSchema.properties.translations
+  assert.equal(translations?.type, 'array')
+  assert.equal(translations.items.type, 'string')
+  assert.ok(!(itemSchema.required ?? []).includes('translations'), 'Old callers may omit translations')
+  assert.match(translations.description, /一一对应/)
+  const today = (await execute(h.root, 'state.get')).data.today
+  const payload = lesson(today)
+  payload.items[0].translations = ['合成阅读译文。']
+  payload.items[1].translations = ['合成听力译文。']
+  assert.equal((await tool.execute(payload)).ok, true)
+  const saved = (await execute(h.root, 'lesson.get', { date: today })).data.lesson
+  assert.deepEqual(saved.items[0].translations, ['合成阅读译文。'])
+  assert.deepEqual(saved.items[1].translations, ['合成听力译文。'])
+  payload.items[1].translations = []
+  const failure = await tool.execute(payload)
+  assert.equal(failure.ok, false)
+  assert.equal(failure.code, 'invalid_field')
+  assert.equal(failure.field, 'items[1].translations')
+})
+
 test('manual lesson request contains actual full-catalog candidates and non-fabrication rules', async () => {
   const h = await host()
   assert.equal((await h.request('wordlists.select', { id: 'cet6' })).ok, true)
@@ -91,6 +115,9 @@ test('manual lesson request contains actual full-catalog candidates and non-fabr
   assert.match(prompt, /不能伪造词语出处、改写来源原文/)
   assert.match(prompt, /前 60 个已有词只是提示摘要/)
   assert.match(prompt, /今天已有草稿、进行中或已完成课程就保留/)
+  assert.match(prompt, /新课.*reading.*listening.*必须.*translations/)
+  assert.match(prompt, /空白行.*段内单换行/)
+  assert.match(prompt, /旧课缺译文.*不自动.*重做/)
   assert.deepEqual((await execute(h.root, 'review.list')).data, before.data)
 })
 
@@ -112,6 +139,9 @@ test('a stored daily reminder refreshes current preference at delivery through a
   assert.equal(typeof delivered.data.prompt, 'string')
   assert.match(delivered.data.prompt, /id=ielts/)
   assert.match(delivered.data.prompt, /雅思学习参考词库/)
+  assert.match(delivered.data.prompt, /新课.*reading.*listening.*必须.*translations/)
+  assert.match(delivered.data.prompt, /忠实.*中文.*不添加事实/)
+  assert.match(delivered.data.prompt, /今天已有草稿、进行中或已完成课程就保留/)
   assert.doesNotMatch(delivered.data.prompt, /\[object Promise\]/)
   const actualTerms = new Set(getWordCatalog().entries.filter(e => e.listIds.includes('ielts')).map(e => e.term))
   const current = await execute(h.root, 'study.preference')

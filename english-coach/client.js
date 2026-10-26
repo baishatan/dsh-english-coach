@@ -4,7 +4,7 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react')
     const h = React.createElement
-    const { useState, useEffect, useMemo, useRef, useCallback } = React
+    const { useState, useEffect, useMemo, useRef, useCallback, useSyncExternalStore, useId } = React
 
     // ------------------------------------------------------------------ i18n
 
@@ -223,8 +223,7 @@ window.__ModuleLoader__.load({
 
     const API = '/english-coach/api'
     const PILL_POSITION_KEY = 'english-coach:pill-position'
-    // 悬浮层和面板答的是同一个复习队列：任何一边答完，另一边都重读一次，
-    // 免得面板上还挂着已经被答掉的词。
+    // 学习轮次在 Client 内共享；作答后通知界面重读 Host 的统计与词汇目录。
     const homeListeners = new Set()
     const reviewListeners = new Set()
     const settingsListeners = new Set()
@@ -260,6 +259,112 @@ window.__ModuleLoader__.load({
       } catch {
         return { ok: false, code: 'bad_response', message: '插件后台返回了无法解析的内容' }
       }
+    }
+
+    // ---------------------------------------------------------- shared round
+
+    // One in-memory round per Client lifetime, not one round per mounted view.
+    // The Host still owns candidate selection, answer validation and all writes.
+    const studyRound = (() => {
+      const listeners = new Set()
+      let state = { batch: null, items: null, at: 0, picked: null, feedback: null, correct: 0, answered: 0, conflict: false, busy: false, loading: false, error: null, job: null, dueCount: null, nextDueAt: null }
+      let active = 0, generation = 0, revision = 0, timer = null, polling = false
+      let summaryRead = 0, latestSummary = 0
+      const patch = change => { state = { ...state, ...change }; for (const listener of listeners) listener() }
+      const begin = batch => {
+        revision++
+        patch({ batch, items: batch.items ?? [], at: 0, picked: null, feedback: null, correct: 0, answered: 0, conflict: false, busy: false, loading: false, error: null, dueCount: batch.dueCount ?? state.dueCount })
+      }
+      async function load() {
+        if (state.loading || state.items !== null) return
+        const request = ++generation
+        patch({ loading: true, error: null })
+        const result = await call('study.batch')
+        if (request !== generation) return
+        if (result.ok) begin(result.data)
+        else patch({ loading: false, error: result.message })
+      }
+      async function poll() {
+        if (polling || state.job?.status !== 'pending') return
+        polling = true
+        const request = generation
+        try {
+          const status = await call('job.status', { kind: 'vocab' })
+          if (request !== generation || !status.ok || !status.data) return
+          if (status.data.status === 'pending') return
+          patch({ job: status.data })
+          stopPolling()
+          if (status.data.status === 'failed') { patch({ error: status.data.failure ?? t('generateFailed') }); return }
+          patch({ busy: true })
+          const result = await call('study.batch')
+          if (request !== generation) return
+          if (result.ok) { begin(result.data); if (!result.data.items?.length) patch({ error: t('vocabEmpty') }) }
+          else patch({ busy: false, error: result.message })
+          notifyReview()
+        } finally { polling = false }
+      }
+      function stopPolling() { if (timer !== null) { clearInterval(timer); timer = null } }
+      function startPolling() { if (timer === null && listeners.size && state.job?.status === 'pending') timer = setInterval(poll, 4000) }
+      return {
+        getSnapshot: () => state,
+        subscribe(listener) { listeners.add(listener); startPolling(); return () => { listeners.delete(listener); if (!listeners.size) stopPolling() } },
+        acquire() {
+          active++
+          if (!state.error) void load()
+          startPolling()
+          return () => {
+            active--
+            // A cancelled first read cannot replace a later explicit batch.
+            if (!active && state.items === null && state.loading) { generation++; patch({ loading: false }) }
+          }
+        },
+        retry: load,
+        async answer(choice) {
+          const word = state.items?.[state.at]
+          if (!word || state.picked !== null || state.busy || state.conflict) return
+          patch({ picked: choice, busy: true, error: null })
+          const result = await call('review.answer', { itemId: word.id, choice })
+          if (!result.ok) { patch({ busy: false, picked: null, feedback: null, conflict: result.code === 'not_due', error: result.message }); return }
+          revision++
+          patch({ busy: false, correct: state.correct + Number(result.data.correct), answered: state.answered + 1,
+            feedback: { correct: result.data.correct, explanation: result.data.explanation ?? word.explanation },
+            dueCount: result.data.dueCount ?? (state.dueCount === null ? null : Math.max(0, state.dueCount - 1)), nextDueAt: result.data.dueAt ?? state.nextDueAt })
+          notifyReview()
+          if (state.at + 1 >= state.items.length) {
+            const version = revision
+            const fresh = await call('review.list')
+            if (fresh.ok && version === revision) patch({ nextDueAt: fresh.data.nextDueAt ?? state.nextDueAt })
+          }
+        },
+        next() {
+          if (state.busy || (!state.feedback && !state.conflict)) return
+          patch({ at: state.at + 1, picked: null, feedback: null, conflict: false, error: null })
+        },
+        async continue() {
+          if (state.busy || state.loading || state.items === null || state.job?.status === 'pending' || state.at < state.items.length) return
+          const request = ++generation
+          patch({ busy: true, error: null })
+          const result = await call('generate.vocab', {})
+          if (request !== generation) return
+          if (!result.ok) { patch({ busy: false, error: result.message }); return }
+          if (result.data.mode === 'generated') { patch({ busy: false, job: result.data }); startPolling() }
+          else begin(result.data)
+          notifyReview()
+        },
+        get revision() { return revision },
+        nextSummaryRead: () => ++summaryRead,
+        observe(summary, version, order) {
+          if (version !== revision || order < latestSummary || !Number.isInteger(summary?.dueCount)) return
+          latestSummary = order
+          patch({ dueCount: summary.dueCount, nextDueAt: summary.nextDueAt ?? state.nextDueAt })
+        }
+      }
+    })()
+
+    function useStudyRound(enabled = true) {
+      const state = useSyncExternalStore(studyRound.subscribe, studyRound.getSnapshot)
+      useEffect(() => enabled ? studyRound.acquire() : undefined, [enabled])
+      return state
     }
 
     // --------------------------------------------------------------- audio
@@ -578,6 +683,17 @@ window.__ModuleLoader__.load({
   font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Songti SC", serif; }
 .ec-transcript { font-size: 14.5px; line-height: 1.8; white-space: pre-wrap;
   font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Songti SC", serif; }
+.ec-article-paragraph + .ec-article-paragraph { margin-top: 18px; }
+.ec-article-text { overflow-wrap: anywhere; }
+.ec-translation-toggle { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; margin-top: 3px; padding: 2px 4px;
+  border: 0; border-radius: 3px; background: transparent; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 12px; cursor: pointer; }
+.ec-translation-toggle::before { content: '›'; display: inline-block; font-size: 16px; }
+.ec-translation-toggle[aria-expanded="true"]::before { transform: rotate(90deg); }
+.ec-translation-toggle:hover { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-2); }
+.ec-translation-toggle:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
+.ec-translation { margin: 3px 0 0; padding-left: 12px; border-left: 2px solid var(--dsw-alias-border-l1);
+  color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 1.8; white-space: pre-wrap; }
+.ec-translation-missing { margin-top: 4px; }
 .ec-choices { display: grid; gap: 8px; margin: 10px 0; }
 .ec-choice { display: flex; align-items: center; gap: 10px; text-align: left; width: 100%; font: inherit;
   font-size: 13.2px; line-height: 1.45; padding: 9px 11px; border-radius: 9px;
@@ -920,8 +1036,14 @@ window.__ModuleLoader__.load({
     function useRefresh(loader, intervalMs) {
       const [state, setState] = useState({ data: null, error: null, loading: true })
       const load = useCallback(async () => {
+        const version = studyRound.revision
+        const order = studyRound.nextSummaryRead()
         const result = await loader()
-        if (result.ok) setState({ data: result.data, error: null, loading: false })
+        if (result.ok) {
+          if (loader === loadState) studyRound.observe(result.data.review, version, order)
+          if (loader === loadWords) studyRound.observe(result.data, version, order)
+          setState({ data: result.data, error: null, loading: false })
+        }
         else setState((prev) => ({ ...prev, error: result.message, loading: false }))
         return result
       }, [loader])
@@ -1133,13 +1255,33 @@ window.__ModuleLoader__.load({
       )
     }
 
+    function ArticleText({ text = '', translations, transcript = false }) {
+      // Match the lesson command's paragraph contract without changing the
+      // stored text or the original English passed to the speech owner.
+      const paragraphs = text.replace(/\r\n?/g, '\n').split(/\n[ \t]*\n(?:[ \t]*\n)*/).map(value => value.trim()).filter(Boolean)
+      const [revealed, setRevealed] = useState({})
+      const id = useId()
+      const aligned = Array.isArray(translations) && translations.length === paragraphs.length
+      return h('div', { className: 'ec-article-text' }, paragraphs.map((paragraph, index) => {
+        const translation = aligned && typeof translations[index] === 'string' ? translations[index].trim() : ''
+        const open = Boolean(revealed[index]), target = `${id}-translation-${index}`
+        return h('div', { key: index, className: 'ec-article-paragraph' },
+          h('div', { className: transcript ? 'ec-transcript' : 'ec-body', lang: 'en' }, paragraph),
+          translation ? h('button', { type: 'button', className: 'ec-translation-toggle',
+            'aria-expanded': open, 'aria-controls': target,
+            onClick: () => setRevealed(previous => ({ ...previous, [index]: !previous[index] })) }, '译文')
+            : h('div', { className: 'ec-sub ec-translation-missing' }, '暂无译文'),
+          open && translation ? h('div', { id: target, className: 'ec-translation', lang: 'zh-Hans' }, translation) : null)
+      }))
+    }
+
     function ReadingItem({ item, lesson }) {
       const source = (lesson.sources ?? []).find((candidate) => candidate.id === item.sourceId)
       return h(
         'div',
         null,
         h(Speak, { text: item.body, materialId: `${lesson.date}:${item.id}` }),
-        h('div', { className: 'ec-body' }, item.body),
+        h(ArticleText, { key: item.body, text: item.body, translations: item.translations }),
         h(SourceLine, { source })
       )
     }
@@ -1150,7 +1292,7 @@ window.__ModuleLoader__.load({
         'div',
         null,
         h(Speak, { text: item.transcript, materialId: `${lesson.date}:${item.id}` }),
-        h('div', { className: 'ec-transcript' }, item.transcript),
+        h(ArticleText, { key: item.transcript, text: item.transcript, translations: item.translations, transcript: true }),
         h(SourceLine, { source })
       )
     }
@@ -1615,116 +1757,15 @@ window.__ModuleLoader__.load({
       return `${count}${reason}`
     }
 
-    function WordDeck({ words, now, compact, limit = 10, reloadWords, onAnswered, onGoWords, onChooseList }) {
-      const [ids, setIds] = useState(null)
-      const [batch, setBatch] = useState(null)
-      const [batchRetry, setBatchRetry] = useState(0)
-      const [conflict, setConflict] = useState(false)
-      const requestLock = useRef(false)
-      const answerLock = useRef(false)
-      const [index, setIndex] = useState(0)
-      const [picked, setPicked] = useState(null)
-      const [feedback, setFeedback] = useState(null)
-      const [correct, setCorrect] = useState(0)
-      const [answered, setAnswered] = useState(0)
-      const [busy, setBusy] = useState(false)
-      const [error, setError] = useState(null)
-      const [job, setJob] = useState(null)
-
-      const begin = (list) => {
-        setBatch(list)
-        setConflict(false)
-        setIds(list?.items ?? [])
-        setIndex(0)
-        setPicked(null)
-        setFeedback(null)
-        setCorrect(0)
-        setAnswered(0)
-        setError(null)
-      }
-
-      useEffect(() => {
-        let alive = true
-        setError(null)
-        void call('study.batch').then((result) => {
-          if (!alive) return
-          if (result.ok) begin(result.data)
-          else setError(result.message)
-        })
-        return () => { alive = false }
-      }, [batchRetry])
-
+    function WordDeck({ words, compact, onGoWords, onChooseList }) {
+      const { items: ids, batch, at: index, picked, feedback, correct, answered, conflict, busy, error, job } = useStudyRound()
       const word = ids?.[index] ?? null
       const finished = ids !== null && ids.length > 0 && index >= ids.length
       const isLast = ids !== null && index + 1 >= ids.length
       const generating = job?.status === 'pending'
-
-      const answer = async (choice) => {
-        if (!word || picked !== null || busy || answerLock.current || conflict) return
-        answerLock.current = true
-        setPicked(choice)
-        setBusy(true)
-        setError(null)
-        const result = await call('review.answer', { itemId: word.id, choice })
-        answerLock.current = false
-        setBusy(false)
-        if (!result.ok) {
-          setPicked(null)
-          setFeedback(null)
-          setConflict(result.code === 'not_due')
-          setError(result.message)
-          return
-        }
-        if (result.data.correct) setCorrect((value) => value + 1)
-        setAnswered((value) => value + 1)
-        setFeedback({ correct: result.data.correct, explanation: result.data.explanation ?? word.explanation })
-        if (onAnswered) void onAnswered()
-      }
-
-      const next = () => {
-        setPicked(null)
-        setFeedback(null)
-        setConflict(false)
-        setError(null)
-        setIndex((value) => value + 1)
-      }
-
-      const generateMore = async () => {
-        if (requestLock.current || generating) return
-        requestLock.current = true
-        setBusy(true)
-        setError(null)
-        const result = await call('generate.vocab', {})
-        requestLock.current = false
-        setBusy(false)
-        if (!result.ok) { setError(result.message); return }
-        if (result.data.mode === 'generated') setJob(result.data)
-        else begin(result.data)
-        if (reloadWords) void reloadWords()
-      }
-
-      useEffect(() => {
-        if (!job || job.status !== 'pending') return undefined
-        const timer = setInterval(async () => {
-          const status = await call('job.status', { kind: 'vocab' })
-          if (!status.ok || !status.data) return
-          setJob(status.data)
-          if (status.data.status === 'pending') return
-          if (status.data.status === 'failed') {
-            setError(status.data.failure ?? t('generateFailed'))
-            return
-          }
-          const fresh = await call('study.batch')
-          if (fresh.ok) {
-            begin(fresh.data)
-            if (!fresh.data.items?.length) setError(t('vocabEmpty'))
-          } else setError(fresh.message)
-          if (reloadWords) void reloadWords()
-          if (onAnswered) void onAnswered()
-        }, 4000)
-        return () => clearInterval(timer)
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, [job, limit, reloadWords])
+      const answer = studyRound.answer
+      const next = studyRound.next
+      const generateMore = studyRound.continue
 
       useEffect(() => {
         if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return undefined
@@ -1754,7 +1795,7 @@ window.__ModuleLoader__.load({
 
       let body = null
       if (!ids) {
-        body = error ? h('div', null, h(Notice, { tone: 'error' }, error), h(Btn, { onClick: () => setBatchRetry((value) => value + 1) }, t('retry'))) : h('div', { className: 'ec-empty' }, t('loading'))
+        body = error ? h('div', null, h(Notice, { tone: 'error' }, error), h(Btn, { onClick: studyRound.retry }, t('retry'))) : h('div', { className: 'ec-empty' }, t('loading'))
       } else if (finished) {
         body = h(
           'div',
@@ -1901,6 +1942,7 @@ window.__ModuleLoader__.load({
       const [notice, setNotice] = useState(null)
       const [saveError, setSaveError] = useState(null)
       const sourceTrigger = useRef(null)
+      const round = useStudyRound(false)
       const [batchSize, setBatchSize] = useState(data.settings?.study?.wordsPerDay ?? 10)
       const preferenceRead = useRef(0)
       const [batchOpen, setBatchOpen] = useState(false)
@@ -1972,12 +2014,10 @@ window.__ModuleLoader__.load({
       const activeTitle = catalog?.lists?.find(list => list.id === catalog.activeWordListId)?.title ?? '不指定'
       return h('div', { className: 'ec-words-page' },
         h('div', { className: 'ec-study-focus' },
-          h(WordDeck, { words, now: data.now, limit: savedBatchSize,
-            reloadWords: words.reload, onChooseList,
-            onAnswered: async () => { await reload(); await words.reload() } }),
+          h(WordDeck, { words, onChooseList }),
           h('aside', { className: 'ec-study-arrangement', 'aria-label': '学习安排' },
             h('h2', null, '学习安排'),
-            h('p', null, `全部待复习 ${words.data?.dueCount ?? data.review?.dueCount ?? 0} 项`),
+            h('p', null, `全部待复习 ${round.dueCount ?? words.data?.dueCount ?? data.review?.dueCount ?? 0} 项`),
             h('p', { className: 'ec-sub' }, `每批学习 ${savedBatchSize} 项；不是每日上限。`),
             h('button', { type: 'button', className: 'ec-btn ec-btn-ghost ec-btn-sm', ref: batchTrigger, disabled: batchSaving,
               onClick: () => { setBatchDraft(String(savedBatchSize)); setBatchError(null); setBatchOpen(true) } }, '调整每批数量'),
@@ -2132,7 +2172,7 @@ window.__ModuleLoader__.load({
             open.explanation ? h('p', { className: 'ec-note' }, open.explanation) : null)) : null) : null)
     }
 
-    function TodayTab({ data, words, reload, reloadWords, onTab, onChooseList, onOpenVocabulary }) {
+    function TodayTab({ data, words, reload, onTab, onChooseList, onOpenVocabulary }) {
       const [job, setJob] = useState(null)
       const [notice, setNotice] = useState(null)
       const [busy, setBusy] = useState(false)
@@ -2218,14 +2258,7 @@ window.__ModuleLoader__.load({
             { className: 'ec-col' },
             h(WordDeck, {
               words,
-              now: data.now,
               compact: true,
-              limit: data.settings?.study?.wordsPerDay ?? 10,
-              reloadWords,
-              onAnswered: async () => {
-                await reload()
-                await reloadWords()
-              },
               onChooseList,
               onGoWords: onOpenVocabulary
             }),
@@ -2931,6 +2964,7 @@ window.__ModuleLoader__.load({
       const startAssessment = () => navigate(() => setMode('assessment'))
       const { data, error, loading, reload } = useRefresh(loadState, 20000)
       const words = useRefresh(loadWords, 0)
+      const round = useStudyRound(false)
 
       useEffect(() => {
         const goHome = (nextTab = 'today') => navigate(() => { setTab(nextTab); setMode('normal'); if (nextTab === 'words') { setOpenPersonal(0); setOpenThemed(value => value + 1) } })
@@ -2940,10 +2974,10 @@ window.__ModuleLoader__.load({
 
       // 悬浮层里答了词，这边的词库与到期数要跟着变；面板自己答完也走 reload。
       useEffect(() => {
-        const listener = () => void words.reload()
+        const listener = () => { void words.reload(); void reload() }
         reviewListeners.add(listener)
         return () => reviewListeners.delete(listener)
-      }, [words.reload])
+      }, [words.reload, reload])
 
       if (loading) {
         return h('div', { className: 'ec-root' }, h(Style), h('div', { className: 'ec-wrap' },
@@ -2973,7 +3007,7 @@ window.__ModuleLoader__.load({
             h(AssessmentPanel, { onExit: () => setMode('normal'), onFinished: reload })))
       }
 
-      const due = data.review?.dueCount ?? 0
+      const due = round.dueCount ?? data.review?.dueCount ?? 0
       const streak = data.streak?.current ?? 0
       const band = data.level?.latest?.band ?? null
       const tabs = [
@@ -2995,7 +3029,7 @@ window.__ModuleLoader__.load({
                   h(Btn, { primary: true, style: { marginLeft: 'auto' }, onClick: startAssessment },
                     t('startAssessment'))))
             : null,
-          h(TodayTab, { data, words, reload, reloadWords: words.reload, onTab: changeTab, onChooseList: chooseList, onOpenVocabulary: openVocabulary }))
+          h(TodayTab, { data, words, reload, onTab: changeTab, onChooseList: chooseList, onOpenVocabulary: openVocabulary }))
       } else if (tab === 'words') {
         content = h(WordsTab, { data, words, reload, openThemed, openPersonal, onChooseList: chooseList })
       } else if (tab === 'plan') {
@@ -3238,17 +3272,10 @@ window.__ModuleLoader__.load({
     function Pill({ getLayout }) {
       const { data, reload } = useRefresh(loadState, 30000)
       const [open, setOpen] = useState(false)
-      const [queue, setQueue] = useState(null)
-      const [session, setSession] = useState(null)
-      const [busy, setBusy] = useState(false)
-      const [error, setError] = useState(null)
-      const [job, setJob] = useState(null)
-      const [lastDue, setLastDue] = useState(null)
-      const batchLock = useRef(false)
-      const batchGeneration = useRef(0)
-      const [initialLoading, setInitialLoading] = useState(true)
-      const [initialRetry, setInitialRetry] = useState(0)
-      const [conflict, setConflict] = useState(false)
+      const round = useStudyRound(open)
+      const { batch: queue, busy, error, job, conflict } = round
+      const initialLoading = round.items === null && !error
+      const session = round.items === null ? null : { cards: round.items, at: round.at, picked: round.picked, feedback: round.feedback, correct: round.correct }
 
       // Where the learner dragged the pill: null means "the default corner".
       const [pos, setPosState] = useState(null)
@@ -3346,116 +3373,13 @@ window.__ModuleLoader__.load({
       }
 
       // ------------------------------------------------------------ 复习会话
-      const limit = data?.settings?.study?.wordsPerDay ?? 10
       const generating = job?.status === 'pending'
       const card = session && session.at < session.cards.length ? session.cards[session.at] : null
       const finished = Boolean(session) && session.cards.length > 0 && !card
 
-      const startSession = (list) => {
-        setSession({ cards: list?.items ?? [], at: 0, picked: null, feedback: null, correct: 0 })
-        setConflict(false)
-        setError(null)
-      }
-
-      const next = () => {
-        setConflict(false)
-        setError(null)
-        setSession((prev) => (prev ? { ...prev, at: prev.at + 1, picked: null, feedback: null } : prev))
-      }
-
-      const answer = async (choice) => {
-        if (!card || session.picked !== null || busy) return
-        setBusy(true)
-        setError(null)
-        setSession((prev) => ({ ...prev, picked: choice }))
-        const result = await call('review.answer', { itemId: card.id, choice })
-        setBusy(false)
-        if (!result.ok) {
-          setConflict(result.code === 'not_due')
-          setSession((prev) => ({ ...prev, picked: null }))
-          setError(result.message)
-          return
-        }
-        setLastDue(result.data.dueAt ?? null)
-        setSession((prev) => ({
-          ...prev,
-          feedback: { correct: result.data.correct, explanation: result.data.explanation ?? '' },
-          correct: prev.correct + (result.data.correct ? 1 : 0)
-        }))
-        // 药丸上的数字当场就变，不用等下一次轮询
-        setQueue((prev) =>
-          prev
-            ? {
-                ...prev,
-                dueCount: Math.max(0, (prev.dueCount ?? 1) - 1),
-                items: (prev.items ?? []).map((item) => (item.id === card.id ? { ...item, due: false } : item))
-              }
-            : prev
-        )
-        notifyReview()
-        // 一轮答完，下一次到期要由服务端算：刚答的这批里，盒子不同的词
-        // 排到的日期也不同，客户端猜不准
-        if (session.at + 1 >= session.cards.length) {
-          const fresh = await call('review.list')
-          if (fresh.ok) setQueue(fresh.data)
-        }
-      }
-
-      const continueRemaining = async () => {
-        if (batchLock.current || busy || generating || initialLoading || session === null) return
-        const generation = ++batchGeneration.current
-        batchLock.current = true
-        setBusy(true)
-        setError(null)
-        const result = await call('generate.vocab', {})
-        if (generation !== batchGeneration.current) return
-        batchLock.current = false
-        setBusy(false)
-        if (!result.ok) { setError(result.message); return }
-        if (result.data.mode === 'generated') setJob(result.data)
-        else { setQueue(result.data); startSession(result.data) }
-        notifyReview()
-      }
-
-      useEffect(() => {
-        if (!job || job.status !== 'pending') return undefined
-        const timer = setInterval(async () => {
-          const status = await call('job.status', { kind: 'vocab' })
-          if (!status.ok || !status.data) return
-          setJob(status.data)
-          if (status.data.status === 'pending') return
-          if (status.data.status === 'failed') {
-            setError(status.data.failure ?? t('generateFailed'))
-            return
-          }
-          const fresh = await call('study.batch')
-          if (!fresh.ok) { setError(fresh.message); return }
-          setQueue(fresh.data)
-          startSession(fresh.data)
-          if (!fresh.data.items?.length) setError(t('vocabEmpty'))
-        }, 4000)
-        return () => clearInterval(timer)
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, [job])
-
-      useEffect(() => {
-        // 已有快照（包括已结束或空批次）只由显式继续操作替换。
-        if (!open || session !== null) return undefined
-        const generation = ++batchGeneration.current
-        setInitialLoading(true)
-        setError(null)
-        void (async () => {
-          const result = await call('study.batch')
-          if (generation !== batchGeneration.current) return
-          setInitialLoading(false)
-          if (!result.ok) { setError(result.message); return }
-          setQueue(result.data)
-          setSession((prev) => prev ?? { cards: result.data.items ?? [], at: 0, picked: null, feedback: null, correct: 0 })
-        })()
-        return () => {
-          if (generation === batchGeneration.current) batchGeneration.current++
-        }
-      }, [open, initialRetry])
+      const next = studyRound.next
+      const answer = studyRound.answer
+      const continueRemaining = studyRound.continue
 
       useEffect(() => {
         if (!open) return undefined
@@ -3467,11 +3391,11 @@ window.__ModuleLoader__.load({
         return () => window.removeEventListener('keydown', onKey)
       }, [open])
 
-      const dueCount = queue?.dueCount ?? data?.review?.dueCount ?? 0
+      const dueCount = round.dueCount ?? data?.review?.dueCount ?? 0
       const lesson = data?.todayLesson
       const hasDraft = lesson && lesson.status === 'draft'
       const badge = dueCount > 0 ? dueCount : hasDraft ? '·' : ''
-      const nextAt = queue?.nextDueAt ?? lastDue
+      const nextAt = round.nextDueAt
       const nextText = !dueCount && nextAt ? t('nextDueShort', { date: formatDay(nextAt) }) : ''
       const quietText = finished
         ? t('reviewDoneHint', { n: session.correct })
@@ -3522,7 +3446,7 @@ window.__ModuleLoader__.load({
                         : t('nothingDueShort')
                   )
                 ),
-                initialLoading ? h('div', { role: 'status', className: 'ec-pop-hint' }, t('loading')) : session === null ? h(Btn, { onClick: () => setInitialRetry((value) => value + 1) }, t('retry')) : card
+                initialLoading ? h('div', { role: 'status', className: 'ec-pop-hint' }, t('loading')) : session === null ? h(Btn, { onClick: studyRound.retry }, t('retry')) : card
                   ? h(
                       'div',
                       null,

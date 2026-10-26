@@ -227,6 +227,10 @@ export function apply(ctx, config) {
       '   - 不在 recentSources 里；',
       '   - 阅读 200–350 词；听力有可读的文稿，约 3–5 分钟朗读时长。',
       '3. 抓取正文核对长度。抓不到就换一个来源，并在课程的 note 里写明换了什么、为什么。任何情况下都不要编造原文。',
+      '   新课的 reading 与 listening 必须提供 translations 数组，与 body / transcript 的非空英文段落按顺序一一对应，每段一条完整中文辅助译文。',
+      '   空白行分段，段内单换行不分段；CRLF 和单 CR 仅在分段时视为 LF，忽略前后和重复的空白段，不改写英文正文。',
+      '   译文须忠实原段内容、使用中文表达，不添加事实；不能缺段、合并多个英文段落或填空白占位。',
+      '   旧课缺译文就保留缺省，不自动补写或重做已有课程；不要为了译文覆盖今天已有的草稿、进行中或已完成课程。',
       `4. 从素材里挑 ${count} 个左右值得记的词或整块表达，整块表达优先于孤立单词。每个都放进 reviewItems，并给一道四选一（4 个不同的中文选项，answerIndex 指向与 meaning 完全相同的那一项）。`,
       '5. 再出 1 到 2 道理解题，和 1 道选词排序题（给完整正确句子，插件会自己打散）。',
       '6. 调用 english_save_lesson 提交，date 用 english_state 返回的 today，四类学习项（reading / listening / expressions / quiz）一个都不能少。',
@@ -512,7 +516,7 @@ export function apply(ctx, config) {
     {
       name: 'english_save_lesson',
       description:
-        '提交一堂课。以 date 为幂等键：同一天重复提交会覆盖上一版，不会追加。必须带素材来源（含原始链接、抓取时间、许可说明），且必须包含 reading / listening / expressions / quiz 四类学习项，否则会被拒绝并返回出错的字段名。',
+        '提交一堂课。以 date 为幂等键：同一天重复提交会覆盖上一版，不会追加。必须带素材来源（含原始链接、抓取时间、许可说明），且必须包含 reading / listening / expressions / quiz 四类学习项。新课的 reading / listening 应提供与英文段落一一对应的中文 translations；旧调用可省略，提供时必须完整，否则会被拒绝并返回出错的字段名。',
       parameters: {
         type: 'object',
         properties: {
@@ -554,6 +558,11 @@ export function apply(ctx, config) {
                 sourceId: { type: 'string', description: 'reading / listening 必填，指向 sources 里的 id' },
                 body: { type: 'string', description: 'reading 的英文正文' },
                 transcript: { type: 'string', description: 'listening 的英文文稿' },
+                translations: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'reading / listening 的逐段中文辅助译文，与 body / transcript 的非空段落按原顺序一一对应。空白行分段，段内单换行不分段；CRLF 和单 CR 仅在分段时视为 LF，不改英文正文；前后和重复空白行不产生段落。每条必须非空，不能缺段或多段。新课应完整提供；旧调用可省略，不自动补旧课。'
+                },
                 expressions: {
                   type: 'array',
                   description: 'expressions 项的内容',
