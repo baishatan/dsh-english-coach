@@ -459,7 +459,9 @@ window.__ModuleLoader__.load({
 .ec-root { height: 100%; overflow: auto; color: var(--dsw-alias-label-primary);
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Helvetica Neue", sans-serif;
   font-size: 13.5px; line-height: 1.62; }
-.ec-wrap { max-width: 1060px; margin: 0 auto; padding: 26px 30px 96px; }
+.ec-wrap { --ec-wrap-top: 26px; max-width: 1060px; margin: 0 auto; padding: var(--ec-wrap-top) 30px 96px; }
+/* rc.3 desktop chrome overlaps global panels; use the Host's clearance, not a fixed titlebar height. */
+[data-platform="darwin"] .ec-root > .ec-wrap { padding-top: calc(var(--ec-wrap-top) + var(--dsh-frame-top-clearance, 0px)); }
 
 /* ------------------------------------------------------------------ top bar */
 .ec-top { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
@@ -681,7 +683,7 @@ window.__ModuleLoader__.load({
 @container (max-width: 700px) { .ec-study-focus { grid-template-columns: minmax(0, 1fr); gap: 4px; }
   .ec-study-focus > .ec-card { padding: 20px; } }
 @media (max-width: 700px) { .ec-study-focus { grid-template-columns: minmax(0, 1fr); gap: 4px; } }
-@media (max-width: 480px) { .ec-wrap { padding: 18px 14px 70px; } .ec-top { gap: 10px; }
+@media (max-width: 480px) { .ec-wrap { --ec-wrap-top: 18px; padding: var(--ec-wrap-top) 14px 70px; } .ec-top { gap: 10px; }
   .ec-status { margin-left: 0; gap: 12px; flex-wrap: wrap; } .ec-seg button { padding: 7px 10px; }
   .ec-study-focus > .ec-card { padding: 18px 16px; } }
 @media (prefers-reduced-motion: reduce) { .ec-words-page *, .ec-profile-page * { transition: none; } }
