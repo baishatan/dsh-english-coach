@@ -120,7 +120,7 @@ test('旧词、表达与掌握抽检跨三入口共享纠正队尾、已保存�
   await keyChoice(ui, main(), '正确释义')
   assert.equal(dots(main()), 3)
   await ui.click('完成复习'); await ui.settle()
-  assert.match(main().textContent, /本轮 3 项，已完成 3 项/)
+  assert.match(main().textContent, /已完成 3 \/ 3 项/)
   const saved = (await api.run('review.list')).data.items
   assert.deepEqual(saved.map(item => [item.term, item.box, item.answerCount, item.due]), [
     ['alpha', 3, 5, false], ['in fact', 3, 3, false], ['on the whole', 4, 6, false]
