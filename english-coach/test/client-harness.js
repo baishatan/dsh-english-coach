@@ -19,8 +19,9 @@ function fixtureHost(request) {
   const snapshot = () => structuredClone(batch)
   const begin = data => {
     attempts.clear()
+    const revision = (batch?.round.revision ?? 0) + 1
     const id = `fixture-round-${++serial}`
-    batch = { ...structuredClone(data), round: { id, revision: 1, status: data.items.length ? 'active' : 'empty', at: 0,
+    batch = { ...structuredClone(data), round: { id, revision, status: data.items.length ? 'active' : 'empty', at: 0,
       current: data.items.length ? { id: `${id}:1`, itemId: data.items[0].id, choiceOrder: [0, 1, 2, 3], picked: null, feedback: null } : null,
       summary: { total: data.items.length, completed: 0, firstTryCorrect: 0, retryCount: 0 } } }
   }
@@ -65,11 +66,16 @@ function fixtureHost(request) {
   }
 }
 
-export async function mountClient({ request, slot = 'main', setupWindow, layout } = {}) {
+// Multiple independent VM/factories can share this one external DOM environment.
+// React DOM then never observes another mount replacing its global window.
+export function clientEnvironment() {
+  return { dom: new JSDOM('<!doctype html><body></body>', { url: 'http://localhost/', pretendToBeVisual: true }), previous: new Map(), mounts: 0 }
+}
+
+export async function mountClient({ request, slot = 'main', setupWindow, layout, environment = clientEnvironment() } = {}) {
   const hostRequest = fixtureHost(request)
-  const dom = new JSDOM('<!doctype html><div id="test-root"></div>', { url: 'http://localhost/', pretendToBeVisual: true })
-  const previous = new Map()
-  for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, navigator: dom.window.navigator, HTMLElement: dom.window.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true })) {
+  const { dom, previous } = environment
+  if (!environment.mounts++) for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, navigator: dom.window.navigator, HTMLElement: dom.window.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true })) {
     previous.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
     Object.defineProperty(globalThis, key, { configurable: true, writable: true, value })
   }
@@ -103,7 +109,8 @@ export async function mountClient({ request, slot = 'main', setupWindow, layout 
     assert.ok(entry, `Missing registered UI slot: ${name}`)
     return entry
   })
-  const container = dom.window.document.getElementById('test-root')
+  const container = dom.window.document.createElement('div')
+  dom.window.document.body.append(container)
   const root = createRoot(container)
   await act(async () => root.render(Array.isArray(slot)
     ? React.createElement(React.Fragment, null, ...entries.map(({ options, Component }) => React.createElement('div', { key: options.name, 'data-test-slot': options.name }, React.createElement(Component))))
@@ -138,10 +145,13 @@ export async function mountClient({ request, slot = 'main', setupWindow, layout 
     async flush(callback = () => {}) { await act(callback) },
     async close() {
       await act(async () => root.unmount())
-      dom.window.close()
-      for (const [key, descriptor] of previous) {
-        if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-        else delete globalThis[key]
+      container.remove()
+      if (!--environment.mounts) {
+        dom.window.close()
+        for (const [key, descriptor] of previous) {
+          if (descriptor) Object.defineProperty(globalThis, key, descriptor)
+          else delete globalThis[key]
+        }
       }
     }
   }

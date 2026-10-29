@@ -220,7 +220,7 @@ test('悬浮已结束快照重开不自动开始下一批，必须显式继续',
   await ui.click(ui.container.querySelector('.ec-pill-btn'))
   assert.equal(term(ui), undefined)
   assert.match(ui.text(), /已完成 1 \/ 1 项/)
-  assert.equal(api.calls.filter(({ command }) => command === 'study.batch').length, readsBefore)
+  assert.equal(api.calls.filter(({ command }) => command === 'study.batch').length, readsBefore + 1, '重开只读同步，不隐式开批')
   await ui.click('继续学习')
   assert.equal(term(ui), 'next-batch')
 })

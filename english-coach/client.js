@@ -276,14 +276,16 @@ window.__ModuleLoader__.load({
       let summaryRead = 0, latestSummary = 0
       const patch = change => { state = { ...state, ...change }; for (const listener of listeners) listener() }
       const begin = (batch, warning = null) => {
+        if (state.batch && batch.round.revision < state.batch.round.revision) return false
+        if (state.batch && batch.round.revision === state.batch.round.revision && state.busy) { patch({ loading: false }); return false }
         revision++
         const { round } = batch
         patch({ batch, items: batch.items, at: round.at, picked: round.current?.picked ?? null, feedback: round.current?.feedback ?? null,
           correct: round.summary.completed, answered: round.summary.completed, conflict: false, busy: false, loading: false, error: warning, dueCount: batch.dueCount ?? state.dueCount })
       }
       const identity = () => ({ roundId: state.batch.round.id, revision: state.batch.round.revision, presentationId: state.batch.round.current?.id })
-      async function load() {
-        if (state.loading || state.items !== null) return
+      async function load(force = false) {
+        if (state.loading || state.items !== null && !force) return
         const request = ++generation
         patch({ loading: true, error: null })
         const result = await call('study.batch')
@@ -317,7 +319,7 @@ window.__ModuleLoader__.load({
         subscribe(listener) { listeners.add(listener); startPolling(); return () => { listeners.delete(listener); if (!listeners.size) stopPolling() } },
         acquire() {
           active++
-          if (!state.error) void load()
+          if (!state.error) void load(true)
           startPolling()
           return () => {
             active--
@@ -329,9 +331,15 @@ window.__ModuleLoader__.load({
         async answer(choice) {
           const word = state.items?.[state.at]
           if (!word || state.picked !== null || state.busy || state.conflict) return
+          const version = revision
           patch({ picked: choice, busy: true, error: null })
           const result = await call('review.answer', { ...identity(), itemId: word.id, choice: word.choiceOrder?.[choice] ?? choice })
-          if (!result.ok) { patch({ busy: false, picked: null, feedback: null, error: result.message }); return }
+          if (!result.ok) {
+            if (version !== revision) return
+            patch({ busy: false, picked: null, feedback: null, error: result.message })
+            if (result.code === 'stale_presentation') await load(true)
+            return
+          }
           begin(result.data.batch, result.warnings?.join(' ') || null)
           patch({ nextDueAt: result.data.dueAt ?? state.nextDueAt })
           notifyReview()

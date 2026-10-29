@@ -6,6 +6,7 @@ import test from 'node:test'
 
 import { ANCHOR_HASH, ANCHOR_POOL } from '../core/anchors.js'
 import { execute } from '../core/index.js'
+import { answerFixture } from './answer-fixture.js'
 
 // ------------------------------------------------------------------ fixtures
 
@@ -25,7 +26,7 @@ function plusDays(date, days) {
 }
 
 function run(root, command, payload, now) {
-  return execute(root, command, payload, { now })
+  return command === 'review.answer' ? answerFixture(root, payload, now) : execute(root, command, payload, { now })
 }
 
 function source(overrides = {}) {

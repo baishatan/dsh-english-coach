@@ -72,7 +72,7 @@ test('悬浮答题与主页共享反馈、题号、完成统计及唯一作答�
   await ui.click('收起')
   await ui.click('单词')
   assert.match(main(ui).textContent, /已完成 2 \/ 2 项/)
-  assert.equal(api.calls.filter(({ command }) => command === 'study.batch').length, 1)
+  assert.equal(api.calls.filter(({ command }) => command === 'study.batch').length, 3, '入口切换重新读取相同保存批次')
 })
 
 test('作答请求跨导航保留忙状态，迟到成功只记录一次并恢复反馈', async t => {
@@ -91,7 +91,7 @@ test('作答请求跨导航保留忙状态，迟到成功只记录一次并恢�
   await ui.flush(() => pending.resolve({ ok: true, data: { correct: false, explanation: '合成错题讲解', dueCount: 2 } }))
   assert.match(ui.text(), /答错了.*合成错题讲解/)
   assert.equal(api.calls.filter(({ command }) => command === 'review.answer').length, 1)
-  assert.equal(api.calls.filter(({ command }) => command === 'study.batch').length, 1)
+  assert.equal(api.calls.filter(({ command }) => command === 'study.batch').length, 3, '入口切换重新读取相同保存批次')
   await ui.click('下一个')
   assert.equal(ui.container.querySelector('.ec-deck-term').textContent, 'second-word')
   assert.match(ui.text(), /已完成 0 \/ 2 项/)

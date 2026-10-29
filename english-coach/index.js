@@ -40,6 +40,7 @@ export function apply(ctx, config) {
   const jobsFile = () => join(root, 'jobs.json')
   const state = { promptLine: '' }
   let automationSynced = false
+  const vocabularyRequests = new Map()
 
   /**
    * Run `fn` with the named services as soon as all of them exist. A cold boot
@@ -128,15 +129,19 @@ export function apply(ctx, config) {
     if (command === 'generate') return await startJob('lesson')
     if (command === 'generate.assessment') return await startJob('assessment')
     if (command === 'generate.vocab') {
-      // Even an explicit profile request must resume an unfinished round. The
-      // domain owns this guard, including after preferences have changed.
-      const batch = await execute(root, 'study.supplement', payload)
-      if (!batch.ok) return batch
-      if (batch.data.round.status !== 'empty' || batch.data.mode !== 'profile_required') {
-        return { ...batch, data: { ...batch.data, mode: 'static' } }
-      }
-      const result = await startJob('vocab')
-      return result.ok ? { ...result, data: { ...result.data, mode: 'generated' } } : result
+      const token = JSON.stringify([payload?.roundId ?? null, payload?.revision ?? null, payload?.presentationId ?? null, payload?.profile === true, payload?.continue === true])
+      if (vocabularyRequests.has(token)) return vocabularyRequests.get(token)
+      const task = (async () => {
+        const batch = await execute(root, 'study.supplement', payload)
+        if (!batch.ok) return batch
+        if (batch.data.round.status !== 'empty' || batch.data.mode !== 'profile_required') {
+          return { ...batch, data: { ...batch.data, mode: 'static' } }
+        }
+        const result = await startJob('vocab', batch.data.round)
+        return result.ok && result.data?.kind === 'vocab' ? { ...result, data: { ...result.data, batch: batch.data, mode: 'generated' } } : result
+      })()
+      vocabularyRequests.set(token, task)
+      try { return await task } finally { if (vocabularyRequests.get(token) === task) vocabularyRequests.delete(token) }
     }
     if (command === 'lesson.context') {
       try {
@@ -287,7 +292,7 @@ export function apply(ctx, config) {
     vocab: { title: '英语教练 · 补充词汇', prompt: vocabPrompt }
   }
 
-  async function startJob(kind) {
+  async function startJob(kind, vocabularyRound) {
     const spec = JOB_SPECS[kind] ?? JOB_SPECS.lesson
     const sessionController = ctx.get('sessionController')
     const schedule = ctx.get('schedule')
@@ -305,6 +310,7 @@ export function apply(ctx, config) {
       return { ok: true, data: { ...previous, reused: true }, warnings: [] }
     }
 
+    let claim
     try {
       const preparedPrompt = await spec.prompt()
       const prompt = kind === 'lesson'
@@ -314,6 +320,11 @@ export function apply(ctx, config) {
       if (!sessionId) {
         const created = await sessionController.create({ cwd: root })
         sessionId = created.sessionId
+      }
+      if (kind === 'vocab') {
+        claim = await execute(root, 'study.generation.claim', { roundId: vocabularyRound.id, revision: vocabularyRound.revision })
+        if (!claim.ok) return claim
+        if (!claim.data.claimed) return { ...claim, data: { ...claim.data, mode: 'static' } }
       }
       const record = await schedule.create(sessionId, {
         title: spec.title,
@@ -340,6 +351,8 @@ export function apply(ctx, config) {
         code: 'generate_failed',
         message: `创建生成任务失败：${error && error.message ? error.message : String(error)}`
       }
+    } finally {
+      if (claim?.data?.claimed) await execute(root, 'study.generation.release', { roundId: vocabularyRound.id, claimId: claim.data.claimId })
     }
   }
 
@@ -510,7 +523,13 @@ export function apply(ctx, config) {
           return { ok: false, code: 'invalid_vocabulary_action', field: 'id', message: '该操作需要明确指定词库；清除偏好请传 null。' }
         }
         const { action, ...payload } = args
-        return await dispatch(commands[action], action === 'supplement' ? { ...payload, continue: true } : payload)
+        if (action === 'supplement') {
+          const current = await execute(root, 'study.batch')
+          if (!current.ok) return current
+          const { id: roundId, revision, current: presentation } = current.data.round
+          return dispatch(commands[action], { ...payload, continue: true, roundId, revision, presentationId: presentation?.id })
+        }
+        return await dispatch(commands[action], payload)
       }
     },
     {
@@ -705,7 +724,7 @@ export function apply(ctx, config) {
     {
       name: 'english_record',
       description:
-        '批量记录作答与完成状态。按项去重：同一项同一时间重复提交只算一次。用于补记课程完成情况；复习题的推进由面板直接完成，一般不需要调用。',
+        '批量补记课程完成或词汇作答。词汇必须有稳定作答身份：当前批的 roundId/revision/presentationId，或无进行中批次时的 attemptId；同一次作答跨请求只生效一次，缺身份会跳过。at 仅为线索，不补发历史进度。面板直接保存词汇作答，通常不需补记；课程完成语义不变。',
       parameters: {
         type: 'object',
         properties: {
@@ -716,7 +735,11 @@ export function apply(ctx, config) {
               properties: {
                 itemId: { type: 'string' },
                 correct: { type: 'boolean' },
-                at: { type: 'string', description: 'ISO 时间，可选' }
+                at: { type: 'string', description: '原作答的 ISO 时间线索，可选；不用于补发历史进度，完成按实际保存日记账' },
+                roundId: { type: 'string', description: '当前已保存批次的身份，与 revision/presentationId 一起提交' },
+                revision: { type: 'integer', description: '作答前的当前批次版本' },
+                presentationId: { type: 'string', description: 'Host 返回的本次呈现身份；真实再次练习须使用新呈现' },
+                attemptId: { type: 'string', description: '无进行中批次的独立补记身份；每次真实作答使用唯一稳定值，重发必须复用' }
               },
               required: ['itemId', 'correct']
             }

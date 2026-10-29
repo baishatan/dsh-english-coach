@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { execute } from '../core/index.js'
+import { answerFixture } from './answer-fixture.js'
 import { mountClient } from './client-harness.js'
 
 function at(day) {
@@ -19,10 +20,10 @@ async function fixture(t) {
   assert.equal((await run('profile.save', { goal: 'work', interests: [], minutesPerDay: 30 })).ok, true)
   const added = await run('review.add', { items: [word('alpha'), word('in fact', { kind: 'expression' }), word('on the whole', { kind: 'expression' })] }, at('2026-10-20'))
   for (const item of added.data.added) {
-    for (const day of ['2026-10-20', '2026-10-21']) assert.equal((await run('review.answer', { itemId: item.id, choice: 1 }, at(day))).ok, true)
+    for (const day of ['2026-10-20', '2026-10-21']) assert.equal((await answerFixture(root, { itemId: item.id, choice: 1 }, at(day))).ok, true)
   }
   const masteredId = added.data.added[2].id
-  for (const day of ['2026-10-28', '2026-11-27']) assert.equal((await run('review.answer', { itemId: masteredId, choice: 1 }, at(day))).ok, true)
+  for (const day of ['2026-10-28', '2026-11-27']) assert.equal((await answerFixture(root, { itemId: masteredId, choice: 1 }, at(day))).ok, true)
   const pending = new Set()
   const api = {
     run, calls: [], failure: null,
@@ -125,7 +126,7 @@ test('旧词、表达与掌握抽检跨三入口共享纠正队尾、已保存�
   assert.deepEqual(saved.map(item => [item.term, item.box, item.answerCount, item.due]), [
     ['alpha', 3, 5, false], ['in fact', 3, 3, false], ['on the whole', 4, 6, false]
   ])
-  assert.equal(api.calls.filter(call => call.command === 'study.batch').length, 1)
+  assert.equal(api.calls.filter(call => call.command === 'study.batch').length, 5, '跨入口只同步保存批次')
   assert.equal(api.calls.filter(call => call.command === 'review.answer').length, 7)
   assert.equal(api.calls.some(call => call.command === 'generate.vocab'), false)
 })
