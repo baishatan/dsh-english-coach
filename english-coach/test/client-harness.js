@@ -10,7 +10,63 @@ const React = require('react')
 const { act } = React
 let createRoot
 
+// Compatibility lives only at the external Host seam: older display fixtures
+// supply candidates and feedback, while production always supplies a saved round.
+// Recovery tests use real execute and pass through this Adapter unchanged.
+function fixtureHost(request) {
+  let batch = null, serial = 0, awaitingGeneration = false
+  const attempts = new Map()
+  const snapshot = () => structuredClone(batch)
+  const begin = data => {
+    attempts.clear()
+    const id = `fixture-round-${++serial}`
+    batch = { ...structuredClone(data), round: { id, revision: 1, status: data.items.length ? 'active' : 'empty', at: 0,
+      current: data.items.length ? { id: `${id}:1`, itemId: data.items[0].id, choiceOrder: [0, 1, 2, 3], picked: null, feedback: null } : null,
+      summary: { total: data.items.length, completed: 0, firstTryCorrect: 0, retryCount: 0 } } }
+  }
+  return async (command, payload) => {
+    if (command === 'study.next' && batch) {
+      const round = batch.round, current = round.current
+      if (current.feedback.correct) round.at++
+      else {
+        const [item] = batch.items.splice(round.at, 1)
+        const order = [1, 2, 3, 0]
+        batch.items.push({ ...item, choices: order.map(i => item.choices[i]), answerIndex: order.indexOf(item.answerIndex), choiceOrder: order.map(i => item.choiceOrder?.[i] ?? i) })
+      }
+      round.revision++
+      const item = batch.items[round.at]
+      round.current = item ? { id: `${round.id}:${round.revision}`, itemId: item.id, choiceOrder: item.choiceOrder ?? [0, 1, 2, 3], picked: null, feedback: null } : null
+      if (!item) round.status = 'completed'
+      return { ok: true, data: snapshot() }
+    }
+    const result = await request(command, payload)
+    if (!result?.ok) return result
+    if (command === 'generate.vocab' && result.data.mode === 'generated') awaitingGeneration = true
+    if (['study.batch', 'study.supplement', 'generate.vocab'].includes(command) && Array.isArray(result.data?.items) && !result.data.round) {
+      if (!batch || command !== 'study.batch' || awaitingGeneration) { begin(result.data); awaitingGeneration = false }
+      return { ...result, data: snapshot() }
+    }
+    if (command === 'review.answer' && batch && !result.data.batch) {
+      const { round } = batch
+      const count = attempts.get(payload.itemId) ?? 0
+      attempts.set(payload.itemId, count + 1)
+      if (count) round.summary.retryCount++
+      else if (result.data.correct) round.summary.firstTryCorrect++
+      if (result.data.correct) round.summary.completed++
+      round.revision++
+      round.current.picked = round.current.choiceOrder.indexOf(payload.choice)
+      round.current.feedback = { correct: result.data.correct, explanation: result.data.explanation }
+      const item = batch.items[round.at]
+      for (const key of ['box', 'fresh', 'status', 'dueAt']) if (result.data[key] !== undefined) item[key] = result.data[key]
+      if (result.data.dueCount !== undefined) batch.dueCount = result.data.dueCount
+      return { ...result, data: { ...result.data, batch: snapshot() } }
+    }
+    return result
+  }
+}
+
 export async function mountClient({ request, slot = 'main', setupWindow, layout } = {}) {
+  const hostRequest = fixtureHost(request)
   const dom = new JSDOM('<!doctype html><div id="test-root"></div>', { url: 'http://localhost/', pretendToBeVisual: true })
   const previous = new Map()
   for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, navigator: dom.window.navigator, HTMLElement: dom.window.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true })) {
@@ -27,7 +83,7 @@ export async function mountClient({ request, slot = 'main', setupWindow, layout 
   dom.window.__ModuleLoader__ = { load: ({ factory }) => { plugin = factory(require) } }
   const context = vm.createContext({
     window: dom.window, document: dom.window.document, console,
-    fetch: async (url, options) => ({ ok: true, json: async () => request(url.split('/').at(-1), JSON.parse(options.body)) }),
+    fetch: async (url, options) => ({ ok: true, json: async () => hostRequest(url.split('/').at(-1), JSON.parse(options.body)) }),
     setTimeout, clearTimeout,
     setInterval: (callback, delay) => { intervals.set(++timerId, { callback, delay }); return timerId },
     clearInterval: (id) => intervals.delete(id)

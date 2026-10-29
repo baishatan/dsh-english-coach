@@ -46,7 +46,7 @@ for (const entry of ['today', 'words', 'overlay']) {
     assert.equal(api.calls.filter(({ command }) => command === 'generate.vocab').length, 0)
     await ui.click('继续学习')
     assert.match(ui.text(), /正在出词/)
-    assert.deepEqual(api.calls.filter(({ command }) => command === 'generate.vocab').map(({ payload }) => payload), [{}])
+    assert.deepEqual(api.calls.filter(({ command }) => command === 'generate.vocab').map(({ payload }) => ({ continue: payload.continue })), [{ continue: true }])
   })
 }
 
@@ -131,7 +131,7 @@ for (const entry of ['today', 'overlay']) {
     await answer(ui)
     await ui.click('继续学习')
     assert.equal(term(ui), 'next-library-word')
-    assert.deepEqual(api.calls.filter(({ command }) => command === 'generate.vocab').map(({ payload }) => payload), [{}])
+    assert.deepEqual(api.calls.filter(({ command }) => command === 'generate.vocab').map(({ payload }) => ({ continue: payload.continue })), [{ continue: true }])
     assert.equal(api.calls.some(({ command, payload }) => command === 'generate.vocab' && payload.profile === true), false)
   })
 }
@@ -415,7 +415,7 @@ for (const entry of ['today', 'overlay']) {
     assert.ok(ui.button('选择词库'))
     assert.equal(ui.buttons('按画像补词').length, 0)
     await ui.click('继续学习')
-    assert.deepEqual(api.calls.filter(({ command }) => command === 'generate.vocab').map(({ payload }) => payload), [{}, {}])
+    assert.deepEqual(api.calls.filter(({ command }) => command === 'generate.vocab').map(({ payload }) => ({ continue: payload.continue })), [{ continue: true }, { continue: true }])
     assert.doesNotMatch(ui.text(), /正在出词/)
     assert.equal(api.activeWordListId, 'cet4')
   })

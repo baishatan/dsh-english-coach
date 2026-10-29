@@ -83,7 +83,9 @@ test('旧档fresh真但已有作答仍是一格旧词，缺新增字段不回算
     assert.equal(item.fresh, false, '历史作答证据优先于旧fresh标记')
     assert.equal(result.data.items.find(entry => entry.id === 'missing').box, 2)
   }
-  assert.equal(await fs.readFile(file, 'utf8'), before, '读取不迁移旧档或回拉历史错误')
+  const { round, ...afterRead } = JSON.parse(await fs.readFile(file, 'utf8'))
+  assert.deepEqual(afterRead, JSON.parse(before), '首次批次元数据以外不迁移旧档或回拉历史错误')
+  assert.deepEqual(round.facts.legacy.answers, [], '不从历史错误重建本批作答')
   assert.equal((await run('review.list')).data.items.find(entry => entry.id === 'mastered').due, false)
   const wrong = await run('review.answer', { itemId: 'legacy', choice: 0 })
   assert.equal(wrong.data.box, 1)
@@ -164,7 +166,7 @@ test('正常入口每学习日只推进一次，次日不能提前绕过7／30�
     const early = await run('review.answer', { itemId: item.id, choice: 1 }, at(day, 23))
     assert.equal(early.code, 'not_due')
     assert.equal((await run('study.batch', {}, at(day, 23))).data.items.length, 0)
-    assert.equal(await fs.readFile(join(root, 'review/items.json'), 'utf8'), before)
+    assert.deepEqual(JSON.parse(await fs.readFile(join(root, 'review/items.json'), 'utf8')).items, JSON.parse(before).items, '允许首次批次元数据，不改词进度')
   }
   const invalid = await run('review.answer', { itemId: item.id, choice: 4 })
   assert.equal(invalid.code, 'invalid_field')

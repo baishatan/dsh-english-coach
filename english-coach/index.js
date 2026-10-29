@@ -128,12 +128,12 @@ export function apply(ctx, config) {
     if (command === 'generate') return await startJob('lesson')
     if (command === 'generate.assessment') return await startJob('assessment')
     if (command === 'generate.vocab') {
-      if (payload?.profile !== true) {
-        const result = await execute(root, 'study.supplement', {})
-        if (!result.ok) return result
-        if (result.data.activeWordListId || result.data.items.length) {
-          return { ...result, data: { ...result.data, mode: 'static' } }
-        }
+      // Even an explicit profile request must resume an unfinished round. The
+      // domain owns this guard, including after preferences have changed.
+      const batch = await execute(root, 'study.supplement', payload)
+      if (!batch.ok) return batch
+      if (batch.data.round.status !== 'empty' || batch.data.mode !== 'profile_required') {
+        return { ...batch, data: { ...batch.data, mode: 'static' } }
       }
       const result = await startJob('vocab')
       return result.ok ? { ...result, data: { ...result.data, mode: 'generated' } } : result
@@ -510,7 +510,7 @@ export function apply(ctx, config) {
           return { ok: false, code: 'invalid_vocabulary_action', field: 'id', message: '该操作需要明确指定词库；清除偏好请传 null。' }
         }
         const { action, ...payload } = args
-        return await dispatch(commands[action], payload)
+        return await dispatch(commands[action], action === 'supplement' ? { ...payload, continue: true } : payload)
       }
     },
     {
