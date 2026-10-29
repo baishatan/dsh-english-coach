@@ -170,8 +170,8 @@ test('active-list supplement uses the shared domain operation without a model jo
   assert.equal(again.data.addedCount, 0)
   assert.equal(h.records.length, 0)
   const explicit = await h.request('generate.vocab', { profile: true })
-  assert.equal(explicit.data.mode, 'generated')
-  assert.equal(h.records.length, 1)
+  assert.equal(explicit.data.mode, 'static', '未完成原批优先于显式画像请求')
+  assert.equal(h.records.length, 0)
   assert.equal((await execute(h.root, 'study.preference')).data.activeWordList.id, 'cet4')
 })
 
@@ -182,6 +182,46 @@ test('without a list, ordinary supplementation reuses due items before requestin
   assert.equal(result.ok, true)
   assert.equal(result.data.items[0].term, 'existing')
   assert.equal(h.records.length, 0)
+})
+
+test('unfinished durable round blocks static and explicit profile generation at every Host entry', async () => {
+  const h = await host()
+  await execute(h.root, 'review.add', { items: [{ term: 'pending', meaning: '待完成', choices: ['待完成', '将来', '过去', '现在'], answerIndex: 0 }] })
+  const original = (await h.request('study.batch')).data
+  await h.tool({ action: 'select', id: 'ielts' })
+  for (const invoke of [
+    () => execute(h.root, 'study.supplement', { continue: true }),
+    () => h.request('generate.vocab', { continue: true }),
+    () => h.request('generate.vocab', { profile: true, continue: true }),
+    () => h.tool({ action: 'supplement', profile: true })
+  ]) {
+    const result = await invoke()
+    assert.equal(result.ok, true)
+    assert.deepEqual(result.data.round, original.round, '所有入口只能续原批')
+    assert.equal((await execute(h.root, 'review.list')).data.total, 1)
+    assert.equal(h.records.length, 0, '未完成时不能悄悄启动模型')
+    assert.equal(h.createdSessions.length, 0)
+  }
+})
+
+test('only explicit continuation may fill an empty round from a completed generation', async () => {
+  const h = await host()
+  const empty = (await h.request('study.batch')).data
+  const untouched = await h.request('generate.vocab', { profile: true })
+  assert.deepEqual(untouched.data.round, empty.round)
+  assert.equal(h.records.length, 0)
+  const started = await h.request('generate.vocab', { profile: true, continue: true, roundId: empty.round.id })
+  assert.equal(started.data.mode, 'generated')
+  assert.equal(h.records.length, 1)
+  await h.tools.get('english_add_words').execute({ items: [{ term: 'generated', meaning: '生成词', choices: ['生成词', '将来', '过去', '现在'], answerIndex: 0 }] })
+  h.endSession()
+  assert.equal((await h.request('job.status', { kind: 'vocab' })).data.status, 'done')
+  const loaded = (await h.request('study.batch')).data
+  assert.equal(loaded.round.status, 'active')
+  assert.equal(loaded.items[0].term, 'generated')
+  assert.deepEqual((await h.request('study.batch')).data.round, loaded.round)
+  await h.tools.get('english_add_words').execute({ items: [{ term: 'late generation', meaning: '迟到词', choices: ['迟到词', '将来', '过去', '现在'], answerIndex: 0 }] })
+  assert.deepEqual((await h.request('study.batch')).data.items, loaded.items, '生成结束后的读取也不能替换进行中原批')
 })
 
 test('no preference keeps model supplementation; generation failures remain visible', async () => {

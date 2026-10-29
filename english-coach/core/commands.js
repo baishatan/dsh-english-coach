@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { join, resolve, sep } from 'node:path'
 
 import {
@@ -84,6 +85,15 @@ function assessmentFile(ctx, id) {
 async function load(ctx, key, fallback = DEFAULTS[key]) {
   const { value, warning } = await readJson(file(ctx, key), fallback)
   if (warning) ctx.warn(warning)
+  return value
+}
+
+/** Learning must not advance from a backup that can predate a saved answer. */
+async function loadReviewForStudy(ctx) {
+  const { value, warning } = await readJson(file(ctx, 'review'), DEFAULTS.review)
+  // A backup may predate the latest answer. Do not let a fallback create a new
+  // round or award that answer again; retain the damaged file for recovery.
+  if (warning) fail('round_recovery_failed', `恢复学习批次失败：${warning}。请检查存储后重试，当前进度未改动`)
   return value
 }
 
@@ -482,6 +492,36 @@ function studyBatch(items, settings, now) {
   const fresh = due.filter(item => !hasAnswered(item)).map(item => ({ ...item, fresh: true }))
     .sort((a, b) => Number(members.has(termKey(b.term))) - Number(members.has(termKey(a.term))))
   return { items: [...old, ...fresh].slice(0, settings.study.wordsPerDay).map(item => ({ ...publicReviewItem(item), due: true })), dueCount: due.length, batchSize: settings.study.wordsPerDay, activeWordListId }
+}
+
+function newStudyRound(batch, now) {
+  const id = randomUUID()
+  const order = batch.items.map(item => item.id)
+  return {
+    id, revision: 1, status: order.length ? 'active' : 'empty',
+    startedAt: now.toISOString(), batchSize: batch.batchSize, activeWordListId: batch.activeWordListId,
+    order, at: 0, facts: Object.fromEntries(order.map(itemId => [itemId, { answers: [], completedAt: null }])),
+    current: order.length ? { id: `${id}:1`, itemId: order[0], choiceOrder: [0, 1, 2, 3], picked: null, feedback: null } : null
+  }
+}
+
+function publicStudyBatch(review, now) {
+  const round = review.round
+  const items = round.order.map(id => review.items.find(item => item.id === id)).map(item => {
+    const projected = { ...publicReviewItem(item), due: isDue(item, now) }
+    if (round.current?.itemId !== item.id) return projected
+    const choiceOrder = round.current.choiceOrder
+    return { ...projected, choices: choiceOrder.map(index => item.choices[index]), answerIndex: choiceOrder.indexOf(item.answerIndex), choiceOrder }
+  })
+  const facts = Object.values(round.facts)
+  const summary = {
+    total: facts.length,
+    completed: facts.filter(fact => fact.completedAt).length,
+    firstTryCorrect: facts.filter(fact => fact.answers[0]?.correct).length,
+    retryCount: facts.reduce((sum, fact) => sum + Math.max(0, fact.answers.length - 1), 0)
+  }
+  return { items, dueCount: dueItems(review.items, now).length, batchSize: round.batchSize, activeWordListId: round.activeWordListId,
+    round: { id: round.id, revision: round.revision, status: round.status, at: round.at, current: round.current, summary } }
 }
 
 function bookmarkIdentity(payload) {
@@ -1146,25 +1186,66 @@ const handlers = {
       candidates: candidates.slice(0, 60).map(entry => ({ term: entry.term, meaning: entry.meaning })), candidateCount: candidates.length, batchSize: settings.study.wordsPerDay }
   },
 
-  async 'study.supplement'(ctx) {
+  async 'study.supplement'(ctx, payload) {
     const settings = await loadSettings(ctx)
-    const review = await load(ctx, 'review')
+    const review = await loadReviewForStudy(ctx)
+    if (review.round && (review.round.status === 'active' || payload?.continue !== true)) {
+      return { ...publicStudyBatch(review, ctx.now), addedCount: 0 }
+    }
     const before = studyBatch(review.items ?? [], settings, ctx.now)
     const available = listCandidates(review.items ?? [], settings)
-    if (!available.list) return { ...before, addedCount: 0, remainingPlayable: 0, exhaustion: null, shortfall: before.batchSize - before.items.length, mode: 'profile_required' }
     const needed = Math.max(0, before.batchSize - before.items.length)
-    const incoming = available.candidates.slice(0, needed).map(entry => ({ id: entry.id, term: entry.term, kind: entry.kind, meaning: entry.meaning, ...entry.practice }))
-    const enrolled = enrol(review, incoming, ctx.now, { kind: 'wordlist', id: available.list.id })
-    if (enrolled.addedCount || enrolled.linkedCount) await save(ctx, 'review', review)
+    const incoming = (payload?.profile === true ? [] : available.candidates.slice(0, needed)).map(entry => ({ id: entry.id, term: entry.term, kind: entry.kind, meaning: entry.meaning, ...entry.practice }))
+    const enrolled = enrol(review, incoming, ctx.now, { kind: 'wordlist', id: available.list?.id })
     const after = studyBatch(review.items ?? [], settings, ctx.now)
+    review.round = newStudyRound(after, ctx.now)
+    if (!after.items.length && (!available.list || payload?.profile === true)) review.round.awaitingGeneration = true
+    await save(ctx, 'review', review)
     const remaining = listCandidates(review.items ?? [], settings)
-    return { ...after, addedCount: enrolled.addedCount, remainingPlayable: remaining.remainingPlayable, exhaustion: remaining.exhaustion, shortfall: after.batchSize - after.items.length }
+    return { ...publicStudyBatch(review, ctx.now), addedCount: enrolled.addedCount, remainingPlayable: remaining.remainingPlayable, exhaustion: remaining.exhaustion,
+      shortfall: after.batchSize - after.items.length, ...(!available.list || payload?.profile === true ? { mode: 'profile_required' } : {}) }
   },
 
   async 'study.batch'(ctx) {
-    const review = await load(ctx, 'review')
-    const settings = await loadSettings(ctx)
-    return studyBatch(review.items ?? [], settings, ctx.now)
+    const review = await loadReviewForStudy(ctx)
+    if (!review.round || review.round.status === 'empty' && review.round.awaitingGeneration) {
+      const settings = await loadSettings(ctx)
+      const batch = studyBatch(review.items ?? [], settings, ctx.now)
+      if (!review.round || batch.items.length) {
+        review.round = newStudyRound(batch, ctx.now)
+        await save(ctx, 'review', review)
+      }
+    }
+    return publicStudyBatch(review, ctx.now)
+  },
+
+  async 'study.next'(ctx) {
+    const review = await loadReviewForStudy(ctx)
+    const round = review.round
+    if (!round?.current?.feedback) fail('answer_required', '请先保存当前题的答案，再继续')
+    const { current } = round
+    if (current.feedback.correct) round.at++
+    else {
+      round.order.splice(round.at, 1)
+      round.order.push(current.itemId)
+    }
+    round.revision++
+    const itemId = round.order[round.at]
+    if (!itemId) { round.current = null; round.status = 'completed' }
+    else {
+      const choiceOrder = [0, 1, 2, 3]
+      if (round.facts[itemId].answers.length) {
+        for (let index = 3; index > 0; index--) {
+          const other = Math.floor(Math.random() * (index + 1))
+          ;[choiceOrder[index], choiceOrder[other]] = [choiceOrder[other], choiceOrder[index]]
+        }
+        const previousOrder = round.facts[itemId].answers.at(-1)?.choiceOrder ?? [0, 1, 2, 3]
+        if (choiceOrder.every((value, index) => value === previousOrder[index])) choiceOrder.push(choiceOrder.shift())
+      }
+      round.current = { id: `${round.id}:${round.revision}`, itemId, choiceOrder, picked: null, feedback: null }
+    }
+    await save(ctx, 'review', review)
+    return publicStudyBatch(review, ctx.now)
   },
 
   async 'wordlists.list'(ctx) {
@@ -1221,7 +1302,7 @@ const handlers = {
   async 'review.answer'(ctx, payload) {
     const itemId = String(payload?.itemId ?? '')
     const choice = Number(payload?.choice)
-    const review = await load(ctx, 'review')
+    const review = await loadReviewForStudy(ctx)
     const items = review.items ?? []
     const index = items.findIndex((item) => item.id === itemId)
     if (index < 0) fail('item_not_found', `复习队列里没有 ${itemId}`, 'itemId')
@@ -1240,15 +1321,23 @@ const handlers = {
     const correct = choice === item.answerIndex
     const updated = advance(item, correct, ctx.now)
     items[index] = updated
+    if (review.round?.current?.itemId === itemId) {
+      const round = review.round
+      const fact = round.facts[itemId]
+      fact.answers.push({ at: ctx.now.toISOString(), choice, correct, presentationId: round.current.id, choiceOrder: round.current.choiceOrder })
+      if (correct) fact.completedAt = ctx.now.toISOString()
+      round.current.picked = round.current.choiceOrder.indexOf(choice)
+      round.current.feedback = { correct, explanation: item.explanation }
+      round.revision++
+    }
     await save(ctx, 'review', { ...review, items })
-    await appendJsonl(join(ctx.root, FILES.reviewLog), {
-      at: ctx.now.toISOString(),
-      itemId,
-      choice,
-      correct,
-      box: updated.box,
-      status: updated.status
-    })
+    try {
+      await appendJsonl(join(ctx.root, FILES.reviewLog), {
+        at: ctx.now.toISOString(), itemId, choice, correct, box: updated.box, status: updated.status
+      })
+    } catch (error) {
+      ctx.warn(`答案已保存，但复习日志写入失败；无需再次作答：${error?.message ?? error}`)
+    }
     return {
       correct,
       answerIndex: item.answerIndex,
@@ -1258,7 +1347,8 @@ const handlers = {
       status: updated.status,
       dueAt: updated.dueAt,
       dueCount: dueItems(items, ctx.now).length,
-      mastered: countMastered(items)
+      mastered: countMastered(items),
+      ...(review.round ? { batch: publicStudyBatch(review, ctx.now) } : {})
     }
   },
 

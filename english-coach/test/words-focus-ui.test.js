@@ -81,15 +81,15 @@ test('学习安排和浏览共用已保存来源，取消不写入、失败留�
   assert.equal(term(ui), current)
   assert.deepEqual((await run('review.list')).data, personalBefore)
   await ui.click(ui.container.querySelector('.ec-choice')); await settle()
-  await ui.click('下一个')
+  await ui.click('下一个'); await settle()
   await ui.click(ui.container.querySelector('.ec-choice')); await settle()
-  await ui.click('下一个')
+  await ui.click('下一个'); await settle()
   await ui.click(ui.container.querySelector('.ec-choice')); await settle()
-  await ui.click('完成复习')
+  await ui.click('完成复习'); await settle()
   await ui.click('继续学习'); await settle()
   assert.match(ui.text(), /本轮第 1 \/ 3 项/)
   assert.ok((await run('wordlists.query', { id: 'cet6', filter: 'joined' })).data.total > 0)
-  assert.deepEqual(requests.filter(({ command }) => command === 'generate.vocab').map(({ payload }) => payload), [{}])
+  assert.deepEqual(requests.filter(({ command }) => command === 'generate.vocab').map(({ payload }) => ({ continue: payload.continue })), [{ continue: true }])
 })
 
 test('在学习安排调整每批数量，非法值拒绝、取消不写、失败留稿、当前轮不变', async t => {
@@ -133,7 +133,7 @@ test('在学习安排调整每批数量，非法值拒绝、取消不写、失�
   assert.match(ui.text(), /本轮第 1 \/ 3 项/)
   for (let i = 0; i < 3; i++) {
     await ui.click(ui.container.querySelector('.ec-choice')); await settle()
-    await ui.click(i === 2 ? '完成复习' : '下一个')
+    await ui.click(i === 2 ? '完成复习' : '下一个'); await settle()
   }
   await ui.click('继续学习'); await settle()
   assert.match(ui.text(), /本轮第 1 \/ 7 项/)
@@ -245,6 +245,6 @@ test('词表默认收起，展开搜索详情再收起不丢本轮答案和反�
   assert.equal(term(ui), current)
   assert.equal(requests.filter(({ command }) => command === 'study.batch').length, batchReads)
   assert.equal((await run('review.list')).data.total, 121)
-  await ui.click('下一个')
+  await ui.click('下一个'); await settle()
   assert.match(ui.text(), /本轮第 2 \/ 3 项/)
 })

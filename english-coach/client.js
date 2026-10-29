@@ -263,18 +263,21 @@ window.__ModuleLoader__.load({
 
     // ---------------------------------------------------------- shared round
 
-    // One in-memory round per Client lifetime, not one round per mounted view.
-    // The Host still owns candidate selection, answer validation and all writes.
+    // All views render the Host's saved round. Only pending/error UI lives here;
+    // candidate order, option mapping, feedback and completion belong to Host.
     const studyRound = (() => {
       const listeners = new Set()
       let state = { batch: null, items: null, at: 0, picked: null, feedback: null, correct: 0, answered: 0, conflict: false, busy: false, loading: false, error: null, job: null, dueCount: null, nextDueAt: null }
       let active = 0, generation = 0, revision = 0, timer = null, polling = false
       let summaryRead = 0, latestSummary = 0
       const patch = change => { state = { ...state, ...change }; for (const listener of listeners) listener() }
-      const begin = batch => {
+      const begin = (batch, warning = null) => {
         revision++
-        patch({ batch, items: batch.items ?? [], at: 0, picked: null, feedback: null, correct: 0, answered: 0, conflict: false, busy: false, loading: false, error: null, dueCount: batch.dueCount ?? state.dueCount })
+        const { round } = batch
+        patch({ batch, items: batch.items, at: round.at, picked: round.current?.picked ?? null, feedback: round.current?.feedback ?? null,
+          correct: round.summary.completed, answered: round.summary.completed, conflict: false, busy: false, loading: false, error: warning, dueCount: batch.dueCount ?? state.dueCount })
       }
+      const identity = () => ({ roundId: state.batch.round.id, revision: state.batch.round.revision, presentationId: state.batch.round.current?.id })
       async function load() {
         if (state.loading || state.items !== null) return
         const request = ++generation
@@ -323,14 +326,10 @@ window.__ModuleLoader__.load({
           const word = state.items?.[state.at]
           if (!word || state.picked !== null || state.busy || state.conflict) return
           patch({ picked: choice, busy: true, error: null })
-          const result = await call('review.answer', { itemId: word.id, choice: word.choiceOrder?.[choice] ?? choice })
+          const result = await call('review.answer', { ...identity(), itemId: word.id, choice: word.choiceOrder?.[choice] ?? choice })
           if (!result.ok) { patch({ busy: false, picked: null, feedback: null, error: result.message }); return }
-          revision++
-          const savedWord = { ...word }
-          for (const field of ['box', 'fresh', 'status', 'dueAt']) if (result.data[field] !== undefined) savedWord[field] = result.data[field]
-          patch({ busy: false, items: state.items.map((item, index) => index === state.at ? savedWord : item), correct: state.correct + Number(result.data.correct), answered: state.answered + 1,
-            feedback: { correct: result.data.correct, explanation: result.data.explanation ?? word.explanation },
-            dueCount: result.data.dueCount ?? (state.dueCount === null ? null : Math.max(0, state.dueCount - 1)), nextDueAt: result.data.dueAt ?? state.nextDueAt })
+          begin(result.data.batch, result.warnings?.join(' ') || null)
+          patch({ nextDueAt: result.data.dueAt ?? state.nextDueAt })
           notifyReview()
           if (state.at + 1 >= state.items.length) {
             const version = revision
@@ -338,27 +337,19 @@ window.__ModuleLoader__.load({
             if (fresh.ok && version === revision) patch({ nextDueAt: fresh.data.nextDueAt ?? state.nextDueAt })
           }
         },
-        next() {
-          if (state.busy || !state.feedback) return
-          if (state.feedback && !state.feedback.correct) {
-            const items = [...state.items]
-            const [word] = items.splice(state.at, 1)
-            const order = word.choices.map((_, index) => index)
-            for (let index = order.length - 1; index > 0; index--) {
-              const other = Math.floor(Math.random() * (index + 1))
-              ;[order[index], order[other]] = [order[other], order[index]]
-            }
-            if (order.every((value, index) => value === index)) order.push(order.shift())
-            items.push({ ...word, choices: order.map(index => word.choices[index]), answerIndex: order.indexOf(word.answerIndex),
-              choiceOrder: order.map(index => word.choiceOrder?.[index] ?? index) })
-            patch({ items, picked: null, feedback: null, error: null })
-          } else patch({ at: state.at + 1, picked: null, feedback: null, conflict: false, error: null })
+        async next() {
+          if (state.busy || !state.feedback) return false
+          patch({ busy: true, error: null })
+          const result = await call('study.next', identity())
+          if (!result.ok) { patch({ busy: false, error: result.message }); return false }
+          begin(result.data, result.warnings?.join(' ') || null)
+          return true
         },
         async continue() {
           if (state.busy || state.loading || state.items === null || state.job?.status === 'pending' || state.at < state.items.length) return
           const request = ++generation
           patch({ busy: true, error: null })
-          const result = await call('generate.vocab', {})
+          const result = await call('generate.vocab', { continue: true, ...identity() })
           if (request !== generation) return
           if (!result.ok) { patch({ busy: false, error: result.message }); return }
           if (result.data.mode === 'generated') { patch({ busy: false, job: result.data }); startPolling() }
@@ -1779,7 +1770,7 @@ window.__ModuleLoader__.load({
       const generating = job?.status === 'pending'
       const answer = studyRound.answer
       const questionRef = useRef(null)
-      const next = () => { studyRound.next(); questionRef.current?.focus() }
+      const next = async () => { if (await studyRound.next()) questionRef.current?.focus() }
       const generateMore = studyRound.continue
 
       useEffect(() => {
@@ -1893,7 +1884,7 @@ window.__ModuleLoader__.load({
                 h(
                   'div',
                   { className: 'ec-acts' },
-                  h(Btn, { primary: true, small: true, onClick: next }, isLast ? t('finishReview') : t('nextWord')),
+                  h(Btn, { primary: true, small: true, disabled: busy, onClick: next }, isLast ? t('finishReview') : t('nextWord')),
                   h('span', { className: 'ec-kbd' }, t('kbdHint'))
                 )
               )
@@ -3394,7 +3385,7 @@ window.__ModuleLoader__.load({
       const finished = Boolean(session) && session.cards.length > 0 && !card
 
       const questionRef = useRef(null)
-      const next = () => { studyRound.next(); questionRef.current?.focus() }
+      const next = async () => { if (await studyRound.next()) questionRef.current?.focus() }
       const answer = studyRound.answer
       const continueRemaining = studyRound.continue
 
@@ -3522,7 +3513,7 @@ window.__ModuleLoader__.load({
                   'div',
                   { className: 'ec-pop-acts' },
                   card && (session.feedback || conflict)
-                    ? h(Btn, { primary: true, small: true, onClick: next }, session.feedback?.correct && session.correct >= session.cards.length ? t('finishReview') : t('nextWord'))
+                    ? h(Btn, { primary: true, small: true, disabled: busy, onClick: next }, session.feedback?.correct && session.correct >= session.cards.length ? t('finishReview') : t('nextWord'))
                     : !card && !initialLoading && session !== null
                       ? h(Btn, { primary: true, small: true, disabled: busy || generating, onClick: continueRemaining }, generating ? t('generatingWords') : t('continueLearning'))
                       : null,
