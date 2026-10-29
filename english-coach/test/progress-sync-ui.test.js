@@ -67,11 +67,11 @@ test('悬浮答题与主页共享反馈、题号、完成统计及唯一作答�
   assert.equal(pop(ui).querySelector('.ec-pop-term').textContent, 'second-word')
   await ui.click(pop(ui).querySelector('.ec-choice'))
   await ui.click(button(pop(ui), '完成复习'))
-  assert.match(main(ui).textContent, /本轮 2 项，已作答 2 项/)
+  assert.match(main(ui).textContent, /本轮 2 项，已完成 2 项/)
   assert.match(pop(ui).textContent, /这批答对 2 个/)
   await ui.click('收起')
   await ui.click('单词')
-  assert.match(main(ui).textContent, /本轮 2 项，已作答 2 项/)
+  assert.match(main(ui).textContent, /本轮 2 项，已完成 2 项/)
   assert.equal(api.calls.filter(({ command }) => command === 'study.batch').length, 1)
 })
 
@@ -93,7 +93,8 @@ test('作答请求跨导航保留忙状态，迟到成功只记录一次并恢�
   assert.equal(api.calls.filter(({ command }) => command === 'review.answer').length, 1)
   assert.equal(api.calls.filter(({ command }) => command === 'study.batch').length, 1)
   await ui.click('下一个')
-  assert.match(ui.text(), /本轮第 2 \/ 2 项/)
+  assert.equal(ui.container.querySelector('.ec-deck-term').textContent, 'second-word')
+  assert.match(ui.text(), /已完成 0 \/ 2 项/)
 })
 
 test('双入口可见时共享下一批请求锁，显式继续后一起回到新批次第一项', async t => {

@@ -75,6 +75,9 @@ export function dueItems(items, now) {
  * 30-day box, because the item was demonstrably learned once.
  */
 export function hasAnswered(item) {
+  // Errors during initial learning are real answers, but do not finish it.
+  // Historical items without `fresh` keep their existing learned state.
+  if (item.fresh === true && item.box <= 1 && item.status !== 'mastered' && !item.masteredAt) return false
   return (item.answers ?? []).length > 0 || Boolean(item.lastAt || item.masteredAt) || item.status === 'mastered' || item.box > 1
 }
 
@@ -86,18 +89,17 @@ export function advance(item, correct, now) {
     answers: [...(item.answers ?? []), { at, correct: Boolean(correct) }].slice(-20)
   }
 
-  // A word the learner just met through the deck: this answer is the first
-  // exposure, not a review. It books the 1-day review and leaves the box alone,
-  // so the 1 / 7 / 30 chain still starts after it.
+  // Initial learning ends only with a correct answer. Keep errors due and
+  // fresh so the same word can be corrected without advancing twice.
   if (!hasAnswered(item)) {
     return {
       ...next,
-      fresh: false,
+      fresh: !correct,
       box: 1,
       status: 'learning',
       streak: 0,
       lapses: correct ? (item.lapses ?? 0) : (item.lapses ?? 0) + 1,
-      dueAt: plusDays(now, BOX_DAYS[1])
+      dueAt: correct ? plusDays(now, BOX_DAYS[1]) : item.dueAt
     }
   }
 

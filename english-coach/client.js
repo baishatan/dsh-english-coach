@@ -323,10 +323,12 @@ window.__ModuleLoader__.load({
           const word = state.items?.[state.at]
           if (!word || state.picked !== null || state.busy || state.conflict) return
           patch({ picked: choice, busy: true, error: null })
-          const result = await call('review.answer', { itemId: word.id, choice })
-          if (!result.ok) { patch({ busy: false, picked: null, feedback: null, conflict: result.code === 'not_due', error: result.message }); return }
+          const result = await call('review.answer', { itemId: word.id, choice: word.choiceOrder?.[choice] ?? choice })
+          if (!result.ok) { patch({ busy: false, picked: null, feedback: null, error: result.message }); return }
           revision++
-          patch({ busy: false, correct: state.correct + Number(result.data.correct), answered: state.answered + 1,
+          const savedWord = { ...word }
+          for (const field of ['box', 'fresh', 'status', 'dueAt']) if (result.data[field] !== undefined) savedWord[field] = result.data[field]
+          patch({ busy: false, items: state.items.map((item, index) => index === state.at ? savedWord : item), correct: state.correct + Number(result.data.correct), answered: state.answered + 1,
             feedback: { correct: result.data.correct, explanation: result.data.explanation ?? word.explanation },
             dueCount: result.data.dueCount ?? (state.dueCount === null ? null : Math.max(0, state.dueCount - 1)), nextDueAt: result.data.dueAt ?? state.nextDueAt })
           notifyReview()
@@ -337,8 +339,20 @@ window.__ModuleLoader__.load({
           }
         },
         next() {
-          if (state.busy || (!state.feedback && !state.conflict)) return
-          patch({ at: state.at + 1, picked: null, feedback: null, conflict: false, error: null })
+          if (state.busy || !state.feedback) return
+          if (state.feedback && !state.feedback.correct) {
+            const items = [...state.items]
+            const [word] = items.splice(state.at, 1)
+            const order = word.choices.map((_, index) => index)
+            for (let index = order.length - 1; index > 0; index--) {
+              const other = Math.floor(Math.random() * (index + 1))
+              ;[order[index], order[other]] = [order[other], order[index]]
+            }
+            if (order.every((value, index) => value === index)) order.push(order.shift())
+            items.push({ ...word, choices: order.map(index => word.choices[index]), answerIndex: order.indexOf(word.answerIndex),
+              choiceOrder: order.map(index => word.choiceOrder?.[index] ?? index) })
+            patch({ items, picked: null, feedback: null, error: null })
+          } else patch({ at: state.at + 1, picked: null, feedback: null, conflict: false, error: null })
         },
         async continue() {
           if (state.busy || state.loading || state.items === null || state.job?.status === 'pending' || state.at < state.items.length) return
@@ -991,12 +1005,12 @@ window.__ModuleLoader__.load({
       return h('span', { className: 'ec-badge', 'data-tone': status }, t(status) || status)
     }
 
-    /** 1–5 box progress, the same scale the Leitner review advances on. */
+    /** Zero to four stages, directly matching the saved learning progress. */
     function BoxDots({ box }) {
       return h(
         'span',
         { className: 'ec-dots', 'aria-label': `第 ${box} 盒` },
-        [1, 2, 3, 4, 5].map((n) => h('i', { key: n, 'data-on': n <= (box ?? 0) }))
+        [1, 2, 3, 4].map((n) => h('i', { key: n, 'data-on': n <= (box ?? 0) }))
       )
     }
 
@@ -1761,16 +1775,17 @@ window.__ModuleLoader__.load({
       const { items: ids, batch, at: index, picked, feedback, correct, answered, conflict, busy, error, job } = useStudyRound()
       const word = ids?.[index] ?? null
       const finished = ids !== null && ids.length > 0 && index >= ids.length
-      const isLast = ids !== null && index + 1 >= ids.length
+      const isLast = ids !== null && feedback?.correct && correct >= ids.length
       const generating = job?.status === 'pending'
       const answer = studyRound.answer
-      const next = studyRound.next
+      const questionRef = useRef(null)
+      const next = () => { studyRound.next(); questionRef.current?.focus() }
       const generateMore = studyRound.continue
 
       useEffect(() => {
         if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return undefined
         const onKey = (event) => {
-          if (event.isComposing || event.keyCode === 229 || event.ctrlKey || event.metaKey || event.altKey || event.repeat || document.querySelector('[role="dialog"]')) return
+          if (event.isComposing || event.keyCode === 229 || event.ctrlKey || event.metaKey || event.altKey || event.repeat || document.querySelector('[role="dialog"],.ec-pop')) return
           const tag = (event.target?.tagName || '').toLowerCase()
           if (['input', 'textarea', 'select', 'button', 'a'].includes(tag) || event.target?.isContentEditable || event.target?.closest?.('[role="dialog"]')) return
           if (!word || picked !== null || busy) {
@@ -1802,7 +1817,7 @@ window.__ModuleLoader__.load({
           { className: 'ec-done-card' },
           h('div', { className: 'ec-done-mark' }, '✓'),
           h('h2', null, t('reviewDone')),
-          h('div', { className: 'ec-muted', style: { marginTop: 6 } }, `本轮 ${ids.length} 项，已作答 ${answered} 项${answered < ids.length ? `，跳过 ${ids.length - answered} 项` : ''}。`),
+          h('div', { className: 'ec-muted', style: { marginTop: 6 } }, `本轮 ${ids.length} 项，已完成 ${correct} 项。`),
           h('div', { className: 'ec-muted', style: { marginTop: 6 } }, t('reviewDoneHint', { n: correct })),
           h(
             'div',
@@ -1846,14 +1861,15 @@ window.__ModuleLoader__.load({
       } else {
         body = h(
           'div',
-          { className: 'ec-deck', 'data-compact': Boolean(compact) },
+          { className: 'ec-deck', 'data-compact': Boolean(compact), tabIndex: -1, ref: questionRef },
           h(
             'div',
             { className: 'ec-deck-meta' },
             word.fresh ? h('span', { className: 'ec-chip ec-chip-brand' }, t('newWord')) : null,
             h('span', { className: 'ec-chip' }, word.kind === 'word' ? t('wordKind') : t('expressionKind')),
             h(BoxDots, { box: word.box }),
-            h('span', { className: 'ec-sub' }, `本轮第 ${index + 1} / ${ids.length} 项`)
+            h('span', { className: 'ec-sub' }, `本轮第 ${index + 1} / ${ids.length} 项`),
+            h('span', { className: 'ec-sub' }, `已完成 ${correct} / ${ids.length} 项`)
           ),
           h('div', { className: 'ec-term-line' },
             h('div', { className: 'ec-deck-term' }, word.term), h(PronounceButton, { text: word.term })),
@@ -3377,7 +3393,8 @@ window.__ModuleLoader__.load({
       const card = session && session.at < session.cards.length ? session.cards[session.at] : null
       const finished = Boolean(session) && session.cards.length > 0 && !card
 
-      const next = studyRound.next
+      const questionRef = useRef(null)
+      const next = () => { studyRound.next(); questionRef.current?.focus() }
       const answer = studyRound.answer
       const continueRemaining = studyRound.continue
 
@@ -3385,11 +3402,19 @@ window.__ModuleLoader__.load({
         if (!open) return undefined
         if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return undefined
         const onKey = (event) => {
-          if (event.key === 'Escape') setOpen(false)
+          if (event.isComposing || event.keyCode === 229 || event.ctrlKey || event.metaKey || event.altKey || event.repeat || document.querySelector('[role="dialog"]')) return
+          if (event.key === 'Escape') { setOpen(false); return }
+          const tag = (event.target?.tagName || '').toLowerCase()
+          if (['input', 'textarea', 'select', 'button', 'a'].includes(tag) || event.target?.isContentEditable) return
+          if (event.key === 'Enter' && session?.feedback) { event.preventDefault(); next() }
+          else if (card && session.picked === null && !busy && ['1', '2', '3', '4'].includes(event.key)) {
+            event.preventDefault()
+            void answer(Number(event.key) - 1)
+          }
         }
         window.addEventListener('keydown', onKey)
         return () => window.removeEventListener('keydown', onKey)
-      }, [open])
+      }, [open, card, session?.picked, session?.feedback, busy])
 
       const dueCount = round.dueCount ?? data?.review?.dueCount ?? 0
       const lesson = data?.todayLesson
@@ -3449,7 +3474,10 @@ window.__ModuleLoader__.load({
                 initialLoading ? h('div', { role: 'status', className: 'ec-pop-hint' }, t('loading')) : session === null ? h(Btn, { onClick: studyRound.retry }, t('retry')) : card
                   ? h(
                       'div',
-                      null,
+                      { tabIndex: -1, ref: questionRef },
+                      h('div', { className: 'ec-deck-meta' },
+                        h(BoxDots, { box: card.box }),
+                        h('span', { className: 'ec-sub' }, `已完成 ${session.correct} / ${session.cards.length} 项`)),
                       h('div', { className: 'ec-term-line' },
                         h('div', { className: 'ec-pop-term' }, card.term), h(PronounceButton, { text: card.term })),
                       h('div', { className: 'ec-pop-prompt' }, t('pickMeaning')),
@@ -3494,7 +3522,7 @@ window.__ModuleLoader__.load({
                   'div',
                   { className: 'ec-pop-acts' },
                   card && (session.feedback || conflict)
-                    ? h(Btn, { primary: true, small: true, onClick: next }, session.at + 1 >= session.cards.length && !conflict ? t('finishReview') : t('nextWord'))
+                    ? h(Btn, { primary: true, small: true, onClick: next }, session.feedback?.correct && session.correct >= session.cards.length ? t('finishReview') : t('nextWord'))
                     : !card && !initialLoading && session !== null
                       ? h(Btn, { primary: true, small: true, disabled: busy || generating, onClick: continueRemaining }, generating ? t('generatingWords') : t('continueLearning'))
                       : null,
