@@ -81,7 +81,7 @@ test('A错后先练B/C再回A，重复错误及仅剩A也必须纠正后才完�
   await ui.settle()
   assert.equal(ui.container.querySelectorAll('.ec-dots i[data-on="true"]').length, 1)
   await ui.click('完成复习'); await ui.settle()
-  assert.match(ui.text(), /本轮 3 项，已完成 3 项/)
+  assert.match(ui.text(), /已完成 3 \/ 3 项/)
   assert.equal(api.calls.filter(call => call.command === 'review.answer').length, 5)
   assert.equal(api.calls.some(call => call.command === 'generate.vocab'), false)
   assert.ok((await api.run('review.list')).data.items.every(item => item.box === 1 && !item.due))
@@ -109,7 +109,7 @@ test('每次纠正打乱原四选项，数字键、选中反馈和宿主答案�
   assert.match(ui.text(), /答对了/)
   assert.deepEqual(api.calls.filter(call => call.command === 'review.answer').map(call => call.payload.choice), [0, 0, 1])
   await ui.key(ui.window.document.body, 'Enter'); await ui.settle()
-  assert.match(ui.text(), /本轮 1 项，已完成 1 项/)
+  assert.match(ui.text(), /已完成 1 \/ 1 项/)
 })
 
 test('保存失败及not_due都保留未完成题目，不允许跳过或冒充本批完成', async t => {
@@ -134,7 +134,7 @@ test('保存失败及not_due都保留未完成题目，不允许跳过或冒充�
   await choose(ui, ui.container)
   await ui.settle()
   await ui.click('完成复习'); await ui.settle()
-  assert.match(ui.text(), /本轮 1 项，已完成 1 项/)
+  assert.match(ui.text(), /已完成 1 \/ 1 项/)
 })
 
 test('今日、单词与悬浮层共享错误反馈、纠正顺序及核心完成数，关闭不跳过', async t => {
@@ -174,8 +174,8 @@ test('今日、单词与悬浮层共享错误反馈、纠正顺序及核心完�
   assert.equal(main().querySelectorAll('.ec-dots i[data-on="true"]').length, 1)
   assert.equal(pop().querySelectorAll('.ec-dots i[data-on="true"]').length, 1)
   await ui.click(action(pop(), '完成复习')); await ui.settle()
-  assert.match(main().textContent, /本轮 2 项，已完成 2 项/)
-  assert.match(pop().textContent, /这批答对 2 个/)
+  assert.match(main().textContent, /已完成 2 \/ 2 项/)
+  assert.match(pop().textContent, /已完成 2 \/ 2 项/)
   assert.equal(api.calls.filter(call => call.command === 'study.batch').length, 5, '跨入口重读已保存批次，不新建或重答')
   assert.equal(api.calls.filter(call => call.command === 'review.answer').length, 3)
 })
@@ -201,7 +201,7 @@ test('独立窄悬浮入口可用数字键纠正，Enter继续，Esc收起不丢
   await ui.settle()
   assert.match(ui.text(), /答对了/)
   await ui.key(ui.window.document.body, 'Enter'); await ui.settle()
-  assert.match(ui.text(), /这批答对 1 个/)
+  assert.match(ui.text(), /已完成 1 \/ 1 项/)
 })
 
 test('纠正后焦点回到当前题，发音只朗读且保留错误反馈和零格', async t => {

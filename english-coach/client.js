@@ -157,7 +157,11 @@ window.__ModuleLoader__.load({
       nextWord: '下一个',
       finishReview: '完成复习',
       reviewDone: '这一批学完了',
-      reviewDoneHint: '这批答对 {n} 个。复习排期已按作答更新，还可以继续下一批。',
+      roundOutcome: '本批成绩',
+      roundCompleted: '已完成 {completed} / {total} 项',
+      roundFirstTryCorrect: '首次答对 {n} 项',
+      roundRetryCount: '重试 {n} 次',
+      reviewDoneHint: '复习排期已按保存结果更新，还可以继续下一批。',
       wordKind: '单词',
       expressionKind: '表达',
       kbdPick: '按 1–4 直接选',
@@ -1770,6 +1774,13 @@ window.__ModuleLoader__.load({
       return `${count}${reason}`
     }
 
+    function RoundOutcome({ summary }) {
+      if (!summary) return null
+      return h('div', { role: 'group', 'aria-label': t('roundOutcome'), className: 'ec-sub', style: { margin: '8px 0', lineHeight: 1.6 } },
+        h('div', null, t('roundCompleted', summary)),
+        h('div', null, t('roundFirstTryCorrect', { n: summary.firstTryCorrect }), ' · ', t('roundRetryCount', { n: summary.retryCount })))
+    }
+
     function WordDeck({ words, compact, onGoWords, onChooseList }) {
       const { items: ids, batch, at: index, picked, feedback, correct, answered, conflict, busy, error, job } = useStudyRound()
       const word = ids?.[index] ?? null
@@ -1816,8 +1827,8 @@ window.__ModuleLoader__.load({
           { className: 'ec-done-card' },
           h('div', { className: 'ec-done-mark' }, '✓'),
           h('h2', null, t('reviewDone')),
-          h('div', { className: 'ec-muted', style: { marginTop: 6 } }, `本轮 ${ids.length} 项，已完成 ${correct} 项。`),
-          h('div', { className: 'ec-muted', style: { marginTop: 6 } }, t('reviewDoneHint', { n: correct })),
+          h(RoundOutcome, { summary: batch.round.summary }),
+          h('div', { className: 'ec-muted', style: { marginTop: 6 } }, t('reviewDoneHint')),
           h(
             'div',
             { className: 'ec-acts' },
@@ -1867,9 +1878,9 @@ window.__ModuleLoader__.load({
             word.fresh ? h('span', { className: 'ec-chip ec-chip-brand' }, t('newWord')) : null,
             h('span', { className: 'ec-chip' }, word.kind === 'word' ? t('wordKind') : t('expressionKind')),
             h(BoxDots, { box: word.box }),
-            h('span', { className: 'ec-sub' }, `本轮第 ${index + 1} / ${ids.length} 项`),
-            h('span', { className: 'ec-sub' }, `已完成 ${correct} / ${ids.length} 项`)
+            h('span', { className: 'ec-sub' }, `本轮第 ${index + 1} / ${ids.length} 项`)
           ),
+          h(RoundOutcome, { summary: batch.round.summary }),
           h('div', { className: 'ec-term-line' },
             h('div', { className: 'ec-deck-term' }, word.term), h(PronounceButton, { text: word.term })),
           h('div', { className: 'ec-deck-prompt' }, t('pickMeaning')),
@@ -3422,7 +3433,7 @@ window.__ModuleLoader__.load({
       const nextAt = round.nextDueAt
       const nextText = !dueCount && nextAt ? t('nextDueShort', { date: formatDay(nextAt) }) : ''
       const quietText = finished
-        ? t('reviewDoneHint', { n: session.correct })
+        ? t('reviewDoneHint')
         : hasDraft
           ? t('draftReady')
           : t('nothingDueHint')
@@ -3474,9 +3485,8 @@ window.__ModuleLoader__.load({
                   ? h(
                       'div',
                       { tabIndex: -1, ref: questionRef },
-                      h('div', { className: 'ec-deck-meta' },
-                        h(BoxDots, { box: card.box }),
-                        h('span', { className: 'ec-sub' }, `已完成 ${session.correct} / ${session.cards.length} 项`)),
+                      h('div', { className: 'ec-deck-meta' }, h(BoxDots, { box: card.box })),
+                      h(RoundOutcome, { summary: queue.round.summary }),
                       h('div', { className: 'ec-term-line' },
                         h('div', { className: 'ec-pop-term' }, card.term), h(PronounceButton, { text: card.term })),
                       h('div', { className: 'ec-pop-prompt' }, t('pickMeaning')),
@@ -3509,6 +3519,7 @@ window.__ModuleLoader__.load({
                   : h(
                       'div',
                       null,
+                      finished ? h(RoundOutcome, { summary: queue.round.summary }) : null,
                       h('div', { className: 'ec-pop-hint' }, quietText),
                       generating ? h('div', { className: 'ec-pop-hint' }, t('generatingWordsHint')) : null,
                       nextText ? h('div', { className: 'ec-pop-hint' }, nextText) : null
