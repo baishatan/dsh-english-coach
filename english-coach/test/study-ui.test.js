@@ -147,7 +147,7 @@ test('单词页先到本轮学习，实际项数与全部待复习分开呈现',
   assert.match(ui.text(), /全部待复习 31 项/)
   await answer(ui)
   await answer(ui)
-  assert.match(ui.text(), /本轮 2 项，已作答 2 项/)
+  assert.match(ui.text(), /本轮 2 项，已完成 2 项/)
 })
 
 test('单词页实际保存新词库偏好只影响下一批，不替换当前和剩余题目', async (t) => {
@@ -420,7 +420,7 @@ for (const entry of ['today', 'overlay']) {
     assert.equal(api.activeWordListId, 'cet4')
   })
 
-  test(`${entry} 已失效作答明确提示，不静默跳过且可主动下一题`, async (t) => {
+  test(`${entry} 已失效作答明确提示，未确认正确不能跳过且可重试`, async (t) => {
     const api = fixture()
     const original = api.request
     api.request = (command, payload) => command === 'review.answer' ? { ok: false, code: 'not_due', message: '这项已在其他入口作答，现在还未到期' } : original(command, payload)
@@ -428,6 +428,11 @@ for (const entry of ['today', 'overlay']) {
     await ui.click(ui.container.querySelector('.ec-choice'))
     assert.equal(term(ui), 'overdue')
     assert.match(ui.text(), /其他入口|未到期/)
+    assert.equal(ui.buttons('下一个').length, 0)
+    assert.equal(ui.buttons('完成复习').length, 0)
+    assert.equal(ui.container.querySelector('.ec-choice').disabled, false)
+    api.request = original
+    await ui.click(ui.container.querySelector('.ec-choice'))
     await ui.click('下一个')
     assert.equal(term(ui), 'selected-new')
   })
