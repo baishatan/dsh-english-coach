@@ -87,9 +87,9 @@ test('全新VM从持久态恢复未答、错误反馈、正确反馈及完成四
   assert.deepEqual(choices(ui.container).map(meaning), retryOrder)
   await ui.key(ui.window.document.body, String(retryOrder.indexOf('正确释义') + 1)); await ui.settle()
   await ui.key(ui.window.document.body, 'Enter'); await ui.settle()
-  assert.match(ui.text(), /这批答对 2 个/)
+  assert.match(ui.text(), /已完成 2 \/ 2 项/)
   ui = await api.open()
-  assert.match(ui.text(), /本轮 2 项，已完成 2 项/)
+  assert.match(ui.text(), /已完成 2 \/ 2 项/)
   assert.equal(term(ui), undefined)
   assert.equal(api.calls.filter(call => call.command === 'generate.vocab').length, 0)
   const items = (await api.run('review.list')).data.items
@@ -117,7 +117,7 @@ test('恢复读取和下一题保存失败均可重试，关闭在途请求后�
   assert.equal(choices(ui.container)[0].disabled, true)
   ui = await api.open('shell.overlay')
   assert.equal(term(ui), 'alpha')
-  assert.doesNotMatch(ui.text(), /答对了|这批答对/)
+  assert.doesNotMatch(ui.text(), /答对了|已完成 1 \/ 1 项/)
   await ui.flush(() => pending.resolve({ ok: false, message: '关闭前的请求未保存' })); await ui.settle()
   assert.equal(term(ui), 'alpha')
   api.intercept = null
@@ -132,6 +132,6 @@ test('恢复读取和下一题保存失败均可重试，关闭在途请求后�
   assert.match(ui.text(), /答对了/)
   api.intercept = null
   await ui.click('完成复习'); await ui.settle()
-  assert.match(ui.text(), /本轮 1 项，已完成 1 项/)
+  assert.match(ui.text(), /已完成 1 \/ 1 项/)
   assert.equal((await api.run('review.list')).data.items[0].answerCount, 1)
 })
