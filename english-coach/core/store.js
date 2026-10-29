@@ -88,10 +88,29 @@ export async function writeText(file, text) {
   await fs.rename(tmp, file)
 }
 
-/** Append one JSON line, creating the parent directory when needed. */
+/** Append an independent JSON line and read back only its bytes for confirmation. */
 export async function appendJsonl(file, record) {
   await fs.mkdir(dirname(file), { recursive: true })
-  await fs.appendFile(file, `${JSON.stringify(record)}\n`, 'utf8')
+  const handle = await fs.open(file, 'a+')
+  try {
+    const { size } = await handle.stat()
+    const tail = Buffer.alloc(1)
+    if (size) await handle.read(tail, 0, 1, size - 1)
+    // A complete last record or a torn tail may lack its separator. Preserve
+    // those bytes, but never concatenate the next event into the same line.
+    const line = `${size && tail[0] !== 10 ? '\n' : ''}${JSON.stringify(record)}\n`
+    await handle.appendFile(line, 'utf8')
+    const saved = Buffer.alloc(Buffer.byteLength(line))
+    let offset = 0
+    while (offset < saved.length) {
+      const { bytesRead } = await handle.read(saved, offset, saved.length - offset, size + offset)
+      if (!bytesRead) throw new Error('日志追加后无法读回完整记录')
+      offset += bytesRead
+    }
+    return JSON.parse(saved.toString('utf8'))
+  } finally {
+    await handle.close()
+  }
 }
 
 /** Read a JSONL file into an array, skipping lines that no longer parse. */

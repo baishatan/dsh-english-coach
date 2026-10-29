@@ -88,14 +88,19 @@ async function load(ctx, key, fallback = DEFAULTS[key]) {
   return value
 }
 
-/** Learning must not advance from a backup that can predate a saved answer. */
-async function loadReviewForStudy(ctx) {
+/** Every review writer must preserve an authority newer than its backup. */
+async function loadReviewForWrite(ctx) {
   const { value, warning } = await readJson(file(ctx, 'review'), DEFAULTS.review)
   // A backup may predate the latest answer. Do not let a fallback create a new
   // round or award that answer again; retain the damaged file for recovery.
   if (warning) fail('round_recovery_failed', `恢复学习批次失败：${warning}。请检查存储后重试，当前进度未改动`)
-  await projectReviewAnswers(ctx, value)
   return value
+}
+
+async function loadReviewForStudy(ctx) {
+  const review = await loadReviewForWrite(ctx)
+  await projectReviewAnswers(ctx, review)
+  return review
 }
 
 // Only committed receipt events are projected. JSON is the authority, and the
@@ -107,8 +112,9 @@ async function projectReviewAnswers(ctx, review) {
     const keys = new Set((await readJsonl(file(ctx, 'reviewLog'))).map(event => event.key))
     for (const receipt of pending) {
       if (!keys.has(receipt.event.key)) {
-        await appendJsonl(file(ctx, 'reviewLog'), receipt.event)
-        keys.add(receipt.event.key)
+        const saved = await appendJsonl(file(ctx, 'reviewLog'), receipt.event)
+        if (saved.key !== receipt.event.key) throw new Error('复习日志追加后无法读回有效作答key')
+        keys.add(saved.key)
       }
       receipt.projected = true
     }
@@ -1120,7 +1126,7 @@ const handlers = {
     }
     merged.cards = enrichable
     merged.reviewItems = [...(merged.reviewItems ?? []), ...deriveReviewItems(merged)]
-    const review = await load(ctx, 'review')
+    const review = await loadReviewForWrite(ctx)
     // Validate all additions before any course or provenance write.
     const enrolled = enrol(review, merged.reviewItems, ctx.now, { kind: 'lesson', id: merged.date }, 'reviewItems')
     await saveLesson(ctx, merged)
@@ -1205,7 +1211,7 @@ const handlers = {
   async 'review.add'(ctx, payload) {
     const incoming = Array.isArray(payload?.items) ? payload.items : []
     if (!incoming.length) fail('invalid_field', '至少要有一个词', 'items')
-    const review = await load(ctx, 'review')
+    const review = await loadReviewForWrite(ctx)
     const result = enrol(review, incoming, ctx.now, { kind: 'supplement' })
     if (result.addedCount || result.linkedCount) await save(ctx, 'review', review)
     return { ...result, added: result.added.map(publicReviewItem) }

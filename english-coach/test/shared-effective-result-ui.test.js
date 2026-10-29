@@ -73,6 +73,92 @@ test('两个独立VM读取同批，另一处完成后导航读取同步，陈旧
   assert.deepEqual((await api.run('study.batch')).data.round.summary, { total: 2, completed: 2, firstTryCorrect: 2, retryCount: 0 })
 })
 
+test('未保存通信错误后导航会重读另一VM的正确结果，不要求再次作答', async t => {
+  const api = await fixture(t, ['alpha'])
+  const a = await api.open(), b = await api.open()
+  let fail = true
+  api.intercept = (number, command) => number === 0 && command === 'review.answer' && fail
+    ? (fail = false, { ok: false, code: 'network', message: '合成未保存通信错误' }) : null
+  await choose(a, '正确释义')
+  assert.match(a.text(), /合成未保存通信错误/)
+  assert.match(a.text(), /已完成 0 \/ 1 项/)
+  assert.equal((await api.run('review.list')).data.items[0].answerCount, 0)
+  await choose(b, '正确释义')
+  const reads = () => api.calls.filter(call => call.number === 0 && call.command === 'study.batch').length
+  const before = reads()
+  await a.click('单词'); await a.settle()
+  assert.equal(reads(), before + 1)
+  assert.match(a.text(), /答对了/)
+  assert.match(a.text(), /已完成 1 \/ 1 项/)
+  assert.doesNotMatch(a.text(), /合成未保存通信错误/)
+  assert.equal(choices(a).every(node => node.disabled), true)
+  assert.equal(api.calls.filter(call => call.number === 0 && call.command === 'review.answer').length, 1)
+  assert.deepEqual((await api.run('study.batch')).data.round.summary, { total: 1, completed: 1, firstTryCorrect: 1, retryCount: 0 })
+  assert.equal((await api.run('review.list')).data.items[0].answerCount, 1)
+})
+
+test('正确结果已保存但回包丢失，另一VM和原VM导航均读取完成且新VM打开不要求重答', async t => {
+  const api = await fixture(t, ['alpha'])
+  const a = await api.open(), b = await api.open()
+  let lose = true
+  api.intercept = (number, command, payload) => number === 0 && command === 'review.answer' && lose ? (async () => {
+    lose = false
+    const saved = await api.run(command, payload)
+    assert.equal(saved.ok, true)
+    return { ok: false, code: 'network', message: '合成已保存但回包丢失' }
+  })() : null
+  await choose(a, '正确释义')
+  assert.match(a.text(), /合成已保存但回包丢失/)
+  assert.match(a.text(), /已完成 0 \/ 1 项/)
+  await b.click('单词'); await b.settle()
+  assert.match(b.text(), /答对了/)
+  assert.equal(choices(b).every(node => node.disabled), true)
+  await a.click('单词'); await a.settle()
+  assert.match(a.text(), /答对了/)
+  assert.match(a.text(), /已完成 1 \/ 1 项/)
+  assert.doesNotMatch(a.text(), /合成已保存但回包丢失/)
+  assert.equal(choices(a).every(node => node.disabled), true)
+  const reopened = await api.open()
+  assert.match(reopened.text(), /答对了/)
+  assert.match(reopened.text(), /已完成 1 \/ 1 项/)
+  assert.equal(choices(reopened).every(node => node.disabled), true)
+  assert.equal(api.calls.filter(call => call.command === 'review.answer').length, 1, '没有靠再次作答取回执才能恢复')
+  assert.equal((await api.run('review.list')).data.items[0].answerCount, 1)
+})
+
+test('错误后导航重读再次失败保留错误和已有成绩，随后成功读取才同步完成', async t => {
+  const api = await fixture(t)
+  const a = await api.open(), b = await api.open()
+  await choose(a, '正确释义')
+  await a.click('下一个'); await a.settle()
+  await b.click('单词'); await b.settle()
+  let failRead = false
+  api.intercept = (number, command) => number !== 0 ? null
+    : command === 'review.answer' ? { ok: false, code: 'network', message: '合成作答未保存' }
+      : command === 'study.batch' && failRead ? { ok: false, code: 'network', message: '合成同步读取仍失败' } : null
+  await choose(a, '正确释义')
+  assert.match(a.text(), /合成作答未保存/)
+  assert.match(a.text(), /已完成 1 \/ 2 项/)
+  await choose(b, '正确释义')
+  failRead = true
+  const reads = () => api.calls.filter(call => call.number === 0 && call.command === 'study.batch').length
+  const before = reads()
+  await a.click('单词'); await a.settle()
+  assert.equal(reads(), before + 1)
+  assert.match(a.text(), /合成同步读取仍失败/)
+  assert.match(a.text(), /已完成 1 \/ 2 项/)
+  assert.equal(term(a), 'beta')
+  assert.doesNotMatch(a.text(), /答对了|这一批学完了/)
+  failRead = false
+  await a.click('今日'); await a.settle()
+  assert.match(a.text(), /答对了/)
+  assert.match(a.text(), /已完成 2 \/ 2 项/)
+  assert.doesNotMatch(a.text(), /合成同步读取仍失败/)
+  assert.equal(choices(a).every(node => node.disabled), true)
+  assert.equal(api.calls.filter(call => call.number === 0 && call.command === 'review.answer').length, 2)
+  assert.equal((await api.run('review.list')).data.items.every(item => item.answerCount === 1), true)
+})
+
 test('保存成功响应丢失可同呈现重试，旧成功响应迟到不能覆盖另一VM更新后的反馈', async t => {
   const api = await fixture(t)
   const a = await api.open(), b = await api.open()

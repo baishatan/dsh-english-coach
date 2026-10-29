@@ -175,6 +175,187 @@ test('补记掌握抽检错误不扣格，正确只记实际完成日；损坏�
   await fs.writeFile(file, saved)
 })
 
+test('补词遇权威损坏必须拒绝，不能以旧备份覆盖已保存的完成、作答和回执', async t => {
+  const { root, run } = await fixture(t)
+  const batch = (await run('study.batch')).data
+  await fs.mkdir(join(root, 'review/log.jsonl'))
+  const answer = { ...identity(batch), itemId: batch.round.current.itemId, choice: 1 }
+  const committed = await run('review.answer', answer)
+  assert.equal(committed.ok, true)
+  assert.match(committed.warnings.join(' '), /答案已保存.*日志/)
+  assert.equal(committed.data.batch.round.summary.completed, 1)
+  const target = join(root, 'review/items.json')
+  const authority = await fs.readFile(target, 'utf8')
+  const backup = await fs.readFile(`${target}.bak`, 'utf8')
+  assert.equal(JSON.parse(backup).items[0].answers.length, 0, '备份仍早于已提交的正确答案')
+  await fs.writeFile(target, '{broken')
+  assert.equal((await run('study.batch')).code, 'round_recovery_failed')
+  const refused = await run('review.add', { items: [word('beta')] })
+  assert.equal(refused.ok, false)
+  assert.equal(refused.code, 'round_recovery_failed')
+  assert.equal(await fs.readFile(target, 'utf8'), '{broken')
+  assert.equal(await fs.readFile(`${target}.bak`, 'utf8'), backup)
+  const readable = await run('review.list')
+  assert.equal(readable.ok, true, '普通词汇读取仍可容错查看备份，不因此拒绝所有读取')
+  assert.match(readable.warnings.join(' '), /备份|回退/)
+  assert.equal(await fs.readFile(target, 'utf8'), '{broken')
+  assert.equal(await fs.readFile(`${target}.bak`, 'utf8'), backup)
+  await fs.writeFile(target, authority)
+  const restored = await run('study.batch')
+  assert.deepEqual(restored.data, committed.data.batch)
+  const replay = await run('review.answer', answer)
+  assert.equal(replay.ok, true)
+  assert.equal(replay.data.replayed, true)
+  const alpha = (await run('review.list')).data.items[0]
+  assert.equal(alpha.answerCount, 1)
+  assert.equal(alpha.box, 1)
+  assert.equal(await fs.readFile(target, 'utf8'), authority, '恢复原权威后选中、反馈、成绩和回执均仍在')
+})
+
+test('课程入词先检查同一恢复guard，拒绝时课程和来源不能部分落盘', async t => {
+  const { root, run } = await fixture(t)
+  const lesson = (date, term) => ({
+    date, title: `合成课程 ${term}`,
+    sources: [{ id: 'source', url: `https://example.com/${date}/${term}`, fetchedAt: now.toISOString(), license: '合成测试素材' }],
+    items: [
+      { id: 'reading', type: 'reading', sourceId: 'source', body: 'Hello.', translations: ['你好。'] },
+      { id: 'listening', type: 'listening', sourceId: 'source', transcript: 'Hello.', translations: ['你好。'] },
+      { id: 'expressions', type: 'expressions', expressions: [{ term, meaning: '正确释义' }] },
+      { id: 'quiz', type: 'quiz', questions: [{ prompt: 'Choose.', choices: ['a', 'b', 'c', 'd'], answerIndex: 1 }] }
+    ],
+    reviewItems: [word(term)]
+  })
+  assert.equal((await run('lesson.save', lesson('2026-10-29', 'alpha'))).ok, true)
+  const files = ['lessons/2026-10-29.json', 'lessons/2026-10-29.md', 'sources/provenance.jsonl']
+  const before = await Promise.all(files.map(path => fs.readFile(join(root, path), 'utf8')))
+  const batch = (await run('study.batch')).data
+  await fs.mkdir(join(root, 'review/log.jsonl'))
+  const answer = { ...identity(batch), itemId: batch.round.current.itemId, choice: 1 }
+  const committed = await run('review.answer', answer)
+  assert.equal(committed.ok, true)
+  assert.match(committed.warnings.join(' '), /答案已保存.*日志/)
+  const target = join(root, 'review/items.json')
+  const authority = await fs.readFile(target, 'utf8')
+  const backup = await fs.readFile(`${target}.bak`, 'utf8')
+  assert.equal(JSON.parse(backup).items[0].answers.length, 0)
+  await fs.writeFile(target, '{broken')
+  assert.equal((await run('study.batch')).code, 'round_recovery_failed')
+  for (const date of ['2026-10-29', '2026-10-28']) {
+    const refused = await run('lesson.save', lesson(date, 'beta'))
+    assert.equal(refused.ok, false)
+    assert.equal(refused.code, 'round_recovery_failed')
+    assert.equal(await fs.readFile(target, 'utf8'), '{broken')
+    assert.equal(await fs.readFile(`${target}.bak`, 'utf8'), backup)
+    assert.deepEqual(await Promise.all(files.map(path => fs.readFile(join(root, path), 'utf8'))), before)
+    for (const absent of ['lessons/2026-10-29.json.bak', 'lessons/2026-10-28.json', 'lessons/2026-10-28.md']) {
+      await assert.rejects(fs.access(join(root, absent)), { code: 'ENOENT' })
+    }
+  }
+  await fs.writeFile(target, authority)
+  assert.deepEqual((await run('study.batch')).data, committed.data.batch)
+  assert.equal((await run('review.answer', answer)).data.replayed, true)
+  const alpha = (await run('review.list')).data.items[0]
+  assert.equal(alpha.answerCount, 1)
+  assert.equal(alpha.box, 1)
+  assert.equal(await fs.readFile(target, 'utf8'), authority)
+})
+
+test('复习日志合法历史后有无换行残缺尾，新有效作答仍独占完整行且只投影一次', async t => {
+  const { root, run } = await fixture(t)
+  const batch = (await run('study.batch')).data
+  const target = join(root, 'review/items.json')
+  const log = join(root, 'review/log.jsonl')
+  const history = { key: 'historical-event', itemId: 'old-word', correct: false, box: 2, at: '2020-01-01T00:00:00.000Z' }
+  const prefix = `${JSON.stringify(history)}\n{"torn":`
+  await fs.writeFile(log, prefix)
+  const answer = { ...identity(batch), itemId: batch.round.current.itemId, choice: 0 }
+  const committed = await run('review.answer', answer)
+  assert.equal(committed.ok, true)
+  assert.deepEqual(committed.warnings, [])
+  assert.deepEqual(committed.data.batch.round.summary, { total: 1, completed: 0, firstTryCorrect: 0, retryCount: 0 })
+  const text = await fs.readFile(log, 'utf8')
+  assert.ok(text.startsWith(`${prefix}\n`), '隔离坏尾而不是把新作答拼进无法解析的旧行')
+  const lines = text.trimEnd().split('\n')
+  assert.deepEqual(JSON.parse(lines[0]), history, '保留已有可解析历史，不回算旧成绩')
+  assert.equal(lines[1], '{"torn":')
+  assert.equal(lines.length, 3)
+  const event = JSON.parse(lines[2])
+  assert.equal(event.key, committed.data.key)
+  assert.equal(event.correct, false)
+  const stored = JSON.parse(await fs.readFile(target, 'utf8'))
+  assert.equal(stored.answerReceipts[event.key].projected, true)
+  await run('study.batch')
+  await run('review.answer', answer)
+  assert.equal(await fs.readFile(log, 'utf8'), text)
+  const alpha = (await run('review.list')).data.items[0]
+  assert.equal(alpha.answerCount, 1)
+  assert.equal(alpha.box, 0)
+})
+
+test('复习日志最后一条合法记录没有换行时仍保留该记录并独立追加新key', async t => {
+  const { root, run } = await fixture(t)
+  const batch = (await run('study.batch')).data
+  const log = join(root, 'review/log.jsonl')
+  const history = { key: 'complete-without-newline', itemId: 'old-word', correct: true, at: '2020-01-01T00:00:00.000Z' }
+  await fs.writeFile(log, JSON.stringify(history))
+  const answer = { ...identity(batch), itemId: batch.round.current.itemId, choice: 1 }
+  const committed = await run('review.answer', answer)
+  assert.equal(committed.ok, true)
+  assert.deepEqual(committed.warnings, [])
+  await run('study.batch')
+  await run('review.answer', answer)
+  const entries = (await fs.readFile(log, 'utf8')).trimEnd().split('\n').map(line => JSON.parse(line))
+  assert.equal(entries.length, 2)
+  assert.deepEqual(entries[0], history)
+  assert.equal(entries[1].key, committed.data.key)
+  assert.equal(entries[1].correct, true)
+  assert.deepEqual((await run('study.batch')).data.round.summary, { total: 1, completed: 1, firstTryCorrect: 1, retryCount: 0 })
+  assert.equal((await run('review.list')).data.items[0].answerCount, 1)
+})
+
+test('日志已追加但投影ack保存失败仍以JSON成功和warning返回，重读key不重复追加', async t => {
+  const { root, run } = await fixture(t)
+  const batch = (await run('study.batch')).data
+  const target = join(root, 'review/items.json')
+  const log = join(root, 'review/log.jsonl')
+  const copyFile = fs.copyFile
+  let failed = false
+  // Only the external filesystem is faulted: the authority save can succeed,
+  // but a later save after the event reaches disk fails once.
+  t.mock.method(fs, 'copyFile', async (source, destination, ...args) => {
+    if (source === target && destination === `${target}.bak` && !failed) {
+      const text = await fs.readFile(log, 'utf8').catch(error => {
+        if (error.code === 'ENOENT') return ''
+        throw error
+      })
+      if (text) {
+        failed = true
+        throw Object.assign(new Error('合成投影ack保存失败'), { code: 'EIO' })
+      }
+    }
+    return copyFile(source, destination, ...args)
+  })
+  const answer = { ...identity(batch), itemId: batch.round.current.itemId, choice: 1 }
+  const committed = await run('review.answer', answer)
+  assert.equal(failed, true)
+  assert.equal(committed.ok, true)
+  assert.match(committed.warnings.join(' '), /答案已保存.*合成投影ack保存失败/)
+  assert.equal(committed.data.batch.round.summary.completed, 1)
+  const before = await fs.readFile(log, 'utf8')
+  const event = JSON.parse(before.trim())
+  assert.equal(event.key, committed.data.key)
+  assert.equal(JSON.parse(await fs.readFile(target, 'utf8')).answerReceipts[event.key].projected, false)
+  const restored = await run('study.batch')
+  assert.equal(restored.ok, true)
+  assert.deepEqual(restored.warnings, [])
+  assert.deepEqual(restored.data, committed.data.batch)
+  assert.equal(JSON.parse(await fs.readFile(target, 'utf8')).answerReceipts[event.key].projected, true)
+  assert.equal((await run('review.answer', answer)).data.replayed, true)
+  await run('study.batch')
+  assert.equal(await fs.readFile(log, 'utf8'), before)
+  assert.equal((await run('review.list')).data.items[0].answerCount, 1)
+})
+
 test('JSON已提交但日志失败仍成功，重读按有效作答key补投影且不重复学习事实', async t => {
   const { root, run } = await fixture(t)
   const batch = (await run('study.batch')).data
