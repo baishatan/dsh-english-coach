@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { execute } from '../core/index.js'
+import { answerFixture, roundIdentity } from './answer-fixture.js'
 
 function at(day, hour = 9) {
   const [year, month, date] = day.split('-').map(Number)
@@ -14,7 +15,7 @@ const word = (term, extra = {}) => ({ term, meaning: '正确释义', choices: ['
 async function fixture(t) {
   const root = await fs.mkdtemp(join(tmpdir(), 'coach-due-correction-'))
   t.after(() => fs.rm(root, { recursive: true, force: true }))
-  return { root, run: (command, payload = {}, date = now) => execute(root, command, payload, { now: date }) }
+  return { root, run: (command, payload = {}, date = now) => command === 'review.answer' ? answerFixture(root, payload, date) : execute(root, command, payload, { now: date }) }
 }
 async function learnToTwo(run, items = [word('reprieve')]) {
   const added = await run('review.add', { items }, at('2026-10-20'))
@@ -28,9 +29,9 @@ async function learnToTwo(run, items = [word('reprieve')]) {
 }
 
 test('两格到期旧词和整块表达错→错→对不退格，纠正后从实际正确日排30天', async t => {
-  const { root, run } = await fixture(t)
-  const items = await learnToTwo(run, [word('reprieve'), word('in fact', { kind: 'expression' })])
-  for (const item of items) {
+  for (const input of [word('reprieve'), word('in fact', { kind: 'expression' })]) {
+    const { root, run } = await fixture(t)
+    const [item] = await learnToTwo(run, [input])
     const before = (await run('review.list')).data.items.find(entry => entry.id === item.id)
     assert.equal(before.box, 2)
     for (const hour of [10, 11]) {
@@ -54,9 +55,9 @@ test('两格到期旧词和整块表达错→错→对不退格，纠正后从�
     assert.equal(saved.due, false)
     assert.equal(saved.meaning, item.meaning)
     assert.equal(saved.explanation, item.explanation)
+    const stored = JSON.parse(await fs.readFile(join(root, 'review/items.json'), 'utf8'))
+    assert.deepEqual(stored.items[0].answers.map(answer => answer.correct), [true, true, false, false, true])
   }
-  const stored = JSON.parse(await fs.readFile(join(root, 'review/items.json'), 'utf8'))
-  for (const item of stored.items) assert.deepEqual(item.answers.map(answer => answer.correct), [true, true, false, false, true])
 })
 
 test('旧档fresh真但已有作答仍是一格旧词，缺新增字段不回算、不重置且保留未知字段', async t => {
@@ -91,14 +92,21 @@ test('旧档fresh真但已有作答仍是一格旧词，缺新增字段不回算
   assert.equal(wrong.data.box, 1)
   assert.equal(wrong.data.fresh, false)
   assert.equal(wrong.data.dueAt, now.toISOString())
-  const correct = await run('review.answer', { itemId: 'legacy', choice: 1 })
+  let batch = wrong.data.batch
+  batch = (await run('study.next', roundIdentity(batch))).data
+  // The other due legacy item is answered normally before legacy returns from
+  // the correction queue; untouched future/mastered/duplicate items stay intact.
+  const missing = await run('review.answer', { ...roundIdentity(batch), itemId: 'missing', choice: 1 })
+  batch = (await run('study.next', roundIdentity(missing.data.batch))).data
+  const correct = await execute(root, 'review.answer', { ...roundIdentity(batch), itemId: 'legacy', choice: 1 }, { now })
   assert.equal(correct.data.box, 2, '不按旧错误重做初学，也不补发历史进度')
   assert.equal(correct.data.dueAt, at('2026-11-04').toISOString())
   const saved = JSON.parse(await fs.readFile(file, 'utf8'))
   assert.deepEqual(saved.extension, legacy.extension)
   assert.deepEqual(saved.items[0].custom, legacy.items[0].custom)
   assert.deepEqual(saved.items[0].answers.map(answer => answer.correct), [false, false, true])
-  assert.deepEqual(saved.items.slice(1), legacy.items.slice(1), '其他旧项和历史重复项不迁移')
+  assert.deepEqual(saved.items.slice(2), legacy.items.slice(2), '未作答的旧项和历史重复项不迁移')
+  assert.equal(saved.items[1].box, 3, '另一个实际作答的到期词只推进一格')
 })
 
 test('已掌握表达抽检错后仍四格且保持掌握，最终正确只完成抽检并排90天', async t => {

@@ -113,7 +113,7 @@ test('昨晚十词完成八词，隔天和隔多日只续原批，完成态保�
   assert.deepEqual(batch.round.summary, { total: 10, completed: 10, firstTryCorrect: 10, retryCount: 0 })
   assert.deepEqual((await run('study.batch', {}, later)).data, batch)
   assert.deepEqual((await run('study.supplement', {}, later)).data.round, batch.round, '普通读取或补词不自动开下一批')
-  const next = await run('study.supplement', { continue: true, roundId: original }, later)
+  const next = await run('study.supplement', { continue: true, ...identity(batch) }, later)
   assert.equal(next.ok, true)
   assert.notEqual(next.data.round.id, original)
   assert.equal(next.data.batchSize, 3)

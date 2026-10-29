@@ -176,7 +176,7 @@ test('今日、单词与悬浮层共享错误反馈、纠正顺序及核心完�
   await ui.click(action(pop(), '完成复习')); await ui.settle()
   assert.match(main().textContent, /本轮 2 项，已完成 2 项/)
   assert.match(pop().textContent, /这批答对 2 个/)
-  assert.equal(api.calls.filter(call => call.command === 'study.batch').length, 1)
+  assert.equal(api.calls.filter(call => call.command === 'study.batch').length, 5, '跨入口重读已保存批次，不新建或重答')
   assert.equal(api.calls.filter(call => call.command === 'review.answer').length, 3)
 })
 

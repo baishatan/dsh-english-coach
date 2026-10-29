@@ -4,12 +4,21 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { execute } from '../core/index.js'
+import { answerFixture, roundIdentity } from './answer-fixture.js'
 
 const now = new Date('2026-10-22T09:00:00+08:00')
 async function fixture(t) {
   const root = await fs.mkdtemp(join(tmpdir(), 'coach-experience-'))
   t.after(() => fs.rm(root, { recursive: true, force: true }))
-  return { root, run: (command, payload = {}, date = now) => execute(root, command, payload, { now: date }) }
+  return { root, run: async (command, payload = {}, date = now) => {
+    if (command === 'review.answer') return answerFixture(root, payload, date)
+    if (command === 'study.next' || command === 'study.supplement' && payload.continue) {
+      const current = await execute(root, 'study.batch', {}, { now: date })
+      if (!current.ok) return current
+      payload = { ...roundIdentity(current.data), ...payload }
+    }
+    return execute(root, command, payload, { now: date })
+  } }
 }
 function word(term, extra = {}) {
   return { term, meaning: '事实上', choices: ['事实上', '因此', '然而', '尽管'], answerIndex: 0, ...extra }
@@ -191,6 +200,8 @@ test('缺fresh字段且从未作答的历史词排在真实到期旧词之后，
   assert.deepEqual(batch.data.items.map(item => item.term), ['answered', 'never-answered'])
   assert.equal(batch.data.items[1].fresh, true)
   assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')).items, JSON.parse(before).items, '批次元数据不迁移旧词')
+  const old = await run('review.answer', { ...roundIdentity(batch.data), itemId: added.data.added[1].id, choice: 0 }, new Date('2026-10-23T09:00:00+08:00'))
+  await run('study.next', roundIdentity(old.data.batch), new Date('2026-10-23T09:00:00+08:00'))
   const answer = await run('review.answer', { itemId: added.data.added[0].id, choice: 0 }, new Date('2026-10-23T09:00:00+08:00'))
   assert.equal(answer.data.box, 1)
 })

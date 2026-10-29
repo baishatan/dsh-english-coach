@@ -1,0 +1,130 @@
+import assert from 'node:assert/strict'
+import { promises as fs } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
+import test from 'node:test'
+import { execute } from '../core/index.js'
+import { clientEnvironment, mountClient, deferred } from './client-harness.js'
+
+const now = new Date(2026, 9, 29, 9)
+const word = term => ({ term, meaning: '正确释义', choices: ['另一释义', '正确释义', '第三释义', '第四释义'], answerIndex: 1, explanation: '保留已有讲解。' })
+const choices = ui => [...ui.container.querySelectorAll('.ec-choice')]
+const meaning = node => node.lastElementChild.textContent
+const term = ui => ui.container.querySelector('.ec-deck-term,.ec-pop-term')?.textContent
+async function fixture(t, terms = ['alpha', 'beta']) {
+  const temporary = resolve(tmpdir())
+  const root = await fs.mkdtemp(join(temporary, 'coach-effective-ui-'))
+  const run = (command, payload = {}) => execute(root, command, payload, { now })
+  await run('profile.save', { goal: 'work', minutesPerDay: 30, interests: [] })
+  await run('review.add', { items: terms.map(word) })
+  const environment = clientEnvironment()
+  const clients = [], pending = new Set(), ignored = new Set()
+  const api = { run, intercept: null, calls: [], ignored }
+  api.open = async () => {
+    const number = clients.length
+    const ui = await mountClient({ environment, request(command, payload) {
+      api.calls.push({ number, command, payload })
+      const result = Promise.resolve(api.intercept?.(number, command, payload) ?? run(command === 'generate.vocab' ? 'study.supplement' : command, payload))
+      pending.add(result)
+      void result.finally(() => pending.delete(result))
+      return result
+    } })
+    clients.push(ui)
+    ui.settle = async () => {
+      const remaining = () => [...pending].filter(promise => !ignored.has(promise))
+      do { await ui.flush(() => Promise.all(remaining())) } while (remaining().length)
+    }
+    await ui.settle()
+    return ui
+  }
+  t.after(async () => {
+    await Promise.all([...pending])
+    for (const ui of clients.reverse()) await ui.close()
+    assert.equal(dirname(root), temporary)
+    assert.ok(root.split('/').at(-1).startsWith('coach-effective-ui-'))
+    await fs.rm(root, { recursive: true, force: true })
+  })
+  return api
+}
+async function choose(ui, text) {
+  await ui.click(choices(ui).find(node => meaning(node) === text))
+  await ui.settle()
+}
+
+test('两个独立VM读取同批，另一处完成后导航读取同步，陈旧点击只取已保存有效结果', async t => {
+  const api = await fixture(t)
+  const a = await api.open(), b = await api.open()
+  assert.notEqual(a.container, b.container)
+  assert.equal(a.window, b.window, '只共享外部DOM环境；每次mount运行独立VM/factory')
+  assert.equal(api.calls.filter(call => call.command === 'study.batch').length, 2, '不是同factory的两个slot')
+  await choose(a, '正确释义')
+  assert.equal(term(b), 'alpha', '不承诺实时推送')
+  await b.click('单词'); await b.settle()
+  assert.match(b.text(), /答对了/)
+  assert.equal(b.container.querySelectorAll('.ec-dots i[data-on="true"]').length, 1)
+  await a.click('下一个'); await a.settle()
+  assert.equal(term(a), 'beta')
+  await b.click('下一个'); await b.settle()
+  assert.equal(term(b), 'beta', '旧next不跳过beta')
+  await choose(a, '正确释义')
+  await choose(b, '另一释义')
+  assert.match(b.text(), /答对了/)
+  assert.equal((await api.run('review.list')).data.items.every(item => item.answerCount === 1), true)
+  assert.deepEqual((await api.run('study.batch')).data.round.summary, { total: 2, completed: 2, firstTryCorrect: 2, retryCount: 0 })
+})
+
+test('保存成功响应丢失可同呈现重试，旧成功响应迟到不能覆盖另一VM更新后的反馈', async t => {
+  const api = await fixture(t)
+  const a = await api.open(), b = await api.open()
+  let lose = true
+  api.intercept = (number, command, payload) => number === 0 && command === 'review.answer' && lose ? (async () => {
+    lose = false
+    const saved = await api.run(command, payload)
+    assert.equal(saved.ok, true)
+    return { ok: false, code: 'network_error', message: '合成响应丢失，请重试' }
+  })() : null
+  await choose(a, '正确释义')
+  assert.match(a.text(), /合成响应丢失/)
+  await choose(a, '另一释义')
+  assert.match(a.text(), /答对了/)
+  assert.equal(choices(a).find(node => meaning(node) === '正确释义').getAttribute('data-state'), 'right')
+  assert.equal((await api.run('review.list')).data.items.find(item => item.term === 'alpha').answerCount, 1)
+  await b.click('单词'); await b.settle()
+  await b.click('下一个'); await b.settle()
+  await a.click('单词'); await a.settle()
+  const delayed = deferred()
+  api.ignored.add(delayed.promise)
+  let late
+  api.intercept = (number, command, payload) => number === 0 && command === 'review.answer' ? (late = api.run(command, payload), delayed.promise) : null
+  await a.click(choices(a).find(node => meaning(node) === '另一释义'))
+  const savedWrong = await late
+  assert.equal(savedWrong.ok, true)
+  await b.click('今日'); await b.settle()
+  assert.match(b.text(), /答错了/)
+  await b.click('下一个'); await b.settle()
+  await choose(b, '正确释义')
+  await a.click('今日'); await a.settle()
+  assert.match(a.text(), /答对了/)
+  const before = choices(a).map(node => node.getAttribute('data-state'))
+  await a.flush(() => delayed.resolve(savedWrong)); await a.settle()
+  assert.match(a.text(), /答对了/)
+  assert.deepEqual(choices(a).map(node => node.getAttribute('data-state')), before)
+  assert.equal(term(a), 'beta')
+  assert.deepEqual((await api.run('study.batch')).data.round.summary, { total: 2, completed: 2, firstTryCorrect: 1, retryCount: 1 })
+})
+
+test('迟到失败不能清除新读取的正确反馈或重新开放已完成词', async t => {
+  const api = await fixture(t, ['alpha'])
+  const a = await api.open(), b = await api.open()
+  const delayed = deferred()
+  api.ignored.add(delayed.promise)
+  api.intercept = (number, command) => number === 0 && command === 'review.answer' ? delayed.promise : null
+  await a.click(choices(a).find(node => meaning(node) === '另一释义'))
+  await choose(b, '正确释义')
+  await a.click('单词'); await a.settle()
+  assert.match(a.text(), /答对了/)
+  await a.flush(() => delayed.resolve({ ok: false, message: '旧请求未保存' })); await a.settle()
+  assert.match(a.text(), /答对了/)
+  assert.equal(choices(a).every(node => node.disabled), true)
+  assert.equal((await api.run('review.list')).data.items[0].answerCount, 1)
+})
