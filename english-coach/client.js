@@ -967,7 +967,8 @@ window.__ModuleLoader__.load({
 .ec-pill-count { min-width: 19px; height: 19px; border-radius: 999px; background: var(--dsw-alias-brand-primary);
   color: var(--dsw-alias-bg-base); font-size: 10.5px; display: inline-flex; align-items: center;
   justify-content: center; padding: 0 5px; font-variant-numeric: tabular-nums; }
-.ec-pop { position: absolute; right: 0; bottom: calc(100% + 10px); width: 306px; max-height: 70vh; overflow: auto;
+.ec-pop { position: absolute; right: 0; bottom: calc(100% + 10px); box-sizing: border-box;
+  width: min(338px, calc(100vw - 16px)); max-height: min(70vh, var(--ec-pop-max-height, 70vh)); overflow: auto; overflow-wrap: anywhere;
   border-radius: 14px; border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-overlay);
   box-shadow: 0 14px 44px rgba(0,0,0,.24); padding: 15px; }
 .ec-pop[data-down="true"] { top: calc(100% + 10px); bottom: auto; }
@@ -981,10 +982,11 @@ window.__ModuleLoader__.load({
 .ec-pop-prompt { font-size: 11.5px; color: var(--dsw-alias-label-secondary); margin-top: 3px; }
 /* 306px 的悬浮层里，选项比面板里紧一档，四行释义一屏放得下 */
 .ec-pop .ec-choices { margin: 12px 0 0; gap: 6px; }
-.ec-pop .ec-choice { font-size: 12.8px; padding: 8px 9px; gap: 8px; }
+.ec-pop .ec-choice { box-sizing: border-box; min-width: 0; font-size: 12.8px; padding: 8px 9px; gap: 8px; }
+.ec-pop .ec-choice > span:last-child { min-width: 0; }
 .ec-pop .ec-fb { margin-top: 12px; }
 .ec-pop .ec-acts { margin-top: 10px; }
-.ec-pop-acts { display: flex; align-items: center; justify-content: flex-start; gap: 8px; margin-top: 14px; }
+.ec-pop-acts { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 8px; margin-top: 14px; }
 .ec-pop-acts > .ec-btn { flex: none; white-space: nowrap; margin-left: 0; }
 `
     function Style() {
@@ -3305,6 +3307,7 @@ window.__ModuleLoader__.load({
 
       // Where the learner dragged the pill: null means "the default corner".
       const [pos, setPosState] = useState(null)
+      const [viewport, setViewport] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }))
       const positionRef = useRef(null)
       const pillRef = useRef(null)
       const dragRef = useRef(null)
@@ -3341,6 +3344,7 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return undefined
         const onResize = () => {
+          setViewport({ width: window.innerWidth, height: window.innerHeight })
           const current = positionRef.current
           const box = pillRef.current?.getBoundingClientRect?.()
           if (!current || !box) return
@@ -3453,7 +3457,15 @@ window.__ModuleLoader__.load({
         setOpen(false)
       }
 
-      const openDown = Boolean(pos && pos.y < 420)
+      const pillBox = pillRef.current?.getBoundingClientRect()
+      const pillWidth = pillBox?.width ?? 130, pillHeight = pillBox?.height ?? 38
+      const pillX = pos?.x ?? viewport.width - pillWidth - 22
+      const pillY = pos?.y ?? viewport.height - pillHeight - 22
+      const popWidth = Math.min(338, viewport.width - 16)
+      const popLeft = Math.max(8, Math.min(pillX + pillWidth - popWidth, viewport.width - popWidth - 8))
+      const above = Math.max(0, pillY - 18), below = Math.max(0, viewport.height - pillY - pillHeight - 18)
+      const openDown = above < 420 && below > above
+      const popStyle = { left: popLeft - pillX, right: 'auto', '--ec-pop-max-height': `${openDown ? below : above}px` }
       const pillStyle = pos ? { left: pos.x, top: pos.y, right: 'auto', bottom: 'auto' } : undefined
 
       return h(
@@ -3466,7 +3478,7 @@ window.__ModuleLoader__.load({
           open
             ? h(
                 'div',
-                { className: 'ec-pop', 'data-down': openDown },
+                { className: 'ec-pop', 'data-down': openDown, style: popStyle },
                 h(
                   'div',
                   { className: 'ec-pop-head' },
