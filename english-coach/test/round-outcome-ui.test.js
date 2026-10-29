@@ -89,7 +89,7 @@ test('今日和单词页在未答及错错对反馈中分别显示项完成、�
 test('十项混合初学和到期复习共十五次有效作答，完成与重开仍保留首次表现及五次重试', async t => {
   const api = await fixture(t, [word('old word'), word('old expression', { kind: 'expression' })], new Date(2026, 9, 28, 9))
   const oldItems = (await api.run('review.list')).data.items
-  for (const item of oldItems) assert.equal((await api.run('review.answer', { itemId: item.id, choice: 1 })).ok, true)
+  for (const item of oldItems) assert.equal((await api.run('review.answer', { itemId: item.id, choice: 1, attemptId: `prepare-old-${item.id}` })).ok, true)
   api.now = new Date(2026, 9, 29, 23, 50)
   assert.equal((await api.run('review.add', { items: Array.from({ length: 8 }, (_, i) => word(`new ${i}`)) })).ok, true)
   const original = (await api.run('study.batch')).data
