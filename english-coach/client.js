@@ -319,7 +319,7 @@ window.__ModuleLoader__.load({
         subscribe(listener) { listeners.add(listener); startPolling(); return () => { listeners.delete(listener); if (!listeners.size) stopPolling() } },
         acquire() {
           active++
-          if (!state.error) void load(true)
+          void load(true)
           startPolling()
           return () => {
             active--
