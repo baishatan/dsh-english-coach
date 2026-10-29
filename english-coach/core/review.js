@@ -1,9 +1,9 @@
 import { BOX_DAYS, CHECKUP_DAYS, clamp } from './constants.js'
 
-const DAY_MS = 86_400_000
-
 function plusDays(date, days) {
-  return new Date(date.getTime() + days * DAY_MS).toISOString()
+  const next = new Date(date.getTime())
+  next.setDate(next.getDate() + days)
+  return next.toISOString()
 }
 
 /**
@@ -62,22 +62,11 @@ export function dueItems(items, now) {
     .sort((a, b) => Date.parse(a.dueAt) - Date.parse(b.dueAt) || a.id.localeCompare(b.id))
 }
 
-/**
- * Move one item through its boxes.
- *
- * A correct answer advances one box: 1 day, 7 days, 30 days, then mastered.
- * Mastery is exactly "answered correctly at the 1, 7 and 30 day intervals",
- * which is what three consecutive correct answers at those boxes means.
- *
- * A wrong answer drops back to the first box and clears the interval streak, so
- * mastery can never be reached while carrying a miss. The one exception is the
- * 90-day check-up on an already-mastered item: missing that returns it to the
- * 30-day box, because the item was demonstrably learned once.
- */
+/** Whether initial learning is complete, including historical answer evidence. */
 export function hasAnswered(item) {
-  // Errors during initial learning are real answers, but do not finish it.
-  // Historical items without `fresh` keep their existing learned state.
-  if (item.fresh === true && item.box <= 1 && item.status !== 'mastered' && !item.masteredAt) return false
+  // Only new initial-learning answers carry this marker. A historical `fresh`
+  // flag cannot override evidence that the learner already started the word.
+  if (item.initialLearningPending === true && item.box <= 1 && item.status !== 'mastered' && !item.masteredAt) return false
   return (item.answers ?? []).length > 0 || Boolean(item.lastAt || item.masteredAt) || item.status === 'mastered' || item.box > 1
 }
 
@@ -95,6 +84,7 @@ export function advance(item, correct, now) {
     return {
       ...next,
       fresh: !correct,
+      initialLearningPending: !correct,
       box: 1,
       status: 'learning',
       streak: 0,
@@ -103,16 +93,13 @@ export function advance(item, correct, now) {
     }
   }
 
+  // Errors are saved, but leave the current stage and due date intact so the
+  // learner can correct this same item before completing its interval.
   if (!correct) {
-    const mastered = item.status === 'mastered'
     return {
       ...next,
-      box: mastered ? 3 : 1,
-      status: 'learning',
       streak: 0,
-      lapses: (item.lapses ?? 0) + 1,
-      masteredAt: mastered ? null : item.masteredAt ?? null,
-      dueAt: plusDays(now, mastered ? BOX_DAYS[3] : BOX_DAYS[1])
+      lapses: (item.lapses ?? 0) + 1
     }
   }
 
