@@ -31,6 +31,10 @@ export const SHORT_ASSESSMENT_LENGTH = 10
 /** Anchors mixed into every assessment, unmarked. */
 export const ANCHORS_PER_ASSESSMENT = 3
 
+/** Curated native Kokoro voices, in the learner-approved default order. */
+export const KOKORO_VOICES = ['af_heart', 'am_michael', 'bf_emma', 'bm_george']
+export const READING_RATES = [0.5, 1, 1.5, 2]
+
 export const ITEM_TYPES = ['reading', 'listening', 'expressions', 'quiz', 'ordering']
 export const REQUIRED_ITEM_TYPES = ['reading', 'listening', 'expressions', 'quiz']
 

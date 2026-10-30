@@ -6,13 +6,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execute } from '../core/index.js'
 
-const local = { voiceURI: 'local-en', name: 'Local English', lang: 'en-US', localService: true, default: true }
-const online = { voiceURI: 'online-en', name: 'Network English', lang: 'en-GB', localService: false }
+const local = { voiceURI: 'local-en', name: 'Shelley', lang: 'en-US', localService: true, default: true }
+const british = { voiceURI: 'shelley-gb', name: 'Shelley (English (United Kingdom))', lang: 'en-GB', localService: true }
 function speechAdapter() {
   const spoken = []
   const synth = new EventTarget()
   Object.assign(synth, {
-    voices: [local, online], spoken, paused: false, speaking: false, pauses: 0, resumes: 0,
+    voices: [local, british], spoken, paused: false, speaking: false, pauses: 0, resumes: 0,
     getVoices() { return this.voices },
     speak(utterance) { this.speaking = true; this.paused = false; spoken.push(utterance) },
     cancel() { this.speaking = false; this.paused = false },
@@ -24,7 +24,7 @@ function speechAdapter() {
 function fixture() {
   const state = {
     onboarded: true, profile: { goal: 'work', minutesPerDay: 30, interests: [] }, now: '2026-10-22T00:00:00Z',
-    settings: { audio: { voiceURI: null, rate: 1 }, study: { wordsPerDay: 10 } }, review: { dueCount: 1 },
+    settings: { audio: { provider: 'web-speech', voiceURI: local.voiceURI, rate: 1 }, study: { wordsPerDay: 10 } }, review: { dueCount: 1 },
     todayLesson: { date: '2026-10-22', title: '合成语音课', status: 'active', sources: [], items: [
       { id: 'read', type: 'reading', title: '阅读材料', body: 'First sentence. Second sentence. Last sentence.', minutes: 2 },
       { id: 'listen', type: 'listening', title: '听力材料', transcript: 'Listen first. Listen second. Listen last.', minutes: 2 },
@@ -60,6 +60,166 @@ async function open(t, api = fixture(), adapter = speechAdapter(), options = {})
   t.after(() => ui.close())
   return { ui, api, ...adapter }
 }
+test('新学习者在独立来源菜单看到Kokoro四声和未准备状态，选择及朗读不会下载或代读', async t => {
+  const api = fixture()
+  api.state.settings.audio = {}
+  const { ui, synth } = await open(t, api)
+  assert.equal(ui.field('音频来源').value, 'kokoro')
+  assert.equal(ui.field('英语音色').value, 'af_heart')
+  assert.deepEqual([...ui.field('英语音色').options].map(option => option.value), ['af_heart', 'am_michael', 'bf_emma', 'bm_george'])
+  assert.match(ui.text(), /Kokoro.*未准备/)
+  assert.match(ui.text(), /DSH 主机/)
+  assert.equal(synth.spoken.length, 0)
+  await ui.input('英语音色', 'bm_george')
+  await ui.input('朗读语速', 0.5)
+  await ui.click('试听音色')
+  await ui.click('播放')
+  await ui.click(ui.container.querySelector('button[aria-label="朗读 apple"]'))
+  assert.equal(synth.spoken.length, 0, 'unprepared Kokoro never uses a system fallback')
+  assert.match(ui.text(), /Kokoro.*未准备/)
+  assert.equal(api.state.settings.audio.kokoroVoice, 'bm_george')
+  assert.deepEqual(api.calls.filter(({ command }) => !['state.get', 'review.list', 'study.batch', 'settings.get', 'settings.save', 'audio.bookmark.get', 'job.status'].includes(command)), [])
+  assert.deepEqual(api.calls.filter(({ command }) => command === 'settings.save').map(({ payload }) => payload), [{ audio: { kokoroVoice: 'bm_george' } }, { audio: { rate: 0.5 } }])
+})
+
+test('系统音色仅列实际本地英语三家族和独立变体，拒绝联网缺属性及相似名称', async t => {
+  const api = fixture(), adapter = speechAdapter()
+  adapter.synth.voices = [local, british,
+    { voiceURI: 'reed-au', name: 'Reed (Enhanced)', lang: 'en-AU', localService: true },
+    { voiceURI: 'sandy-ie', name: 'Sandy (English (Ireland))', lang: 'en-IE', localService: true },
+    { voiceURI: 'sandy-cloud', name: 'Sandy', lang: 'en-US', localService: false },
+    { voiceURI: 'reed-unknown', name: 'Reed', lang: 'en-US' },
+    { voiceURI: 'shelley-truthy', name: 'Shelley', lang: 'en-US', localService: 'true' },
+    { voiceURI: 'shelley-fr', name: 'Shelley', lang: 'fr-FR', localService: true },
+    { voiceURI: 'shelley-like', name: 'Shelleyish', lang: 'en-US', localService: true },
+    { voiceURI: 'shelley-clone', name: 'Shelley (Clone)', lang: 'en-US', localService: true },
+    { voiceURI: 'shelley-prefix', name: 'Not Shelley', lang: 'en-US', localService: true },
+    { voiceURI: 'arbitrary-en', name: 'Unrelated English', lang: 'en-US', localService: true, default: true }]
+  const { ui, synth } = await open(t, api, adapter)
+  assert.equal(ui.field('音频来源').value, 'web-speech')
+  const menu = ui.field('英语音色')
+  assert.deepEqual([...menu.options].map(option => option.value), ['local-en', 'shelley-gb', 'reed-au', 'sandy-ie'])
+  assert.match(menu.options[0].textContent, /Shelley.*en-US.*本地/)
+  assert.match(menu.options[1].textContent, /Shelley.*en-GB.*本地/)
+  assert.equal(menu.value, local.voiceURI, 'valid legacy voiceURI is retained')
+  assert.equal(synth.spoken.length, 0)
+  menu.focus()
+  await ui.key(menu, '1')
+  assert.equal(ui.window.document.activeElement, menu)
+  await ui.input(menu, 'sandy-ie')
+  assert.equal(synth.spoken.length, 0, 'selection alone is silent')
+  await ui.click('试听音色')
+  assert.equal(synth.spoken.at(-1).voice.voiceURI, 'sandy-ie')
+  assert.equal(api.calls.some(({ command }) => /review.answer|lesson.complete/.test(command)), false)
+})
+
+test('切换来源分别记忆音色与共享语速，保留文章句段和播放或暂停意图，未准备来源不代读', async t => {
+  const api = fixture()
+  api.state.settings.audio.kokoroVoice = 'am_michael'
+  const { ui, synth } = await open(t, api)
+  await ui.click('播放')
+  await ui.flush(() => synth.spoken.at(-1).onend())
+  const previous = synth.spoken.at(-1)
+  await ui.input('音频来源', 'kokoro')
+  assert.equal(synth.speaking, false)
+  assert.equal(ui.field('文本进度').value, '1')
+  assert.match(ui.text(), /Kokoro.*未准备/)
+  assert.doesNotMatch(ui.container.querySelector('.ec-item-body').textContent, /播放中/)
+  assert.equal(ui.field('英语音色').value, 'am_michael')
+  const count = synth.spoken.length
+  await ui.input('英语音色', 'bf_emma')
+  await ui.input('朗读语速', 2)
+  await ui.flush(() => { previous.onend(); previous.onerror() })
+  assert.equal(synth.spoken.length, count)
+  assert.equal(ui.field('文本进度').value, '1')
+  await ui.input('音频来源', 'web-speech')
+  assert.equal(ui.field('英语音色').value, local.voiceURI)
+  assert.equal(ui.field('朗读语速').value, '2')
+  assert.equal(synth.spoken.length, count)
+  await ui.click('重试朗读')
+  assert.equal(synth.spoken.at(-1).text, 'Second sentence.')
+  await ui.input('英语音色', british.voiceURI)
+  assert.equal(synth.spoken.at(-1).voice.voiceURI, british.voiceURI)
+  assert.equal(synth.spoken.at(-1).text, 'Second sentence.')
+  await ui.click('暂停')
+  const pausedCount = synth.spoken.length
+  await ui.input('音频来源', 'kokoro')
+  assert.equal(ui.field('英语音色').value, 'bf_emma')
+  await ui.input('音频来源', 'web-speech')
+  assert.equal(ui.field('英语音色').value, british.voiceURI)
+  assert.equal(ui.field('文本进度').value, '1')
+  assert.match(ui.text(), /已暂停/)
+  assert.equal(synth.spoken.length, pausedCount)
+  await ui.click(ui.container.querySelector('button[aria-label="朗读 apple"]'))
+  assert.equal(synth.speaking, true)
+  await ui.input('音频来源', 'kokoro')
+  assert.equal(synth.speaking, false, 'changing source also stops a short pronunciation from the old source')
+  assert.equal(api.state.settings.audio.voiceURI, british.voiceURI)
+  assert.equal(api.state.settings.audio.kokoroVoice, 'bf_emma')
+  assert.equal(api.state.settings.audio.rate, 2)
+})
+
+test('旧素材来源及未知Kokoro音色明确要求重选，不显示成可用默认值或偷偷代读', async t => {
+  const api = fixture()
+  api.state.settings.audio = { provider: 'source-audio', voiceURI: local.voiceURI, kokoroVoice: 'removed-kokoro', rate: 1 }
+  const { ui, synth } = await open(t, api)
+  assert.equal(ui.field('音频来源').value, 'source-audio')
+  assert.match(ui.text(), /来源.*不可用.*重新选择/)
+  await ui.click('播放')
+  assert.equal(synth.spoken.length, 0)
+  await ui.input('音频来源', 'kokoro')
+  assert.equal(ui.field('英语音色').value, 'removed-kokoro')
+  assert.match(ui.text(), /音色.*不可用.*重新选择/)
+  await ui.click('试听音色')
+  assert.equal(synth.spoken.length, 0)
+  await ui.input('英语音色', 'af_heart')
+  assert.equal(api.state.settings.audio.kokoroVoice, 'af_heart')
+  assert.equal(api.state.settings.audio.voiceURI, local.voiceURI)
+})
+
+test('设置页指向统一朗读设置，不再提供未实现的素材音频或第二套来源选择', async t => {
+  const { ui, synth } = await open(t, fixture(), speechAdapter(), { slot: 'settings.section' })
+  assert.match(ui.text(), /今日.*朗读设置.*来源.*音色.*语速/)
+  assert.equal([...ui.container.querySelectorAll('option')].some(option => option.value === 'source-audio'), false)
+  assert.equal(synth.spoken.length, 0)
+})
+
+test('迟到偏好读取及保存不覆盖较新的来源音色、文章位置与暂停状态，保存失败可明确重选', async t => {
+  const api = fixture(), pendingRead = deferred(), pendingSave = deferred(), request = api.request
+  let holdSave = true, failSettings = false
+  api.request = (command, payload) => command === 'settings.get' ? pendingRead.promise
+    : command === 'settings.save' && holdSave ? pendingSave.promise
+    : command === 'settings.save' && failSettings ? Promise.resolve({ ok: false, message: 'disk unavailable' }) : request(command, payload)
+  const { ui, synth } = await open(t, api)
+  await ui.input('音频来源', 'web-speech')
+  await ui.input('英语音色', british.voiceURI)
+  await ui.input('朗读语速', 1.5)
+  await ui.flush(() => pendingRead.resolve({ ok: true, data: { audio: { provider: 'kokoro', kokoroVoice: 'bm_george', voiceURI: local.voiceURI, rate: 1 } } }))
+  assert.equal(ui.field('音频来源').value, 'web-speech')
+  assert.equal(ui.field('英语音色').value, british.voiceURI)
+  assert.equal(ui.field('朗读语速').value, '1.5')
+  await ui.input('文本进度', 1)
+  await ui.click('播放')
+  await ui.click('暂停')
+  const count = synth.spoken.length
+  holdSave = false
+  await ui.flush(() => pendingSave.resolve({ ok: true, data: { audio: { provider: 'kokoro', voiceURI: local.voiceURI, rate: 1 } } }))
+  assert.equal(ui.field('音频来源').value, 'web-speech')
+  assert.equal(ui.field('英语音色').value, british.voiceURI)
+  assert.equal(ui.field('朗读语速').value, '1.5')
+  assert.equal(ui.field('文本进度').value, '1')
+  assert.match(ui.text(), /已暂停/)
+  assert.equal(synth.spoken.length, count)
+  failSettings = true
+  await ui.input('英语音色', local.voiceURI)
+  assert.match(ui.text(), /语音偏好保存失败/)
+  assert.equal(synth.spoken.length, count)
+  failSettings = false
+  await ui.input('英语音色', british.voiceURI)
+  assert.doesNotMatch(ui.text(), /语音偏好保存失败/)
+  assert.equal(synth.spoken.length, count)
+})
+
 test('词旁喇叭取代发音和语音选项文字，点击不误答或翻卡', async t => {
   const api = fixture(), adapter = speechAdapter()
   api.state.todayLesson.cards = [{ id: 'flash', front: 'take care', back: '保重' }]
@@ -114,13 +274,13 @@ test('音色和倍速集中在单词学习下方的独立卡片，课程内不�
   }
   assert.doesNotMatch(ui.text(), /联网音色可能|不保证不同声源词速相同/)
   assert.equal(synth.spoken.length, 0)
-  await ui.input('英语音色', online.voiceURI)
+  await ui.input('英语音色', british.voiceURI)
   await ui.input('朗读语速', 1.5)
   await ui.click(ui.container.querySelector('button[aria-label="朗读 apple"]'))
-  assert.equal(synth.spoken.at(-1).voice.voiceURI, online.voiceURI)
+  assert.equal(synth.spoken.at(-1).voice.voiceURI, british.voiceURI)
   assert.equal(synth.spoken.at(-1).rate, 1.5)
   await ui.click('播放')
-  assert.equal(synth.spoken.at(-1).voice.voiceURI, online.voiceURI)
+  assert.equal(synth.spoken.at(-1).voice.voiceURI, british.voiceURI)
   assert.equal(synth.spoken.at(-1).rate, 1.5)
   await ui.click(articleRow(ui, '听力材料'))
   assert.equal(ui.container.querySelectorAll('select[aria-label="英语音色"]').length, 1)
@@ -142,9 +302,9 @@ test('可用英语声源选择与试听，四档速度保持句段和播放意�
   assert.match(ui.text(), /英语音色.*尚未就绪|暂无.*英语音色/)
   await ui.click('播放')
   assert.equal(synth.spoken.length, 0)
-  await ui.flush(() => { synth.voices = [local, online]; synth.dispatchEvent(new Event('voiceschanged')) })
+  await ui.flush(() => { synth.voices = [local, british]; synth.dispatchEvent(new Event('voiceschanged')) })
   assert.match(ui.text(), /本地/)
-  assert.match(ui.text(), /Network English · 联网/)
+  assert.match(ui.text(), /Shelley \(English \(United Kingdom\)\).*en-GB.*本地/)
   assert.doesNotMatch(ui.text(), /联网音色可能|不保证不同声源词速相同/)
   await ui.click('重试朗读')
   await ui.flush(() => synth.spoken.at(-1).onend())
@@ -153,8 +313,8 @@ test('可用英语声源选择与试听，四档速度保持句段和播放意�
     assert.equal(synth.spoken.at(-1).rate, rate)
     assert.equal(synth.spoken.at(-1).text, 'Second sentence.')
   }
-  await ui.input('英语音色', online.voiceURI)
-  assert.equal(synth.spoken.at(-1).voice.voiceURI, online.voiceURI)
+  await ui.input('英语音色', british.voiceURI)
+  assert.equal(synth.spoken.at(-1).voice.voiceURI, british.voiceURI)
   await ui.click('暂停')
   const count = synth.spoken.length
   for (const rate of [0.5, 1, 1.5, 2]) await ui.input('朗读语速', rate)
@@ -166,23 +326,24 @@ test('可用英语声源选择与试听，四档速度保持句段和播放意�
   assert.match(ui.text(), /已暂停/)
   assert.equal(api.state.settings.audio.rate, 2)
   assert.equal(api.state.settings.audio.voiceURI, local.voiceURI)
-  await ui.flush(() => { synth.voices = [online]; synth.dispatchEvent(new Event('voiceschanged')) })
+  await ui.flush(() => { synth.voices = [british]; synth.dispatchEvent(new Event('voiceschanged')) })
   assert.match(ui.text(), /偏好音色.*不可用/)
-  assert.equal(ui.field('英语音色').value, online.voiceURI)
+  assert.equal(ui.field('英语音色').value, '', 'a vanished selection is not silently substituted')
+  assert.equal(api.state.settings.audio.voiceURI, local.voiceURI)
 })
 
 test('偏好读取迟到时修改语速只保存该字段，不覆盖既有音色', async t => {
   const api = fixture(), pending = deferred(), request = api.request
-  api.state.settings.audio.voiceURI = online.voiceURI
+  api.state.settings.audio.voiceURI = british.voiceURI
   api.request = (command, payload) => command === 'settings.get' ? pending.promise : request(command, payload)
   const { ui, synth } = await open(t, api)
   await ui.input('朗读语速', 1.5)
-  assert.equal(api.state.settings.audio.voiceURI, online.voiceURI)
-  await ui.flush(() => pending.resolve({ ok: true, data: { audio: { voiceURI: online.voiceURI, rate: 1 } } }))
-  assert.equal(ui.field('英语音色').value, online.voiceURI)
+  assert.equal(api.state.settings.audio.voiceURI, british.voiceURI)
+  await ui.flush(() => pending.resolve({ ok: true, data: { audio: { voiceURI: british.voiceURI, rate: 1 } } }))
+  assert.equal(ui.field('英语音色').value, british.voiceURI)
   assert.equal(ui.field('朗读语速').value, '1.5')
   await ui.click('播放')
-  assert.equal(synth.spoken.at(-1).voice.voiceURI, online.voiceURI)
+  assert.equal(synth.spoken.at(-1).voice.voiceURI, british.voiceURI)
 })
 
 test('书签跨折叠和重开静默恢复，正文变化仅重置该篇，隐藏暂停并显示保存失败', async t => {
@@ -285,6 +446,7 @@ test('真实execute隔离课程下发音与书签只写音频位置，不改复�
   assert.equal((await run('lesson.save', lesson)).ok, true)
   assert.equal((await run('lesson.start', { date: lesson.date })).ok, true)
   assert.equal((await run('review.add', { items: api.words })).ok, true)
+  assert.equal((await run('settings.save', { audio: { provider: 'web-speech', voiceURI: local.voiceURI } })).ok, true)
   const beforeReview = await run('review.list')
   const beforeState = await run('state.get')
   const pending = new Set(), bookmarkPayloads = []
@@ -319,12 +481,17 @@ test('播放中声源消失立即停止并保留句段，手动换声重试；�
   const { ui, synth } = await open(t)
   await ui.click('播放')
   await ui.flush(() => synth.spoken.at(-1).onend())
-  await ui.flush(() => { synth.voices = [online]; synth.dispatchEvent(new Event('voiceschanged')) })
+  await ui.flush(() => { synth.voices = [british]; synth.dispatchEvent(new Event('voiceschanged')) })
   assert.equal(synth.speaking, false)
   assert.match(ui.text(), /音色.*不可用/)
   assert.equal(ui.field('文本进度').value, '1')
+  const unavailableCount = synth.spoken.length
   await ui.click('重试朗读')
-  assert.equal(synth.spoken.at(-1).voice.voiceURI, online.voiceURI)
+  assert.equal(synth.spoken.length, unavailableCount, 'missing preference never falls back to another approved voice')
+  await ui.input('英语音色', british.voiceURI)
+  assert.equal(synth.spoken.length, unavailableCount, 'reselection does not resume a failed article')
+  await ui.click('重试朗读')
+  assert.equal(synth.spoken.at(-1).voice.voiceURI, british.voiceURI)
   const paused = synth.spoken.at(-1)
   await ui.click('暂停')
   await ui.flush(() => paused.onend())
@@ -353,7 +520,7 @@ test('完成终点与语音偏好重开保留；无Web Speech明确报错且空�
   const api = fixture(), adapter = speechAdapter()
   let ui = await mountClient({ request: api.request, setupWindow: adapter.setupWindow })
   t.after(() => ui.close())
-  await ui.input('英语音色', online.voiceURI)
+  await ui.input('英语音色', british.voiceURI)
   await ui.input('朗读语速', 1.5)
   await ui.click('播放')
   for (let i = 0; i < 3; i++) await ui.flush(() => adapter.synth.spoken.at(-1).onend())
@@ -363,7 +530,7 @@ test('完成终点与语音偏好重开保留；无Web Speech明确报错且空�
   assert.equal(adapter.synth.spoken.length, count)
   assert.equal(ui.field('文本进度').value, '3')
   assert.match(ui.text(), /朗读已完成/)
-  assert.equal(ui.field('英语音色').value, online.voiceURI)
+  assert.equal(ui.field('英语音色').value, british.voiceURI)
   assert.equal(ui.field('朗读语速').value, '1.5')
   await ui.input('朗读语速', 0.5)
   assert.equal(adapter.synth.spoken.length, count)
@@ -467,6 +634,7 @@ test('三套真实内置目录的首条词库词条可发音且不产生个人�
   const now = new Date('2026-10-22T08:00:00+08:00')
   const run = (command, payload) => execute(root, command, payload, { now })
   await run('profile.save', { goal: 'study', minutesPerDay: 20, interests: [] })
+  assert.equal((await run('settings.save', { audio: { provider: 'web-speech', voiceURI: local.voiceURI } })).ok, true)
   const pending = new Set()
   const request = (command, payload) => { const promise = run(command, payload); pending.add(promise); promise.finally(() => pending.delete(promise)); return promise }
   const { ui, synth } = await open(t, { request })
@@ -488,7 +656,7 @@ test('三套真实内置目录的首条词库词条可发音且不产生个人�
   await settle()
 })
 
-test('缺失旧偏好只回退到真实声源，不自动试听；无英语音色错误后可手动恢复', async t => {
+test('缺失旧偏好不回退到其它声源，保留原标识和位置，手动重选或原声重新出现才可播放', async t => {
   const api = fixture(), adapter = speechAdapter()
   api.state.settings.audio = { voiceURI: 'removed-voice', rate: 99 }
   adapter.synth.voices = [{ voiceURI: 'zh', name: '中文', lang: 'zh-CN', localService: true }]
@@ -501,9 +669,25 @@ test('缺失旧偏好只回退到真实声源，不自动试听；无英语音�
   await ui.flush(() => { synth.voices = [local]; synth.dispatchEvent(new Event('voiceschanged')) })
   assert.equal(synth.spoken.length, 0)
   assert.match(ui.text(), /偏好音色当前不可用/)
+  assert.equal(ui.field('英语音色').value, '')
+  assert.equal(api.state.settings.audio.voiceURI, 'removed-voice')
+  await ui.input('文本进度', 1)
+  await ui.click('继续')
+  assert.equal(synth.spoken.length, 0)
+  assert.equal(ui.field('文本进度').value, '1')
+  await ui.input('英语音色', local.voiceURI)
+  assert.equal(synth.spoken.length, 0)
   await ui.click('重试朗读')
   assert.equal(synth.spoken.at(-1).voice.voiceURI, local.voiceURI)
+  assert.equal(synth.spoken.at(-1).text, 'Second sentence.')
   assert.equal(synth.spoken.at(-1).rate, 1)
+  await ui.click('暂停')
+  const count = synth.spoken.length
+  await ui.flush(() => { synth.voices = []; synth.dispatchEvent(new Event('voiceschanged')) })
+  assert.equal(ui.field('英语音色').value, '')
+  await ui.flush(() => { synth.voices = [local]; synth.dispatchEvent(new Event('voiceschanged')) })
+  assert.equal(ui.field('英语音色').value, local.voiceURI)
+  assert.equal(synth.spoken.length, count, 'reappearing preference is restored silently')
 })
 
 function articleRow(ui, title) { return [...ui.container.querySelectorAll('.ec-li')].find(node => node.textContent.includes(title)) }

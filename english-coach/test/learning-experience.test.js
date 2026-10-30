@@ -107,6 +107,71 @@ test('编辑目标保留旧画像未知字段，校验失败保留最终保存�
   assert.equal(JSON.parse(before).extension, true)
 })
 
+test('新学习者推荐Kokoro Heart，来源切换分别保留两种音色和共享语速', async t => {
+  const { run } = await fixture(t)
+  const initial = await run('settings.get')
+  assert.equal(initial.data.audio.provider, 'kokoro')
+  assert.equal(initial.data.audio.kokoroVoice, 'af_heart')
+  assert.equal(initial.data.audio.voiceURI, null)
+  assert.equal(initial.data.audio.rate, 1)
+  assert.equal((await run('settings.save', { audio: { provider: 'web-speech', voiceURI: 'shelley-us', rate: 1.5 } })).ok, true)
+  const changed = await run('settings.save', { audio: { provider: 'kokoro', kokoroVoice: 'bf_emma' } })
+  assert.equal(changed.ok, true, JSON.stringify(changed))
+  assert.equal(changed.data.audio.voiceURI, 'shelley-us')
+  assert.equal(changed.data.audio.kokoroVoice, 'bf_emma')
+  assert.equal(changed.data.audio.rate, 1.5)
+  await run('settings.save', { audio: { provider: 'web-speech' } })
+  const reopened = await run('settings.get')
+  assert.equal(reopened.data.audio.provider, 'web-speech')
+  assert.equal(reopened.data.audio.voiceURI, 'shelley-us')
+  assert.equal(reopened.data.audio.kokoroVoice, 'bf_emma')
+  assert.equal(reopened.data.audio.rate, 1.5)
+})
+
+test('旧系统音色兼容读取不重写原档，局部更新保留失效标识及所有无关设置', async t => {
+  const { root, run } = await fixture(t)
+  const stored = { version: 1, extension: { keep: true }, audio: { voiceURI: 'legacy-removed-voice', rate: 2, extension: 7 },
+    automation: { enabled: true, time: '09:30', timeZone: 'UTC', extra: true }, study: { wordsPerDay: 12, future: 'keep' }, display: { locale: 'zh', extra: true } }
+  const path = join(root, 'settings.json'), bytes = JSON.stringify(stored)
+  await fs.writeFile(path, bytes)
+  const read = await run('settings.get')
+  assert.equal(read.data.audio.provider, 'web-speech', 'legacy system preference must not become Kokoro')
+  assert.equal(read.data.audio.voiceURI, 'legacy-removed-voice', 'Host cannot judge the current browser voice list')
+  assert.equal(read.data.audio.kokoroVoice, 'af_heart')
+  assert.equal(await fs.readFile(path, 'utf8'), bytes, 'reading does not migrate the stored preference')
+  const saved = await run('settings.save', { audio: { kokoroVoice: 'am_michael' } })
+  assert.equal(saved.data.audio.provider, 'web-speech')
+  assert.equal(saved.data.audio.voiceURI, 'legacy-removed-voice')
+  assert.equal(saved.data.audio.rate, 2)
+  assert.equal(saved.data.audio.extension, 7)
+  for (const key of ['extension', 'automation', 'display']) assert.deepEqual(saved.data[key], stored[key])
+  assert.equal(saved.data.study.future, 'keep')
+  assert.equal(saved.data.study.wordsPerDay, 12)
+})
+
+test('设置只接受两种朗读来源、精选四声及四档语速，拒绝整次非法更新不改书签或学习记录', async t => {
+  const { root, run } = await fixture(t)
+  await run('review.add', { items: [word('kept-study-word')] })
+  await run('audio.bookmark.save', { materialId: 'kept', contentFingerprint: 'v1', position: 2 })
+  await run('settings.save', { audio: { provider: 'web-speech', voiceURI: 'sandy-us' } })
+  const beforeReview = await run('review.list')
+  const beforeBookmark = await run('audio.bookmark.get', { materialId: 'kept', contentFingerprint: 'v1' })
+  for (const kokoroVoice of ['af_heart', 'am_michael', 'bf_emma', 'bm_george']) {
+    assert.equal((await run('settings.save', { audio: { kokoroVoice } })).data.audio.kokoroVoice, kokoroVoice)
+  }
+  for (const rate of [0.5, 1, 1.5, 2]) assert.equal((await run('settings.save', { audio: { rate } })).data.audio.rate, rate)
+  const bytes = await fs.readFile(join(root, 'settings.json'), 'utf8')
+  for (const [field, value] of [['provider', 'cloud'], ['provider', 'source-audio'], ['provider', null], ['provider', ''],
+    ['kokoroVoice', 'af_other'], ['kokoroVoice', 'Shelley'], ['kokoroVoice', null], ['rate', 0.8], ['voiceURI', {}]]) {
+    const result = await run('settings.save', { study: { wordsPerDay: 30 }, audio: { [field]: value } })
+    assert.equal(result.ok, false, `${field}: ${JSON.stringify(value)}`)
+    assert.equal(result.field, `audio.${field}`)
+    assert.equal(await fs.readFile(join(root, 'settings.json'), 'utf8'), bytes)
+  }
+  assert.deepEqual(await run('review.list'), beforeReview)
+  assert.deepEqual(await run('audio.bookmark.get', { materialId: 'kept', contentFingerprint: 'v1' }), beforeBookmark)
+})
+
 test('语音偏好与书签独立保存，正文变更仅使本篇书签静默失效', async (t) => {
   const { root, run } = await fixture(t)
   await fs.writeFile(join(root, 'settings.json'), JSON.stringify({ version: 1, custom: true, audio: { provider: 'web-speech', extension: 7 }, study: { wordsPerDay: 12, future: 'keep' } }))
