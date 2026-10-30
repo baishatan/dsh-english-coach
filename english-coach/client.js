@@ -452,6 +452,12 @@ window.__ModuleLoader__.load({
         emit()
       }
       let active = null, token = 0, loaded = false, settingsWrites = Promise.resolve()
+      // One latest short entry, not a second player or an unbounded owner map.
+      let shortFeedback = null
+      const shortState = owner => shortFeedback?.owner === owner
+        ? { error: shortFeedback.error, status: shortFeedback.status, manualPlay: shortFeedback.manualPlay }
+        : { error: '', status: '', manualPlay: false }
+      const reportShort = (owner, change) => { if (shortFeedback?.owner === owner) Object.assign(shortFeedback, change) }
       const changedPreferences = new Set()
       let readyKokoro = false
       const preferences = { provider: 'kokoro', kokoroVoice: 'af_heart', voiceURI: null, rate: 1, voices: [], notice: '', error: '', localStatus: '', manualPlay: false }
@@ -474,10 +480,10 @@ window.__ModuleLoader__.load({
             /^(?:Shelley|Reed|Sandy)(?: \((?:Enhanced|Premium|English(?: \([A-Za-z]+(?:[ -][A-Za-z]+)*\))?)\))*$/i.test(voice.name))
         } catch { preferences.voices = [] }
         if (active?.kind === 'system' && !preferences.voices.some(voice => voice.voiceURI === active.utterance.voice?.voiceURI)) {
-          const current = active.article
-          cancel()
+          const current = active.article, owner = active.owner
+          cancel(!current)
           if (current) { current.status = 'error'; current.error = '正在使用的英语音色已不可用，请换声后重试。'; void save(current) }
-          else preferences.error = '正在使用的英语音色已不可用，请换声后重试。'
+          else { preferences.error = '正在使用的英语音色已不可用，请换声后重试。'; reportShort(owner, { error: preferences.error, status: '', manualPlay: false }) }
         }
         preferences.notice = playbackIssue()
         emit()
@@ -527,8 +533,9 @@ window.__ModuleLoader__.load({
         if (value.url) { window.URL.revokeObjectURL(value.url); value.url = null }
         if (value.taskId) void call('speech.cancel', { taskId: value.taskId })
       }
-      const cancel = () => {
+      const cancel = (keepShortFeedback = false) => {
         clearResume(); token++
+        if (!keepShortFeedback) shortFeedback = null
         const previous = active; active = null
         preferences.localStatus = ''; preferences.manualPlay = false
         if (previous?.kind === 'kokoro') stopLocal(previous)
@@ -611,19 +618,20 @@ window.__ModuleLoader__.load({
       function short(text, owner) {
         if (active?.article) pause(active.article)
         cancel()
+        shortFeedback = { owner, error: '', status: '', manualPlay: false }
         if (preferences.provider === 'kokoro') {
-          if (!KOKORO_VOICES.some(voice => voice.id === preferences.kokoroVoice)) { preferences.error = '已保存的 Kokoro 音色当前不可用，请重新选择音色。'; emit(); return }
+          if (!KOKORO_VOICES.some(voice => voice.id === preferences.kokoroVoice)) { preferences.error = '已保存的 Kokoro 音色当前不可用，请重新选择音色。'; reportShort(owner, { error: preferences.error }); emit(); return }
           void localShort(text, owner)
           return
         }
         const issue = playbackIssue()
-        if (issue) { preferences.error = issue; emit(); return }
+        if (issue) { preferences.error = issue; reportShort(owner, { error: issue }); emit(); return }
         preferences.error = ''
         const run = token, utterance = new window.SpeechSynthesisUtterance(text)
         utterance.voice = selectedVoice(); utterance.lang = utterance.voice.lang; utterance.rate = preferences.rate
         active = { kind: 'system', owner, utterance }
-        utterance.onend = () => { if (run !== token) return; active = null; emit() }
-        utterance.onerror = () => { if (run !== token) return; cancel(); preferences.error = '发音失败，请重试或更换英语音色。'; emit() }
+        utterance.onend = () => { if (run !== token) return; active = null; shortFeedback = null; emit() }
+        utterance.onerror = () => { if (run !== token) return; cancel(true); preferences.error = '发音失败，请重试或更换英语音色。'; reportShort(owner, { error: preferences.error, status: '', manualPlay: false }); emit() }
         try { if (synth().paused) synth().resume(); synth().speak(utterance) } catch { utterance.onerror() }
         emit()
       }
@@ -631,8 +639,8 @@ window.__ModuleLoader__.load({
         const value = { kind: 'kokoro', owner, run: token, controller: new window.AbortController(), taskId: null, media: null, url: null, pollTimer: null, checking: false, deadline: Date.now() + 120000 }
         active = value
         const current = () => active === value && value.run === token && !value.controller.signal.aborted
-        const fail = message => { if (!current()) return; cancel(); preferences.error = message; emit() }
-        preferences.error = ''; preferences.localStatus = '检查 Kokoro 资源'; emit()
+        const fail = message => { if (!current()) return; cancel(true); preferences.error = message; reportShort(owner, { error: message, status: '', manualPlay: false }); emit() }
+        preferences.error = ''; preferences.localStatus = '检查 Kokoro 资源'; reportShort(owner, { status: preferences.localStatus }); emit()
         try {
           const assets = await call('speech.assets.status', {}, { signal: value.controller.signal })
           if (!current()) return
@@ -641,7 +649,7 @@ window.__ModuleLoader__.load({
           if (!assets.data.assetsReady) { fail(kokoroUnavailable); return }
           if (!assets.data.runtimeAvailable) { fail('Kokoro 合成运行时尚不可用；请安装兼容插件后手动重试。'); return }
           preferences.notice = ''
-          preferences.localStatus = '正在提交本地朗读'; emit()
+          preferences.localStatus = '正在提交本地朗读'; reportShort(owner, { status: preferences.localStatus }); emit()
           const result = await call('speech.synthesize', { text, voice: preferences.kokoroVoice, rate: preferences.rate }, { signal: value.controller.signal })
           if (!current()) { if (result.ok && result.data.taskId) void call('speech.cancel', { taskId: result.data.taskId }); return }
           if (!result.ok) { fail(result.message); return }
@@ -656,7 +664,7 @@ window.__ModuleLoader__.load({
               if (!status.ok) { fail(status.message); return }
               const phase = status.data.phase
               preferences.localStatus = { queued: '本地朗读排队中', loading: '正在加载本地朗读', generating: '正在生成本地朗读', ready: '正在领取生成音频' }[phase] ?? ''
-              emit()
+              reportShort(owner, { status: preferences.localStatus }); emit()
               if (phase === 'error') { fail(status.data.error?.message ?? '本地朗读生成失败，请手动重试。'); return }
               if (!['queued', 'loading', 'generating', 'ready'].includes(phase)) { fail('本地朗读任务已停止，请手动重试。'); return }
               if (phase !== 'ready') return
@@ -669,31 +677,33 @@ window.__ModuleLoader__.load({
               value.media = new window.Audio()
               value.media.preload = 'auto'
               value.media.src = value.url
-              value.media.onplaying = () => { if (current()) { preferences.manualPlay = false; preferences.localStatus = '正在播放本地朗读'; emit() } }
+              value.media.onplaying = () => { if (current()) { preferences.manualPlay = false; preferences.localStatus = '正在播放本地朗读'; reportShort(owner, { status: preferences.localStatus, manualPlay: false }); emit() } }
               value.media.onended = () => { if (!current()) return; cancel(); preferences.localStatus = '试听结束'; emit() }
               value.media.onerror = () => fail('生成音频播放失败，请手动重试或选择系统语音；不会自动换源。')
-              preferences.localStatus = '音频已就绪，等待播放开始'; emit()
-              await playLocal(value)
+              preferences.localStatus = '音频已就绪，等待播放开始'; reportShort(owner, { status: preferences.localStatus }); emit()
+              await playLocal(owner)
             } finally { value.checking = false }
           }
           value.pollTimer = setInterval(() => { void poll().catch(() => fail('本地朗读请求失败，请手动重试。')) }, 350)
           await poll(result)
         } catch { fail('本地朗读请求失败，请手动重试。') }
       }
-      async function playLocal(value = active) {
-        if (value?.kind !== 'kokoro' || !value.media || value.run !== token || active !== value) return
+      async function playLocal(owner) {
+        const value = active
+        if (owner !== undefined && (value?.owner !== owner || value?.article)) return
+        if (value?.kind !== 'kokoro' || !value.media || value.run !== token) return
         try { await value.media.play() } catch {
           if (active !== value || value.run !== token) return
           preferences.manualPlay = true
           preferences.localStatus = '音频已就绪；浏览器需要你再次点击播放。'
-          preferences.error = ''; emit()
+          preferences.error = ''; reportShort(value.owner, { error: '', status: preferences.localStatus, manualPlay: true }); emit()
         }
       }
-      function suspend() { if (active?.article) pause(active.article); else if (active) { cancel(); emit() } }
+      function suspend() { if (active?.article) pause(active.article); else if (active || shortFeedback) { cancel(); emit() } }
       const hidden = () => { if (document.hidden) suspend() }
-      return { article, pause, play, restart, seek, save, restore, preferences, configure, selectedVoice, refreshVoices, short, playLocal,
+      return { article, pause, play, restart, seek, save, restore, preferences, configure, selectedVoice, refreshVoices, short, shortState, playLocal,
         stop() { if (active) { suspend(); emit() } },
-        release(owner) { if (active?.owner === owner) { cancel(); emit() } },
+        release(owner) { if (active?.owner === owner || shortFeedback?.owner === owner) { cancel(); emit() } },
         subscribe(listener) {
           listeners.add(listener)
           if (listeners.size === 1) { refreshVoices(); synth()?.addEventListener?.('voiceschanged', refreshVoices); document.addEventListener('visibilitychange', hidden); window.addEventListener('pagehide', suspend); void loadPreferences() }
@@ -1431,14 +1441,17 @@ window.__ModuleLoader__.load({
 
     function PronounceButton({ text, label }) {
       const audio = useSpeech(), owner = useRef({})
-      useEffect(() => () => audio.release(owner.current), [])
+      useEffect(() => () => audio.release(owner.current), [text])
+      const state = audio.shortState(owner.current)
       if (typeof text !== 'string' || !/[A-Za-z]/.test(text) || /[\u3400-\u9fff]/.test(text)) return null
       return h('span', { className: 'ec-pronounce', onKeyDown: event => { if (['Enter', ' ', '1', '2', '3', '4'].includes(event.key)) event.stopPropagation() }, onClick: event => event.stopPropagation() },
         h('button', { type: 'button', className: 'ec-pronounce-icon', 'aria-label': label ?? `朗读 ${text}`, title: label ?? `朗读 ${text}`, onClick: event => { event.stopPropagation(); audio.short(text, owner.current) } },
           h('svg', { width: 18, height: 18, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true, focusable: false },
             h('path', { d: 'M11 5 6 9H3v6h3l5 4V5Z' }),
             h('path', { d: 'M15 8a6 6 0 0 1 0 8M18 5a10 10 0 0 1 0 14' }))),
-        audio.preferences.error ? h('span', { className: 'ec-pronounce-error', role: 'status' }, audio.preferences.error) : null)
+        state.status ? h('span', { className: 'ec-pronounce-status', role: 'status', 'aria-live': 'polite' }, state.status) : null,
+        state.manualPlay ? h('button', { type: 'button', className: 'ec-btn ec-btn-sm', onClick: () => { void audio.playLocal(owner.current) } }, '播放生成音频') : null,
+        state.error ? h('span', { className: 'ec-pronounce-error', role: 'status' }, state.error, ' 可再次点喇叭重试，或在「今日」的朗读设置准备资源／手动选择来源和音色。') : null)
     }
 
     function Speak({ text = '', materialId }) {
