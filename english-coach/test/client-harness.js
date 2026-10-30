@@ -27,7 +27,13 @@ export async function mountClient({ request, slot = 'main', setupWindow, layout 
   dom.window.__ModuleLoader__ = { load: ({ factory }) => { plugin = factory(require) } }
   const context = vm.createContext({
     window: dom.window, document: dom.window.document, console,
-    fetch: async (url, options) => ({ ok: true, json: async () => request(url.split('/').at(-1), JSON.parse(options.body), options) }),
+    fetch: async (url, options) => {
+      const value = await request(url.split('/').at(-1), JSON.parse(options.body), options)
+      // The transport adapter can return a real binary/error Response, not just
+      // JSON. Existing fixtures keep their ordinary result objects.
+      return value && typeof value.arrayBuffer === 'function' && typeof value.json === 'function'
+        ? value : { ok: true, json: async () => value }
+    },
     setTimeout, clearTimeout,
     setInterval: (callback, delay) => { intervals.set(++timerId, { callback, delay }); return timerId },
     clearInterval: (id) => intervals.delete(id)
