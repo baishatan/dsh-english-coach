@@ -1456,9 +1456,9 @@ window.__ModuleLoader__.load({
     // ----------------------------------------------------------- study items
 
     function SpeechAssetsPreparation() {
-      const [assets, setAssets] = useState(null), [error, setError] = useState(null), [busy, setBusy] = useState(false)
+      const [assets, setAssets] = useState(null), [error, setError] = useState(null), [busy, setBusy] = useState(false), [confirmRepair, setConfirmRepair] = useState(false)
       const mounted = useRef(false), order = useRef(0), pending = useRef(false)
-      const active = assets && ['preparing', 'downloading', 'validating'].includes(assets.phase)
+      const active = assets && ['preparing', 'downloading', 'validating', 'activating'].includes(assets.phase)
       const read = useCallback(async () => {
         const request = ++order.current
         const result = await call('speech.assets.status')
@@ -1479,6 +1479,7 @@ window.__ModuleLoader__.load({
       async function act(action) {
         if (pending.current) return
         pending.current = true
+        setConfirmRepair(false)
         const request = ++order.current
         setBusy(true)
         setError(null)
@@ -1490,22 +1491,34 @@ window.__ModuleLoader__.load({
         } finally { pending.current = false; if (mounted.current) setBusy(false) }
       }
       const count = value => Number(value ?? 0).toLocaleString('en-US')
-      const phase = { unprepared: '尚未准备', preparing: '准备中', downloading: '下载中', validating: '校验中', cancelled: '已取消', interrupted: '上次准备中断；可明确重新准备', error: '准备失败', ready: '资源已校验' }[assets?.phase] ?? '读取资源状态中'
+      const phase = { unprepared: '尚未准备', preparing: '准备中', downloading: '下载中', validating: '校验中', activating: '资源切换中；旧音频将失效', cancelled: '已取消', interrupted: '上次准备中断；可明确重新准备', error: assets?.repairRequired ? '资源损坏或不兼容；需要明确修复' : '准备或修复失败', ready: '资源已校验' }[assets?.phase] ?? '读取资源状态中'
       return h('section', { className: 'ec-card ec-speech-assets', 'aria-label': 'Kokoro 资源准备' },
         h('div', { className: 'ec-card-head' }, h('h2', null, 'Kokoro 资源准备')),
         h('p', { className: 'ec-muted' }, 'Kokoro 在 DSH 主机处理英文；远程页面会把文字交给该主机。只有点击准备才下载，完成后不会自动发声。'),
         assets ? h('p', { className: 'ec-muted', style: { overflowWrap: 'anywhere' } },
           `固定版本 ${assets.manifest.revision} · 模型、词元配置与 Heart / Michael / Emma / George 四声一起下载 ${count(assets.manifest.downloadBytes)} 字节（约 94.5 MB）。这是下载资源，不含另行随插件安装的运行时代码。准备需相应临时空间；就绪后原目录保留，不重复复制。`) : null,
         h('div', { role: 'status', 'aria-live': 'polite' }, phase),
-        assets ? h('p', { className: 'ec-muted' }, `已下载 ${count(assets.downloadedBytes)} / ${count(assets.manifest.downloadBytes)} 字节 · 已校验 ${count(assets.validatedBytes)} 字节 · 当前资源占用 ${count(assets.diskBytes)} 字节`) : null,
+        assets ? h('p', { className: 'ec-muted' }, `已下载 ${count(assets.downloadedBytes)} / ${count(assets.manifest.downloadBytes)} 字节 · 已校验 ${count(assets.validatedBytes)} 字节 · 当前资源占用 ${count(assets.diskBytes)} 字节${assets.diskBytesKnown === false ? '（有归属不明或缺件，无法完整统计；未清理）' : ''}`) : null,
         active ? h('progress', { 'aria-label': 'Kokoro 下载字节', value: assets.downloadedBytes, max: assets.manifest.downloadBytes, style: { width: '100%' } }) : null,
         active && assets.currentFile ? h('div', { className: 'ec-muted', style: { overflowWrap: 'anywhere' } }, assets.currentFile) : null,
         assets?.assetsReady ? h('p', { role: 'status' }, assets.runtimeAvailable ? '资源与运行时可用；请重新点击播放，不会自动发声。' : '资源已校验，合成运行时尚不可用；安装兼容运行时后需重新点击播放，不会自动发声。') : null,
+        assets?.operation === 'repair' && assets.assetsReady && assets.phase !== 'ready' ? h('p', { role: 'status' }, '兼容旧资源仍可用；新集合全部校验前保留旧集合，失败或取消不会自动重试。') : null,
+        assets?.update ? h('p', { className: 'ec-muted' }, assets.update.message) : null,
         assets?.error ? h(Notice, { tone: 'error' }, assets.error.message) : null,
         error ? h(Notice, { tone: 'error' }, error) : null,
+        confirmRepair ? h('div', { role: 'dialog', 'aria-modal': 'true', 'aria-label': '确认修复 Kokoro 资源', className: 'ec-card', tabIndex: -1, onKeyDown: event => { if (event.key === 'Escape') setConfirmRepair(false) } },
+          h('h3', null, '确认修复 Kokoro 资源'),
+          h('p', { style: { overflowWrap: 'anywhere' } }, `目标固定身份 ${assets.manifest.id ?? assets.manifest.revision}。这会完整重新下载同一版本 ${count(assets.manifest.downloadBytes)} 字节，不是新的上游模型。`),
+          h('p', null, `保留可用兼容旧集合直到新集合完整校验。至少需要额外 ${count(assets.update?.additionalDiskBytes ?? assets.manifest.downloadBytes + 65536)} 字节可用磁盘；双代资源预算上限 ${count(assets.update?.maximumAssetBytes ?? 2 * (assets.manifest.downloadBytes + 65536))} 字节（约 189 MB），不含插件运行时代码和生成音频。`),
+          h('p', null, '这是共享 DSH 主机资源：成功切换会使其他页面的旧 Kokoro 任务与音频句柄失效，正在生成的任务将停止，需要重新手动播放；不会自动发声。已交付给断线页面的音频不能保证立即停止。失败或取消保留原有可用资源；学习记录、设置和书签不变。'),
+          h('div', { className: 'ec-row' },
+            h(Btn, { primary: true, small: true, disabled: busy, onClick: () => act('repair') }, '确认重新下载并修复'),
+            h(Btn, { small: true, disabled: busy, onClick: () => setConfirmRepair(false) }, '暂不修复'))) : null,
         h('div', { className: 'ec-row', style: { marginTop: 10 } },
           active ? assets.canCancel ? h(Btn, { small: true, disabled: busy, onClick: () => act('cancel') }, '取消准备') : h('span', { className: 'ec-muted' }, '另一页面正在准备；仅该页面可取消。') :
-          assets && !assets.assetsReady ? h(Btn, { primary: true, small: true, disabled: busy, onClick: () => act('prepare') }, assets.phase === 'error' ? '重试准备 Kokoro' : ['cancelled', 'interrupted'].includes(assets.phase) ? '重新准备 Kokoro' : '准备 Kokoro') : null,
+          assets && !assets.assetsReady && !assets.repairRequired ? h(Btn, { primary: true, small: true, disabled: busy, onClick: () => act('prepare') }, assets.phase === 'error' ? '重试准备 Kokoro' : ['cancelled', 'interrupted'].includes(assets.phase) ? '重新准备 Kokoro' : '准备 Kokoro') : null,
+          !active && assets ? h(Btn, { small: true, disabled: busy, onClick: () => act('check') }, '检查资源版本') : null,
+          !active && assets && (assets.assetsReady || assets.repairRequired) ? h(Btn, { small: true, disabled: busy, onClick: () => setConfirmRepair(true) }, '修复 Kokoro 资源') : null,
           !active && error ? h(Btn, { small: true, disabled: busy, onClick: read }, '重试资源状态') : null))
     }
 

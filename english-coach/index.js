@@ -53,7 +53,8 @@ export function apply(ctx, config) {
   let root = resolveDefaultRoot()
   const speechAssets = createSpeechAssets({
     root: config?.speechRoot ?? join(DSH_HOME, 'english-coach', 'speech'),
-    download: config?.speechDownload
+    download: config?.speechDownload,
+    onActivate: () => speechAudio.invalidate()
   })
   const speechAudio = createSpeechAudio({ assets: speechAssets, runtimeFactory: config?.speechRuntimeFactory })
   let runtimeCapability
@@ -865,11 +866,11 @@ export function apply(ctx, config) {
               if (!payload || typeof payload !== 'object' || Array.isArray(payload) || Object.keys(payload).length) {
                 return sendJson(res, 400, { ok: false, code: 'invalid_speech_request', message: '朗读资源操作不接受路径、地址或其他参数。' })
               }
-              if (command === 'speech.assets.status') {
+              if (command === 'speech.assets.status' || command === 'speech.assets.check') {
                 return sendJson(res, 200, { ok: true, data: await speechAssetStatus(speechOwner), warnings: [] })
               }
-              if (command === 'speech.assets.prepare' || command === 'speech.assets.cancel') {
-                const result = command === 'speech.assets.prepare' ? await speechAssets.prepare(speechOwner) : await speechAssets.cancel(speechOwner)
+              if (command === 'speech.assets.prepare' || command === 'speech.assets.cancel' || command === 'speech.assets.repair') {
+                const result = command === 'speech.assets.prepare' ? await speechAssets.prepare(speechOwner) : command === 'speech.assets.repair' ? await speechAssets.repair(speechOwner) : await speechAssets.cancel(speechOwner)
                 if (result.ok) result.data = { ...result.data, runtimeAvailable: await runtimeAvailable() }
                 return sendJson(res, 200, result)
               }

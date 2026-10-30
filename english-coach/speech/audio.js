@@ -19,8 +19,9 @@ const MAX_CACHE_ENTRIES = 64
 export function createSpeechAudio({ assets, runtimeFactory } = {}) {
   const tasks = new Map(), pages = new Map(), cache = new Map()
   let queue = [], active = null, runtime = null, disposed = false, disposal = null, cacheBytes = 0
-  const snapshot = task => ({ taskId: task.id, phase: task.phase, error: task.error })
-  const live = task => !disposed && tasks.get(task.id) === task && !task.controller.signal.aborted
+  let epoch = 0, invalidation = null, runtimeRoot = null
+  const snapshot = task => ({ taskId: task.id, phase: task.phase, error: task.error, resourceGeneration: task.resourceGeneration ?? null })
+  const live = task => !disposed && task.epoch === epoch && tasks.get(task.id) === task && !task.controller.signal.aborted
   function remove(task) {
     task.controller.abort()
     tasks.delete(task.id)
@@ -69,13 +70,17 @@ export function createSpeechAudio({ assets, runtimeFactory } = {}) {
         task.error = { code: 'ASSETS_NOT_READY', message: 'Kokoro 尚未准备；请先明确准备资源，再手动播放。' }
         return
       }
+      task.resourceGeneration = status.resourceGeneration
+      task.cacheKey = createHash('sha256').update(`${task.cacheKey}:${status.resourceGeneration}`).digest('hex')
       const cached = cache.get(task.cacheKey)
       if (cached) { task.payload = null; task.phase = 'ready'; return }
       task.phase = 'loading'
+      if (runtime && runtimeRoot !== assetRoot) { await runtime.dispose(); runtime = null; runtimeRoot = null; if (!live(task)) return }
       if (!runtime) {
         const factory = runtimeFactory ?? (await import('./runtime.js')).createSpeechRuntime
         if (!live(task)) return
         runtime = factory({ assetRoot })
+        runtimeRoot = assetRoot
       }
       task.phase = 'generating'
       const audio = await runtime.synthesize(task.payload, { signal: task.controller.signal })
@@ -101,7 +106,7 @@ export function createSpeechAudio({ assets, runtimeFactory } = {}) {
     }
   }
   function pump() {
-    if (active || disposed) return
+    if (active || disposed || invalidation) return
     expire()
     // One upcoming task per page is speculative. It never passes an already
     // queued foreground request and never interrupts the running small task.
@@ -119,6 +124,7 @@ export function createSpeechAudio({ assets, runtimeFactory } = {}) {
           !/[A-Za-z0-9]/.test(payload.text) || !/^[\x20-\x7e\t\r\n\u00a0\u00a3\u2010-\u2015\u2018-\u201f\u2026]+$/.test(payload.text) ||
           !assetManifest.voices.includes(payload.voice) || ![0.5, 1, 1.5, 2].includes(payload.rate)) return invalid()
       if (disposed) return failure('RUNTIME_DISPOSED', '插件已停止，请重新打开后手动播放。')
+      if (invalidation) return failure('speech_assets_changing', '共享朗读资源正在切换；请完成后重新点击播放。')
       expire()
       if (!pages.has(owner) && pages.size >= MAX_PAGES) return failure('speech_capacity', '朗读页面已达上限，请稍后手动重试。')
       const priority = payload.priority ?? 'foreground'
@@ -132,7 +138,7 @@ export function createSpeechAudio({ assets, runtimeFactory } = {}) {
       }
       page = pages.get(owner) ?? { foreground: null, prefetch: null }
       const cacheKey = createHash('sha256').update(JSON.stringify([owner, assetManifest.id, assetManifest.revision, 'wav-f32-24k-v1', payload.text, payload.voice, payload.rate])).digest('hex')
-      const task = { id: randomUUID(), owner, priority, delivered: false, cacheKey, payload: { text: payload.text, voice: payload.voice, rate: payload.rate }, phase: 'queued', error: null, expires: Date.now() + TTL_MS, controller: new AbortController() }
+      const task = { id: randomUUID(), owner, priority, delivered: false, cacheKey, payload: { text: payload.text, voice: payload.voice, rate: payload.rate }, phase: 'queued', error: null, epoch, expires: Date.now() + TTL_MS, controller: new AbortController() }
       page[priority] = task
       tasks.set(task.id, task); pages.set(owner, page); queue.push(task)
       pump()
@@ -162,6 +168,17 @@ export function createSpeechAudio({ assets, runtimeFactory } = {}) {
       task.delivered = true
       return { ok: true, audio: cache.get(task.cacheKey).audio }
     },
+    invalidate() {
+      if (invalidation) return invalidation
+      epoch++
+      for (const task of tasks.values()) remove(task)
+      cache.clear(); cacheBytes = 0
+      const previousRuntime = runtime, previousTask = active
+      runtime = null; runtimeRoot = null
+      invalidation = (async () => { await previousRuntime?.dispose(); await previousTask?.done })()
+        .finally(() => { invalidation = null; pump() })
+      return invalidation
+    },
     dispose() {
       if (disposal) return disposal
       disposed = true
@@ -170,7 +187,7 @@ export function createSpeechAudio({ assets, runtimeFactory } = {}) {
       cache.clear(); cacheBytes = 0
       // Capture both before awaiting. A cancelled late import cannot construct
       // a runtime, and cleanup awaits real worker termination, not just a map.
-      disposal = (async () => { await runtime?.dispose(); await active?.done })()
+      disposal = (async () => { await runtime?.dispose(); await invalidation; await active?.done })()
       return disposal
     }
   }
