@@ -532,6 +532,116 @@ test('an explicit repair replaces a corrupt owned set with all eight fixed asset
   assert.equal(reused.resourceGeneration, ready.resourceGeneration)
 })
 
+test('restarted resource status counts both owned installations and active metadata without deleting or downloading', {
+  skip: !process.env.ENGLISH_COACH_TEST_ASSETS && 'Requires explicit verified eight-asset fixture'
+}, async t => {
+  let downloads = 0
+  const h = await host(t, { download(asset, { signal }) {
+    downloads++
+    return createReadStream(join(process.env.ENGLISH_COACH_TEST_ASSETS, asset.path), { signal })
+  } })
+  await h.request('speech.assets.prepare')
+  const prepared = await settle(h, 'ready')
+  await h.dispose()
+  const legacy = join(h.speechRoot, prepared.manifest.id)
+  const generation = '12345678-1234-4234-9234-123456789abc'
+  const replacement = join(h.speechRoot, `.generation-${generation}`)
+  await fs.cp(legacy, replacement, { recursive: true })
+  const oldOwner = await fs.readFile(join(legacy, '_owner.json'))
+  const ready = await fs.readFile(join(legacy, 'ready.json'))
+  const newOwner = JSON.stringify({ id: prepared.manifest.id, generation })
+  const active = JSON.stringify({ id: prepared.manifest.id, revision: prepared.manifest.revision, generation })
+  await fs.writeFile(join(replacement, '_owner.json'), newOwner)
+  await fs.writeFile(join(h.speechRoot, 'active.json'), active)
+  // This is the persisted state of a successful atomic publication interrupted
+  // before old-set cleanup. Both contain the actual same eight fixed assets.
+  const expectedBytes = 2 * 94_453_730 + oldOwner.length + 2 * ready.length + Buffer.byteLength(newOwner) + Buffer.byteLength(active)
+  const reboot = await host(t, { directory: h.base, download: () => assert.fail('diagnostics and compatible prepare must remain offline') })
+  const status = (await reboot.request('speech.assets.status')).data
+  assert.equal(status.assetsReady, true)
+  assert.equal(status.resourceGeneration, generation)
+  assert.equal(status.diskBytes, expectedBytes, 'all owned installations and metadata count, not just the active model')
+  assert.equal(status.diskBytesKnown, true)
+  assert.equal((await reboot.request('speech.assets.prepare')).data.diskBytes, expectedBytes)
+  assert.equal(downloads, 8)
+  assert.deepEqual((await fs.readdir(h.speechRoot)).sort(), [`.generation-${generation}`, 'active.json', prepared.manifest.id].sort(), 'status and prepare do not clean inactive resources')
+})
+
+test('resource disk totals include owned stages and pointer records and reflect explicit repair then deletion', {
+  skip: !process.env.ENGLISH_COACH_TEST_ASSETS && 'Requires explicit verified eight-asset fixture'
+}, async t => {
+  let downloads = 0
+  const h = await host(t, { download(asset, { signal }) {
+    downloads++
+    return createReadStream(join(process.env.ENGLISH_COACH_TEST_ASSETS, asset.path), { signal })
+  } })
+  await h.request('speech.assets.prepare')
+  const original = await settle(h, 'ready')
+  const generation = '12345678-1234-4234-9234-123456789abc'
+  const stage = join(h.speechRoot, `.prepare-${generation}`)
+  const owner = JSON.stringify({ id: original.manifest.id, generation })
+  const pendingPointer = JSON.stringify({ id: original.manifest.id, revision: original.manifest.revision, generation })
+  await fs.mkdir(stage)
+  await fs.writeFile(join(stage, '_owner.json'), owner)
+  await fs.writeFile(join(stage, 'config.json'), '{')
+  await fs.writeFile(join(h.speechRoot, `.active-${generation}.json`), pendingPointer)
+  const expected = original.diskBytes + Buffer.byteLength(owner) + 1 + Buffer.byteLength(pendingPointer)
+  const status = (await h.request('speech.assets.status')).data
+  assert.equal(status.assetsReady, true)
+  assert.equal(status.diskBytesKnown, true)
+  assert.equal(status.diskBytes, expected)
+  await fs.writeFile(join(stage, 'config.json'), '{}')
+  assert.equal((await h.request('speech.assets.check')).data.diskBytes, expected + 1, 'unchanged active fingerprints do not hide changed partial sizes')
+  assert.equal(downloads, 8)
+  assert.equal((await h.request('speech.assets.prepare')).data.diskBytes, expected + 1, 'ordinary prepare reuses the active set without cleanup')
+  assert.equal((await fs.stat(join(stage, 'config.json'))).size, 2)
+  await h.request('speech.assets.repair')
+  const repaired = await settle(h, 'ready')
+  assert.equal(downloads, 16)
+  const activePointer = await fs.readFile(join(h.speechRoot, 'active.json'))
+  assert.equal(repaired.diskBytes, original.diskBytes + activePointer.length)
+  assert.equal(repaired.diskBytesKnown, true)
+  assert.equal((await fs.readdir(h.speechRoot)).length, 2, 'only active generation and pointer remain after explicit repair')
+  assert.equal((await h.request('speech.assets.delete')).ok, true)
+  const deleted = (await h.request('speech.assets.status')).data
+  assert.equal(deleted.diskBytes, 0)
+  assert.equal(deleted.diskBytesKnown, true)
+  assert.deepEqual(await fs.readdir(h.speechRoot), [])
+})
+
+test('untrusted leftover bytes make disk usage incomplete without disabling the verified active resources', {
+  skip: !process.env.ENGLISH_COACH_TEST_ASSETS && 'Requires explicit verified eight-asset fixture'
+}, async t => {
+  const h = await host(t, { download: (asset, { signal }) => createReadStream(join(process.env.ENGLISH_COACH_TEST_ASSETS, asset.path), { signal }) })
+  await h.request('speech.assets.prepare')
+  const original = await settle(h, 'ready')
+  for (const kind of ['unknown', 'link', 'foreign-marker']) {
+    const generation = '12345678-1234-4234-9234-123456789abc'
+    const path = join(h.speechRoot, kind === 'unknown' ? 'foreign.txt' : `.prepare-${generation}`)
+    if (kind === 'unknown') await fs.writeFile(path, 'do not delete')
+    else if (kind === 'link') await fs.symlink(h.root, path)
+    else {
+      await fs.mkdir(path)
+      await fs.writeFile(join(path, '_owner.json'), JSON.stringify({ id: 'foreign-model', generation }))
+    }
+    const status = (await h.request('speech.assets.status')).data
+    assert.equal(status.assetsReady, true)
+    assert.equal(status.resourceGeneration, original.resourceGeneration)
+    assert.equal(status.diskBytesKnown, false, kind)
+    assert.equal((await h.request('speech.assets.prepare')).data.diskBytesKnown, false)
+    assert.ok(await fs.lstat(path), 'diagnostics never reclaim unknown or foreign contents')
+    if (kind === 'foreign-marker') {
+      assert.equal((await h.request('speech.assets.delete')).ok, false, 'unknown ownership remains a deletion refusal')
+      assert.ok(await fs.lstat(path))
+    }
+    // Remove only the exact fault fixture created in this iteration, after
+    // checking its absolute path. No product cleanup policy is relaxed.
+    assert.equal(path.startsWith(h.speechRoot + '/'), true)
+    if (kind === 'foreign-marker') await fs.rm(path, { recursive: true })
+    else await fs.unlink(path)
+  }
+})
+
 test('checking the only pinned resource version is offline and discloses replacement disk cost', async t => {
   const h = await host(t, { download: () => assert.fail('checking a pinned version never contacts the network') })
   const checked = await h.request('speech.assets.check')
