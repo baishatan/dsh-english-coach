@@ -231,6 +231,108 @@ test('public Host uses the real packaged runtime and a restarted Host reuses pre
   t.diagnostic(JSON.stringify({ actualPublicHostWav: records }))
 })
 
+test('failed replacement keeps the compatible installation usable by the actual public Host runtime', { skip: realAssets, timeout: 120000 }, async t => {
+  let mode = 'normal', downloads = 0
+  const h = await prepared(t, { download(asset, { signal }) {
+    downloads++
+    if (mode === 'offline') throw new Error('isolated replacement is offline')
+    return createReadStream(join(process.env.ENGLISH_COACH_TEST_ASSETS, asset.path), { signal })
+  } })
+  const original = (await h.request('speech.assets.status')).data
+  const settings = await h.request('settings.get')
+  async function synthesize(text) {
+    const job = await h.request('speech.synthesize', { text, voice: 'af_heart', rate: 1 })
+    await waitFor(() => h.request('speech.status', { taskId: job.data.taskId }), value => value.data?.phase === 'ready', text)
+    const audio = await h.request('speech.audio', { taskId: job.data.taskId })
+    assert.equal(audio.httpStatus, 200)
+    let peak = 0
+    for (let n = 44; n < audio.bytes.length; n += 4) {
+      const value = audio.bytes.readFloatLE(n)
+      assert.ok(Number.isFinite(value)); peak = Math.max(peak, Math.abs(value))
+    }
+    assert.ok(peak > 0.00001, 'real synthesis remains non-silent')
+    return { taskId: job.data.taskId, bytes: audio.bytes.length }
+  }
+  await synthesize('Before replacement.')
+  mode = 'offline'
+  assert.equal((await h.request('speech.assets.repair')).ok, true)
+  const failed = await waitFor(() => h.request('speech.assets.status'), value => value.data?.phase === 'error', 'replacement failure')
+  assert.equal(failed.data.error.code, 'speech_network')
+  assert.equal(failed.data.assetsReady, true)
+  assert.equal(failed.data.resourceGeneration, original.resourceGeneration)
+  const actual = await synthesize('After failed replacement.')
+  assert.equal(downloads, 9, 'synthesis does not retry the replacement download')
+  assert.deepEqual((await h.request('settings.get')).data, settings.data)
+  t.diagnostic(JSON.stringify({ realOldGenerationAfterFailure: actual }))
+})
+
+test('confirmed same-revision replacement invalidates old audio and reloads the actual runtime from its new generation', { skip: realAssets, timeout: 120000 }, async t => {
+  const h = await prepared(t)
+  async function generate() {
+    const job = await h.request('speech.synthesize', { text: 'Opportunity.', voice: 'af_heart', rate: 1 })
+    await waitFor(() => h.request('speech.status', { taskId: job.data.taskId }), value => value.data?.phase === 'ready', 'real replacement WAV')
+    const audio = await h.request('speech.audio', { taskId: job.data.taskId })
+    assert.equal(audio.httpStatus, 200)
+    assert.ok(audio.bytes.length > 44)
+    assert.equal(audio.bytes.readUInt32LE(24), 24000)
+    let peak = 0
+    for (let n = 44; n < audio.bytes.length; n += 4) { const value = audio.bytes.readFloatLE(n); assert.ok(Number.isFinite(value)); peak = Math.max(peak, Math.abs(value)) }
+    assert.ok(peak > 0.00001)
+    return { taskId: job.data.taskId, bytes: audio.bytes.length }
+  }
+  const old = await generate()
+  const before = (await h.request('speech.assets.status')).data
+  assert.equal((await h.request('speech.assets.repair')).ok, true)
+  const replaced = await waitFor(() => h.request('speech.assets.status'), value => value.data?.phase === 'ready', 'replacement generation')
+  assert.notEqual(replaced.data.resourceGeneration, before.resourceGeneration)
+  assert.equal(replaced.data.manifest.revision, before.manifest.revision, 'no invented newer upstream version')
+  assert.equal((await h.request('speech.audio', { taskId: old.taskId })).httpStatus, 404, 'old cache handles cannot cross the active installation switch')
+  const current = await generate()
+  assert.notEqual(current.taskId, old.taskId)
+  const entries = await fs.readdir(h.speechRoot)
+  assert.equal(entries.filter(name => name.startsWith('.generation-')).length, 1)
+  await assert.rejects(fs.access(join(h.speechRoot, before.manifest.id)), { code: 'ENOENT' })
+  t.diagnostic(JSON.stringify({ realBeforeAndAfterGeneration: [old, current] }))
+})
+
+test('a compatible old generation synthesizes during a slow repair and after its owner cancels', { skip: realAssets, timeout: 120000 }, async t => {
+  let blocked = false, activeSignal
+  const h = await prepared(t, { download(asset, { signal }) {
+    if (blocked) {
+      activeSignal = signal
+      const source = new Readable({ read() {} })
+      signal.addEventListener('abort', () => source.destroy(Object.assign(new Error('cancelled'), { name: 'AbortError' })), { once: true })
+      return source
+    }
+    return createReadStream(join(process.env.ENGLISH_COACH_TEST_ASSETS, asset.path), { signal })
+  } })
+  const original = (await h.request('speech.assets.status')).data
+  blocked = true
+  const repair = await h.request('speech.assets.repair')
+  const downloading = await waitFor(() => h.request('speech.assets.status'), value => value.data?.phase === 'downloading', 'slow repair')
+  assert.equal(downloading.data.assetsReady, true)
+  const old = await h.request('speech.synthesize', { text: 'During replacement.', voice: 'bf_emma', rate: 1 })
+  try {
+    await waitFor(() => h.request('speech.status', { taskId: old.data.taskId }), value => value.data?.phase === 'ready', 'old generation before cancel')
+  } catch (cause) { await h.request('speech.assets.cancel'); throw cause }
+  assert.equal(activeSignal.aborted, false, 'old synthesis does not cancel or wait for the replacement transfer')
+  assert.equal((await h.request('speech.assets.cancel', {}, { page: 'b'.repeat(48) })).code, 'speech_not_owner')
+  assert.equal((await h.request('speech.assets.repair', {}, { page: 'b'.repeat(48) })).code, 'speech_busy')
+  const cancelled = await h.request('speech.assets.cancel')
+  assert.equal(cancelled.data.phase, 'cancelled')
+  assert.equal(cancelled.data.assetsReady, true)
+  assert.equal(cancelled.data.resourceGeneration, original.resourceGeneration)
+  assert.equal((await h.request('speech.audio', { taskId: old.data.taskId })).httpStatus, 200, 'failed replacement keeps existing audio usable')
+  const next = await h.request('speech.synthesize', { text: 'After canceled replacement.', voice: 'bf_emma', rate: 1 })
+  await waitFor(() => h.request('speech.status', { taskId: next.data.taskId }), value => value.data?.phase === 'ready', 'old generation after cancel')
+  const audio = await h.request('speech.audio', { taskId: next.data.taskId })
+  assert.equal(audio.httpStatus, 200)
+  assert.ok(audio.bytes.length > 44)
+  assert.equal((await h.request('speech.assets.status')).data.resourceGeneration, original.resourceGeneration)
+  assert.deepEqual((await fs.readdir(h.speechRoot)).sort(), [original.manifest.id])
+  t.diagnostic(JSON.stringify({ actualOldGenerationDuringAndAfterCancel: { repair: repair.data.generation, bytes: audio.bytes.length } }))
+})
+
 test('all speech operations fail closed and reject paths, invalid voices, oversized text and cross-page handles', async t => {
   const h = await host(t)
   const started = await h.request('speech.synthesize', sample)
