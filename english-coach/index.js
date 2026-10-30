@@ -5,6 +5,7 @@ import { basename, join } from 'node:path'
 import { execute } from './core/index.js'
 import { dateOf } from './core/constants.js'
 import { readJson, writeJson } from './core/store.js'
+import { createSpeechAssets } from './speech/assets.js'
 
 /**
  * Host half of 英语教练.
@@ -28,6 +29,18 @@ function resolveDefaultRoot() {
   return join(homedir(), 'DeepSeek-English')
 }
 
+// The generic webServer carrier does not enforce origin or session ownership.
+// Resource routes require JSON and an unguessable per-page non-simple header.
+function speechRequestOwner(req) {
+  const headers = req.headers ?? {}
+  const session = headers['x-english-coach-speech-session']
+  if (typeof session !== 'string' || !/^[a-zA-Z0-9_-]{32,128}$/.test(session)) return null
+  if (!/^application\/json(?:\s*;|$)/i.test(headers['content-type'] ?? '')) return null
+  // Trust and authentication come from connection.admit(req), not these
+  // headers. Desktop forwarding intentionally removes Origin/Fetch-Metadata.
+  return session
+}
+
 function sendJson(res, status, body) {
   res.statusCode = status
   res.setHeader('content-type', 'application/json; charset=utf-8')
@@ -37,6 +50,11 @@ function sendJson(res, status, body) {
 
 export function apply(ctx, config) {
   let root = resolveDefaultRoot()
+  const speechAssets = createSpeechAssets({
+    root: config?.speechRoot ?? join(DSH_HOME, 'english-coach', 'speech'),
+    download: config?.speechDownload
+  })
+  ctx.effect(() => () => speechAssets.dispose())
   const jobsFile = () => join(root, 'jobs.json')
   const state = { promptLine: '' }
   let automationSynced = false
@@ -795,11 +813,24 @@ export function apply(ctx, config) {
               message: '只接受 POST'
             })
           }
+          const isSpeechAssets = command.startsWith('speech.assets.')
+          let speechOwner = null
+          if (isSpeechAssets) {
+            const connection = ctx.get('connection')
+            if (!connection?.admit) return sendJson(res, 503, { ok: false, code: 'speech_access_unavailable', message: '宿主认证尚未就绪，请稍后重试。' })
+            const admission = connection.admit(req)
+            if (admission.rejection) return sendJson(res, admission.rejection, { ok: false, code: 'speech_access_denied', message: '朗读资源需要已认证的宿主连接。' })
+            const page = speechRequestOwner(req)
+            if (admission.peer?.principal?.kind !== 'owner' || !page || url.search) {
+              return sendJson(res, 403, { ok: false, code: 'speech_access_denied', message: '朗读资源请求需要同源页面及有效页面身份。' })
+            }
+            speechOwner = `${admission.peer.id}:${page}`
+          }
           let body = ''
           try {
             for await (const chunk of req) {
               body += chunk
-              if (body.length > 4_000_000) throw new Error('too large')
+              if (body.length > (isSpeechAssets ? 1024 : 4_000_000)) throw new Error('too large')
             }
           } catch {
             return sendJson(res, 413, { ok: false, code: 'body_too_large', message: '请求体过大' })
@@ -817,6 +848,17 @@ export function apply(ctx, config) {
             }
           }
           try {
+            if (isSpeechAssets) {
+              if (!payload || typeof payload !== 'object' || Array.isArray(payload) || Object.keys(payload).length) {
+                return sendJson(res, 400, { ok: false, code: 'invalid_speech_request', message: '朗读资源操作不接受路径、地址或其他参数。' })
+              }
+              if (command === 'speech.assets.status') {
+                return sendJson(res, 200, { ok: true, data: await speechAssets.status(speechOwner), warnings: [] })
+              }
+              if (command === 'speech.assets.prepare') return sendJson(res, 200, await speechAssets.prepare(speechOwner))
+              if (command === 'speech.assets.cancel') return sendJson(res, 200, await speechAssets.cancel(speechOwner))
+              return sendJson(res, 400, { ok: false, code: 'unknown_speech_command', message: '不支持的朗读资源操作。' })
+            }
             const result = await dispatch(command, payload)
             await refreshPromptLine()
             return sendJson(res, 200, result)

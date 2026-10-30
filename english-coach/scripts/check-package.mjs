@@ -35,11 +35,16 @@ assert.ok(sourceManifest.engines?.node, 'Declare engines.node')
 assert.ok(sourceManifest.engines?.dsh, 'Declare engines.dsh')
 for (const file of ['index.js', 'client.js', 'package.json', 'cordis.patch.yml',
   'locale/en.json', 'locale/zh.json', 'icon.svg', 'README.md', 'NOTICE.md', 'LICENSE',
-  'data/wordlists.json', 'data/manifest.json', 'data/ECDICT-LICENSE.txt', 'data/NOTICE.md']) {
+  'data/wordlists.json', 'data/manifest.json', 'data/ECDICT-LICENSE.txt', 'data/NOTICE.md',
+  'speech/assets.js', 'speech/asset-manifest.js']) {
   assert.ok(listed.has(file), `Published archive is missing ${file}`)
 }
 for (const file of await fs.readdir(join(root, 'core'))) {
   if (file.endsWith('.js')) assert.ok(listed.has(`core/${file}`), `Missing core/${file}`)
+}
+for (const asset of (await import(pathToFileURL(join(root, 'speech/asset-manifest.js')).href)).assetManifest.files) {
+  assert.ok(![...listed].some(file => file === asset.path || file.endsWith(`/${asset.path}`)),
+    `Downloaded model/voice assets must not be bundled: ${asset.path}`)
 }
 assert.ok(![...listed].some((file) => /^(test|scripts|prototypes|node_modules|\.scratch)\//.test(file)),
   'Development files and throwaway prototypes must not enter the archive')

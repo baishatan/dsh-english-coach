@@ -27,6 +27,7 @@
     "index.js",
     "client.js",
     "core/*.js",
+    "speech/*.js",
     "data/*",
     "cordis.patch.yml",
     "locale/*.json",
