@@ -135,6 +135,85 @@ test('one Host synthesis lane keeps each page latest without interrupting anothe
   assert.equal(disposals, 1, 'Host awaits the one runtime disposal')
 })
 
+test('bounded article prefetch retains delivered foreground audio and yields to queued foreground work', { skip: realAssets }, async t => {
+  const entries = [], pending = []
+  const h = await prepared(t, { runtimeFactory: () => ({
+    synthesize(input, { signal }) { entries.push({ ...input, signal }); return new Promise(resolve => pending.push(resolve)) },
+    async dispose() { for (const resolve of pending.splice(0)) resolve(wav()) }
+  }) })
+  const status = job => h.request('speech.status', { taskId: job.data.taskId })
+  const first = await h.request('speech.synthesize', sample)
+  await waitFor(() => status(first), value => value.data?.phase === 'generating', 'first foreground')
+  const premature = await h.request('speech.synthesize', { ...sample, text: 'Next sentence.', priority: 'prefetch' })
+  assert.equal(premature.code, 'speech_not_ready', 'prefetch cannot replace an undelivered foreground task')
+  pending.shift()(wav())
+  await waitFor(() => status(first), value => value.data?.phase === 'ready', 'first ready')
+  assert.equal((await h.request('speech.audio', { taskId: first.data.taskId })).httpStatus, 200)
+  const otherPage = { page: 'b'.repeat(48) }
+  const other = await h.request('speech.synthesize', { ...sample, text: 'Other foreground.' }, otherPage)
+  await waitFor(() => h.request('speech.status', { taskId: other.data.taskId }, otherPage), value => value.data?.phase === 'generating', 'other active')
+  const oldPrefetch = await h.request('speech.synthesize', { ...sample, text: 'Old upcoming sentence.', priority: 'prefetch' })
+  assert.equal(oldPrefetch.ok, true)
+  const next = await h.request('speech.synthesize', { ...sample, text: 'Next sentence.', priority: 'prefetch' })
+  assert.equal(next.ok, true)
+  assert.equal((await status(oldPrefetch)).httpStatus, 404, 'only one upcoming task per page')
+  assert.equal((await h.request('speech.audio', { taskId: first.data.taskId })).httpStatus, 200, 'prefetch never steals foreground audio')
+  const queuedPage = { page: 'c'.repeat(48) }
+  const foreground = await h.request('speech.synthesize', { ...sample, text: 'Queued foreground.', priority: 'foreground' }, queuedPage)
+  pending.shift()(wav())
+  await waitFor(() => h.request('speech.status', { taskId: foreground.data.taskId }, queuedPage), value => value.data?.phase === 'generating', 'foreground before prefetch')
+  assert.equal(entries.at(-1).text, 'Queued foreground.')
+  pending.shift()(wav())
+  await waitFor(() => status(next), value => value.data?.phase === 'generating', 'one upcoming turn')
+  assert.equal(entries.at(-1).text, 'Next sentence.')
+  const short = await h.request('speech.synthesize', { ...sample, text: 'apple' })
+  assert.equal(entries.at(-1).signal.aborted, true, 'a short click cancels only its own prefetch')
+  assert.equal((await status(next)).httpStatus, 404)
+  assert.equal((await status(first)).httpStatus, 404)
+  assert.equal((await h.request('speech.audio', { taskId: other.data.taskId }, otherPage)).httpStatus, 200)
+  pending.shift()(wav())
+  await waitFor(() => status(short), value => value.data?.phase === 'generating', 'short after cancelled work')
+  pending.shift()(wav())
+  await waitFor(() => status(short), value => value.data?.phase === 'ready', 'short ready')
+  for (const priority of ['background', true, null, 1]) assert.equal((await h.request('speech.synthesize', { ...sample, priority })).httpStatus, 400)
+})
+
+test('cancelling a repeated-text prefetch cannot evict the delivered foreground audio', { skip: realAssets }, async t => {
+  let generations = 0
+  const h = await prepared(t, { runtimeFactory: () => ({ async synthesize() { generations++; return wav() }, async dispose() {} }) })
+  const foreground = await h.request('speech.synthesize', sample)
+  await waitFor(() => h.request('speech.status', { taskId: foreground.data.taskId }), value => value.data?.phase === 'ready', 'repeated foreground ready')
+  assert.equal((await h.request('speech.audio', { taskId: foreground.data.taskId })).httpStatus, 200)
+  const prefetch = await h.request('speech.synthesize', { ...sample, priority: 'prefetch' })
+  await waitFor(() => h.request('speech.status', { taskId: prefetch.data.taskId }), value => value.data?.phase === 'ready', 'repeated prefetch ready')
+  assert.equal(generations, 1, 'a repeated next sentence reuses the one private cache entry')
+  assert.equal((await h.request('speech.cancel', { taskId: prefetch.data.taskId })).ok, true)
+  assert.equal((await h.request('speech.audio', { taskId: foreground.data.taskId })).httpStatus, 200, 'canceling speculation leaves the real foreground handle usable')
+  assert.equal((await h.request('speech.status', { taskId: prefetch.data.taskId })).httpStatus, 404)
+})
+
+test('an explicit resource replacement invalidates both article slots and regenerates the next foreground', { skip: realAssets }, async t => {
+  let generations = 0, disposals = 0
+  const h = await prepared(t, { runtimeFactory: () => ({ async synthesize() { generations++; return wav() }, async dispose() { disposals++ } }) })
+  const current = await h.request('speech.synthesize', sample)
+  await waitFor(() => h.request('speech.status', { taskId: current.data.taskId }), value => value.data?.phase === 'ready', 'article before repair')
+  assert.equal((await h.request('speech.audio', { taskId: current.data.taskId })).httpStatus, 200)
+  const next = await h.request('speech.synthesize', { ...sample, text: 'The next sentence.', priority: 'prefetch' })
+  const prefetched = await waitFor(() => h.request('speech.status', { taskId: next.data.taskId }), value => value.data?.phase === 'ready', 'prefetch before repair')
+  assert.equal((await h.request('speech.assets.repair')).ok, true)
+  await waitFor(() => h.request('speech.assets.status'), value => value.data?.phase === 'ready', 'explicit replacement')
+  for (const job of [current, next]) {
+    assert.equal((await h.request('speech.status', { taskId: job.data.taskId })).httpStatus, 404)
+    assert.equal((await h.request('speech.audio', { taskId: job.data.taskId })).httpStatus, 404)
+  }
+  assert.equal(disposals, 1)
+  const replay = await h.request('speech.synthesize', { ...sample, text: 'The next sentence.' })
+  const ready = await waitFor(() => h.request('speech.status', { taskId: replay.data.taskId }), value => value.data?.phase === 'ready', 'new generation foreground')
+  assert.notEqual(ready.data.resourceGeneration, prefetched.data.resourceGeneration)
+  assert.equal(generations, 3, 'the old private prefetch is not reused across resource installation generations')
+  assert.equal((await h.request('speech.audio', { taskId: replay.data.taskId })).httpStatus, 200)
+})
+
 test('audio reuse is page-private and byte-bounded and oversized WAV output is rejected', { skip: realAssets }, async t => {
   let generations = 0, size = 240
   const h = await prepared(t, { runtimeFactory: () => ({ async synthesize() { generations++; return wav(size) }, async dispose() {} }) })
@@ -230,6 +309,30 @@ test('public Host uses the real packaged runtime and a restarted Host reuses pre
   await generate(reboot, 'bf_emma', 1)
   assert.deepEqual((await reboot.request('settings.get')).data, settings.data)
   t.diagnostic(JSON.stringify({ actualPublicHostWav: records }))
+})
+
+test('public Host synthesizes a bounded long article clause as finite CPU WAV without changing bookmarks', { skip: realAssets, timeout: 120000 }, async t => {
+  const h = await prepared(t)
+  const text = 'Along the quiet river, a small team watches the birds and records the changing weather, while another group checks the water and shares its observations with the local school.'
+  assert.ok(text.length <= 180)
+  const bookmark = { materialId: 'synthetic:long-reading', contentFingerprint: 'synthetic-article-v1', position: 2 }
+  assert.equal((await h.request('audio.bookmark.save', bookmark)).ok, true)
+  const before = await h.request('audio.bookmark.get', bookmark)
+  const startedAt = performance.now()
+  const job = await h.request('speech.synthesize', { text, voice: 'af_heart', rate: 1 })
+  await waitFor(() => h.request('speech.status', { taskId: job.data.taskId }), value => value.data?.phase === 'ready', 'real bounded article clause')
+  const audio = await h.request('speech.audio', { taskId: job.data.taskId })
+  assert.equal(audio.httpStatus, 200)
+  assert.equal(audio.bytes.readUInt16LE(20), 3)
+  assert.equal(audio.bytes.readUInt32LE(24), 24000)
+  assert.ok(audio.bytes.length > 44 && audio.bytes.length < 16 * 1024 * 1024)
+  let peak = 0
+  for (let n = 44; n < audio.bytes.length; n += 4) { const value = audio.bytes.readFloatLE(n); assert.ok(Number.isFinite(value)); peak = Math.max(peak, Math.abs(value)) }
+  assert.ok(peak > 0.00001)
+  const artifact = join(h.base, 'bounded-article-heart-1.wav')
+  await fs.writeFile(artifact, audio.bytes)
+  assert.deepEqual((await h.request('audio.bookmark.get', bookmark)).data, before.data)
+  t.diagnostic(JSON.stringify({ actualCpuArticle: { text, characters: text.length, voice: 'af_heart', rate: 1, bytes: audio.bytes.length, peak, elapsedMs: Math.round(performance.now() - startedAt), artifact } }))
 })
 
 test('failed replacement keeps the compatible installation usable by the actual public Host runtime', { skip: realAssets, timeout: 120000 }, async t => {
