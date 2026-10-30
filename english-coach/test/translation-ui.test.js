@@ -11,13 +11,13 @@ function fixture() {
   return { state, read, listen, calls, spoken,
     setupWindow(window) {
       window.SpeechSynthesisUtterance = class { constructor(text) { this.text = text } }
-      window.speechSynthesis = { getVoices: () => [{ voiceURI: 'test', lang: 'en-US', name: 'Synthetic', localService: true }], speak: value => spoken.push(value), cancel() {}, pause() {}, addEventListener() {}, removeEventListener() {} }
+      window.speechSynthesis = { getVoices: () => [{ voiceURI: 'test', lang: 'en-US', name: 'Shelley', localService: true }], speak: value => spoken.push(value), cancel() {}, pause() {}, addEventListener() {}, removeEventListener() {} }
     },
     async request(command, payload) {
       calls.push({ command, payload })
       if (command === 'state.get') return { ok: true, data: structuredClone(state) }
       if (command === 'study.batch' || command === 'review.list') return { ok: true, data: { items: [], dueCount: 0, batchSize: 3 } }
-      if (command === 'settings.get') return { ok: true, data: {} }
+      if (command === 'settings.get') return { ok: true, data: { audio: { provider: 'web-speech', voiceURI: 'test' } } }
       if (command === 'audio.bookmark.get') return { ok: true, data: { bookmark: null } }
       if (command === 'audio.bookmark.save') return { ok: true, data: payload }
       throw new Error(`Unexpected Host request: ${command}`)

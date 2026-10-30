@@ -397,6 +397,15 @@ window.__ModuleLoader__.load({
 
     // One sound owner for every entry point. Keep this inside the Client factory:
     // the Host loads this plain script, not an independently bundled ES module.
+    // The Client is a plain Host-loaded script. Keep these native IDs aligned
+    // with core/constants.js; settings.save remains the validation authority.
+    const KOKORO_VOICES = [
+      { id: 'af_heart', label: 'Heart · 美音女声（默认）' },
+      { id: 'am_michael', label: 'Michael · 美音男声' },
+      { id: 'bf_emma', label: 'Emma · 英音女声' },
+      { id: 'bm_george', label: 'George · 英音男声' }
+    ]
+    const READING_RATES = [0.5, 1, 1.5, 2]
     const speech = (() => {
       const articles = new Map(), listeners = new Set()
       let bookmarkWrites = Promise.resolve()
@@ -437,26 +446,45 @@ window.__ModuleLoader__.load({
       }
       let active = null, token = 0, loaded = false, settingsWrites = Promise.resolve()
       const changedPreferences = new Set()
-      const preferences = { voiceURI: null, rate: 1, voices: [], notice: '', error: '' }
+      const preferences = { provider: 'kokoro', kokoroVoice: 'af_heart', voiceURI: null, rate: 1, voices: [], notice: '', error: '' }
+      const kokoroUnavailable = 'Kokoro 尚未准备。请先在朗读设置准备资源，再手动播放；不会自动下载或改用系统语音。'
+      const playbackIssue = () => {
+        if (!['kokoro', 'web-speech'].includes(preferences.provider)) return '已保存的音频来源当前不可用，请重新选择来源。'
+        if (preferences.provider === 'kokoro') return KOKORO_VOICES.some(voice => voice.id === preferences.kokoroVoice) ? kokoroUnavailable : '已保存的 Kokoro 音色当前不可用，请重新选择音色。'
+        if (!available()) return t('noSpeech')
+        if (!preferences.voices.length) return '暂无可用英语音色：当前设备没有本地英语 Shelley、Reed、Sandy，或声库尚未就绪；请重试声源。'
+        if (!selectedVoice()) return preferences.voiceURI ? '偏好音色当前不可用，请重新选择；不会自动换声。' : '请选择本地英语音色，再手动播放。'
+        return ''
+      }
       function refreshVoices() {
-        try { preferences.voices = (synth()?.getVoices() ?? []).filter(voice => /^en(?:[-_]|$)/i.test(voice.lang)) } catch { preferences.voices = [] }
+        try {
+          preferences.voices = (synth()?.getVoices() ?? []).filter(voice =>
+            voice.localService === true && /^en(?:[-_][a-z0-9]+)*$/i.test(voice.lang) &&
+            // Exact family, optionally followed by known system quality or
+            // English-locale qualifiers. Never infer a family from a URI or
+            // accept an arbitrary suffix such as "Shelley (Clone)".
+            /^(?:Shelley|Reed|Sandy)(?: \((?:Enhanced|Premium|English(?: \([A-Za-z]+(?:[ -][A-Za-z]+)*\))?)\))*$/i.test(voice.name))
+        } catch { preferences.voices = [] }
         if (active && !preferences.voices.some(voice => voice.voiceURI === active.utterance.voice?.voiceURI)) {
           const current = active.article
           cancel()
           if (current) { current.status = 'error'; current.error = '正在使用的英语音色已不可用，请换声后重试。'; void save(current) }
           else preferences.error = '正在使用的英语音色已不可用，请换声后重试。'
         }
-        preferences.notice = !available() ? t('noSpeech') : !preferences.voices.length ? '英语音色尚未就绪或不可用，请重试声源。' : preferences.voiceURI && !preferences.voices.some(voice => voice.voiceURI === preferences.voiceURI) ? '偏好音色当前不可用，已回退到可用英语音色。' : ''
+        preferences.notice = playbackIssue()
         emit()
       }
-      const selectedVoice = () => preferences.voices.find(voice => voice.voiceURI === preferences.voiceURI) ?? preferences.voices.find(voice => voice.default) ?? preferences.voices[0]
+      const selectedVoice = () => preferences.provider === 'web-speech' ? preferences.voices.find(voice => voice.voiceURI === preferences.voiceURI) : undefined
       async function loadPreferences() {
         if (loaded) return
         loaded = true
         const result = await call('settings.get')
         if (result.ok) {
-          if (!changedPreferences.has('voiceURI')) preferences.voiceURI = result.data.audio?.voiceURI ?? null
-          if (!changedPreferences.has('rate')) preferences.rate = [0.5, 1, 1.5, 2].includes(result.data.audio?.rate) ? result.data.audio.rate : 1
+          const stored = result.data.audio ?? {}
+          if (!changedPreferences.has('provider')) preferences.provider = stored.provider ?? (stored.voiceURI ? 'web-speech' : 'kokoro')
+          if (!changedPreferences.has('kokoroVoice')) preferences.kokoroVoice = stored.kokoroVoice ?? 'af_heart'
+          if (!changedPreferences.has('voiceURI')) preferences.voiceURI = stored.voiceURI ?? null
+          if (!changedPreferences.has('rate')) preferences.rate = READING_RATES.includes(stored.rate) ? stored.rate : 1
         } else preferences.error = '无法读取语音偏好，暂用默认设置。'
         refreshVoices()
       }
@@ -465,7 +493,8 @@ window.__ModuleLoader__.load({
         Object.assign(preferences, change)
         const current = active?.article
         const playing = current?.status === 'playing'
-        if (current) { cancel(); if (playing) play(current) }
+        if (active) cancel()
+        if (playing) play(current)
         refreshVoices()
         const payload = { audio: { ...change } }
         settingsWrites = settingsWrites.then(async () => {
@@ -499,8 +528,8 @@ window.__ModuleLoader__.load({
         emit()
       }
       function play(value) {
-        if (!available()) { value.status = 'error'; value.error = t('noSpeech'); emit(); return }
-        if (!selectedVoice()) { value.status = 'error'; value.error = '暂无可用英语音色，请重试声源。'; emit(); return }
+        const issue = playbackIssue()
+        if (issue) { value.status = 'error'; value.error = issue; emit(); return }
         if (!value.segments.length) return
         if (active?.article === value && value.status === 'paused') {
           // A bounded liveness check, never a progress clock. Some engines
@@ -557,7 +586,8 @@ window.__ModuleLoader__.load({
       function short(text, owner) {
         if (active?.article) pause(active.article)
         cancel()
-        if (!available() || !selectedVoice()) { preferences.error = '暂无可用英语音色，请重试声源。'; emit(); return }
+        const issue = playbackIssue()
+        if (issue) { preferences.error = issue; emit(); return }
         preferences.error = ''
         const run = token, utterance = new window.SpeechSynthesisUtterance(text)
         utterance.voice = selectedVoice(); utterance.lang = utterance.voice.lang; utterance.rate = preferences.rate
@@ -1277,17 +1307,30 @@ window.__ModuleLoader__.load({
     }
 
     function SpeechOptions() {
-      const audio = useSpeech(), prefs = audio.preferences
+      const audio = useSpeech(), prefs = audio.preferences, kokoro = prefs.provider === 'kokoro'
+      const voice = kokoro ? prefs.kokoroVoice : audio.selectedVoice()?.voiceURI ?? ''
       return h('section', { className: 'ec-card ec-speech-options', 'aria-label': t('speechSettings') },
         h('div', { className: 'ec-card-head' }, h('h2', null, t('speechSettings'))),
         h('div', { className: 'ec-row' },
-          h('label', null, '英语音色', h('select', { className: 'ec-select', 'aria-label': '英语音色', value: audio.selectedVoice()?.voiceURI ?? '', onChange: event => audio.configure({ voiceURI: event.target.value }) },
-            !prefs.voices.length ? h('option', { value: '' }, '暂无英语音色') : null,
-            prefs.voices.map(voice => h('option', { key: voice.voiceURI, value: voice.voiceURI }, `${voice.name} · ${voice.localService ? '本地' : '联网'}`)))),
+          h('label', null, '音频来源', h('select', { className: 'ec-select', 'aria-label': '音频来源', value: prefs.provider, onChange: event => audio.configure({ provider: event.target.value }) },
+            !['kokoro', 'web-speech'].includes(prefs.provider) ? h('option', { value: prefs.provider, disabled: true }, '已保存的来源不可用，请重新选择') : null,
+            h('option', { value: 'kokoro' }, 'Kokoro 本地朗读（推荐）'),
+            h('option', { value: 'web-speech' }, '系统语音'))),
+          h('label', null, '英语音色', h('select', { className: 'ec-select', 'aria-label': '英语音色', value: voice, onChange: event => audio.configure(kokoro ? { kokoroVoice: event.target.value } : { voiceURI: event.target.value }) },
+            kokoro ? [
+              !KOKORO_VOICES.some(item => item.id === voice) ? h('option', { key: 'unavailable', value: voice, disabled: true }, '已保存的音色不可用，请重新选择') : null,
+              ...KOKORO_VOICES.map(item => h('option', { key: item.id, value: item.id }, item.label))] : [
+              !voice ? h('option', { key: 'unavailable', value: '' }, prefs.voiceURI ? '偏好音色不可用，请重新选择' : '请选择本地英语音色') : null,
+              ...prefs.voices.map(item => h('option', { key: item.voiceURI, value: item.voiceURI }, `${item.name} · ${item.lang} · 本地`))])),
           h('label', null, '朗读语速', h('select', { className: 'ec-select', 'aria-label': '朗读语速', value: prefs.rate, onChange: event => audio.configure({ rate: Number(event.target.value) }) },
-            [0.5, 1, 1.5, 2].map(rate => h('option', { key: rate, value: rate }, `${rate.toFixed(1)} 倍`)))),
+            READING_RATES.map(rate => h('option', { key: rate, value: rate }, `${rate.toFixed(1)} 倍`)))),
           h(Btn, { small: true, onClick: () => audio.short('Hello. Let us practise English together.', 'audition') }, '试听音色'),
-          h(Btn, { small: true, onClick: audio.refreshVoices }, '重试声源')),
+          !kokoro ? h(Btn, { small: true, onClick: audio.refreshVoices }, '重试声源') : null),
+        h('div', { className: 'ec-muted', style: { marginTop: 10 } }, kokoro ? 'Kokoro 在 DSH 主机处理文本；远程网页会把朗读文本交给该主机。' : '系统语音来自当前网页设备，只使用本地英语 Shelley、Reed、Sandy 家族。'),
+        h('div', { className: 'ec-sub' }, '语速为相对档位，不同音色的实际词速可能不同。'),
+        // Ticket 03 inserts its resource preparation UI here, using real Host
+        // resource state. Until merged, Kokoro is explicitly unprepared: no
+        // speculative status command, fake progress, download or runtime call.
         prefs.notice ? h('div', { role: 'status', className: 'ec-muted' }, prefs.notice) : null,
         prefs.error ? h(Notice, { tone: 'error' }, prefs.error) : null)
     }
@@ -3290,17 +3333,8 @@ window.__ModuleLoader__.load({
           })
         ),
 
-        h('div', { className: 'ec-section-title' }, t('audioProvider')),
-        h(
-          'select',
-          {
-            className: 'ec-select',
-            value: settings.audio?.provider ?? 'web-speech',
-            onChange: (event) => void saveSettings({ audio: { provider: event.target.value } })
-          },
-          h('option', { value: 'web-speech' }, t('audioWeb')),
-          h('option', { value: 'source-audio' }, t('audioSource'))
-        ),
+        h('div', { className: 'ec-section-title' }, t('speechSettings')),
+        h('div', { className: 'ec-muted' }, '在「今日」页单词学习下方的「朗读设置」统一选择来源、音色与语速。'),
 
         h('div', { className: 'ec-section-title' }, t('dataRoot')),
         h('div', { className: 'ec-muted', style: { marginBottom: 8, wordBreak: 'break-all' } },

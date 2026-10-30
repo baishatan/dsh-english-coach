@@ -5,6 +5,8 @@ import {
   ANCHORS_PER_ASSESSMENT,
   ASSESSMENT_LENGTH,
   BANDS,
+  KOKORO_VOICES,
+  READING_RATES,
   SHORT_ASSESSMENT_LENGTH,
   addDays,
   clamp,
@@ -42,7 +44,7 @@ export const DEFAULTS = {
     version: 1,
     dataRoot: null,
     automation: { enabled: false, time: '08:00', timeZone: 'Asia/Shanghai' },
-    audio: { provider: 'web-speech', voiceURI: null, rate: 1 },
+    audio: { provider: 'kokoro', kokoroVoice: KOKORO_VOICES[0], voiceURI: null, rate: 1 },
     study: { wordsPerDay: 10, activeWordListId: null },
     display: { locale: 'system' }
   },
@@ -96,7 +98,10 @@ async function loadSettings(ctx) {
     ...DEFAULTS.settings,
     ...stored,
     automation: { ...DEFAULTS.settings.automation, ...(stored.automation ?? {}) },
-    audio: { ...DEFAULTS.settings.audio, ...(stored.audio ?? {}) },
+    audio: { ...DEFAULTS.settings.audio, ...(stored.audio ?? {}),
+      // A legacy system selection without an explicit provider is still a
+      // system preference. Availability belongs to the current browser.
+      provider: stored.audio?.provider ?? (stored.audio?.voiceURI ? 'web-speech' : 'kokoro') },
     study: { ...DEFAULTS.settings.study, ...(stored.study ?? {}),
       wordsPerDay: Number.isInteger(words) && words >= 3 && words <= 30 ? words : 10,
       activeWordListId: ['cet4', 'cet6', 'ielts'].includes(active) ? active : null },
@@ -541,12 +546,18 @@ const handlers = {
         timeZone: String(payload.automation.timeZone ?? settings.automation.timeZone)
       }
     }
-    if (payload?.audio?.provider) {
-      const provider = String(payload.audio.provider)
-      if (!['web-speech', 'source-audio'].includes(provider)) {
-        fail('invalid_field', 'provider 必须是 web-speech 或 source-audio', 'audio.provider')
+    if (payload?.audio?.provider !== undefined) {
+      const provider = payload.audio.provider
+      if (!['kokoro', 'web-speech'].includes(provider)) {
+        fail('invalid_field', 'provider 必须是 kokoro 或 web-speech', 'audio.provider')
       }
       settings.audio = { ...settings.audio, provider }
+    }
+    if (payload?.audio?.kokoroVoice !== undefined) {
+      if (!KOKORO_VOICES.includes(payload.audio.kokoroVoice)) {
+        fail('invalid_field', '请选择精选 Kokoro 英语音色', 'audio.kokoroVoice')
+      }
+      settings.audio.kokoroVoice = payload.audio.kokoroVoice
     }
     if (payload?.audio?.voiceURI !== undefined) {
       const voice = payload.audio.voiceURI
@@ -555,7 +566,7 @@ const handlers = {
     }
     if (payload?.audio?.rate !== undefined) {
       const rate = Number(payload.audio.rate)
-      if (![0.5, 1, 1.5, 2].includes(rate)) fail('invalid_field', '语速必须是 0.5、1、1.5 或 2', 'audio.rate')
+      if (!READING_RATES.includes(rate)) fail('invalid_field', '语速必须是 0.5、1、1.5 或 2', 'audio.rate')
       settings.audio.rate = rate
     }
     if (payload?.study?.wordsPerDay !== undefined) {
