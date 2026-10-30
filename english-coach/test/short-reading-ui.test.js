@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { tempFixture, disposeFixture } from './temp-fixture.js'
 import { execute } from '../core/index.js'
 import { mountClient, deferred } from './client-harness.js'
 
@@ -13,12 +11,7 @@ const wav = () => new Response(Buffer.from('RIFF0000WAVE'), { headers: { 'conten
 // Exercise the actual Client and execute with synthetic learning data. Only the
 // external Host speech transport and browser media/voice devices are controlled.
 async function fixture(t, { provider = 'kokoro' } = {}) {
-  const root = await mkdtemp(join(tmpdir(), 'coach-short-ui-'))
-  t.after(async () => {
-    assert.equal(resolve(root), root)
-    assert.ok(root.startsWith(join(tmpdir(), 'coach-short-ui-')))
-    await rm(root, { recursive: true, force: true })
-  })
+  const root = await tempFixture(t, 'coach-short-ui-')
   const run = (command, payload = {}) => execute(root, command, payload, { now })
   const save = async (command, payload) => { const result = await run(command, payload); assert.equal(result.ok, true, JSON.stringify(result)); return result.data }
   await save('profile.save', { goal: 'study', minutesPerDay: 20, interests: ['synthetic examples'] })
@@ -82,6 +75,7 @@ async function fixture(t, { provider = 'kokoro' } = {}) {
       return promise
     },
     async settle(ui) { while (pending.size) await ui.flush(async () => { await Promise.all([...pending]) }) },
+    async drain() { while (pending.size) await Promise.all([...pending]) },
     async snapshot() {
       const results = {}
       for (const command of ['state.get', 'review.list', 'review.queue', 'progress.get', 'study.batch', 'settings.get']) results[command] = await run(command)
@@ -92,7 +86,7 @@ async function fixture(t, { provider = 'kokoro' } = {}) {
 }
 async function open(t, api, slot = 'main') {
   const ui = await mountClient({ request: api.request, setupWindow: api.setupWindow, slot })
-  t.after(() => ui.close())
+  disposeFixture(t, async () => { await ui.close(); await api.drain() })
   await api.settle(ui)
   return ui
 }
@@ -102,6 +96,20 @@ const entry = (ui, text, scope = ui.container) => {
   return button
 }
 const feedback = button => button.closest('.ec-pronounce')
+
+test('article shutdown drains a delayed bookmark before removing its temporary learning fixture', async t => {
+  const api = await fixture(t, { provider: 'web-speech' }), ui = await open(t, api)
+  await ui.click('播放'); await api.settle(ui)
+  assert.equal(api.synth.speaking, true)
+  // The external Host transport can still be writing when unmount pauses the
+  // article. Let actual execute I/O finish; do not stub the store or cleanup.
+  api.intercept = (command, payload) => command === 'audio.bookmark.save' ? (async () => {
+    await new Promise(resolve => setImmediate(resolve))
+    return Response.json(await api.run(command, payload))
+  })() : undefined
+  if (process.env.COACH_SHORT_CLEANUP_FAILURE === '1') assert.fail('intentional short article shutdown failure')
+  // open's after hook closes the visible UI, which saves the paused article.
+})
 
 test('a missing Kokoro resource is explained only at the entry that requested it, without download or learning changes', async t => {
   const api = await fixture(t)
@@ -308,7 +316,7 @@ test('hiding, collapsing and unmounting short entries abort their media and igno
     ? (holdAudio = false, oldOptions = options, pending.promise) : undefined
   const ui = await mountClient({ request: api.request, setupWindow: api.setupWindow, slot: 'shell.overlay' })
   let closed = false
-  t.after(async () => { if (!closed) await ui.close() })
+  disposeFixture(t, async () => { if (!closed) await ui.close(); await api.drain() })
   await api.settle(ui)
   await ui.click(ui.container.querySelector('.ec-pill-btn')); await api.settle(ui)
   const before = await api.snapshot()
