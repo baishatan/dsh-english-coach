@@ -50,14 +50,14 @@ function describeError(cause) {
 
 // One Host owns the resource lifecycle. All paths stay inside this Module.
 // The download adapter is an external boundary for isolated fault injection.
-export function createSpeechAssets({ root, download = downloadAsset, onActivate = async () => {} } = {}) {
-  let disposed = false, task = null
+export function createSpeechAssets({ root, download = downloadAsset, onActivate = async () => {}, onDelete = async () => {} } = {}) {
+  let disposed = false, task = null, deleting = false, deletion = null
   let state = {
     phase: 'unprepared', assetsReady: false, runtimeAvailable: false,
     manifest: assetManifest, downloadedBytes: 0, validatedBytes: 0, diskBytes: 0,
     generation: null, resourceGeneration: null, repairRequired: false, diskBytesKnown: true, currentFile: null, error: null
   }
-  const snapshot = owner => ({ ...state, canCancel: !!task && task.owner === owner, update: {
+  const snapshot = owner => ({ ...state, ...(deleting ? { phase: 'deleting', assetsReady: false } : {}), canCancel: !deleting && !!task && task.owner === owner, update: {
     available: false, networkChecked: false, targetId: assetManifest.id,
     downloadBytes: assetManifest.downloadBytes,
     additionalDiskBytes: assetManifest.downloadBytes + 65536,
@@ -283,6 +283,7 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
   }
 
   async function checkExisting() {
+    if (deleting) return false
     if (task) return state.assetsReady
     if (!checking) checking = verifyExisting().catch(cause => {
       verifiedFingerprint = null
@@ -437,11 +438,13 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
 
   return {
     async status(owner) {
+      if (deleting) return snapshot(owner)
       if (task && ['ready', 'error', 'cancelled'].includes(state.phase)) await task.done
       await checkExisting()
       return snapshot(owner)
     },
     async getReadyRoot() {
+      if (deleting) return null
       // A compatible current set remains usable throughout the download. Do
       // not subscribe a playback request to its eventual replacement (or make
       // activation's runtime disposal wait on its own preparation promise).
@@ -450,7 +453,9 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
     },
     async prepare(owner) {
       if (disposed) return failure('speech_disposed', '插件已停止，无法准备资源。')
+      if (deleting) return failure('speech_assets_deleting', '正在删除共享 Kokoro 资源；完成后才能明确重新准备。')
       if (await checkExisting()) return success(snapshot(owner))
+      if (deleting) return failure('speech_assets_deleting', '正在删除共享 Kokoro 资源；完成后才能明确重新准备。')
       if (task) return task.owner === owner ? success(snapshot(owner)) : failure('speech_busy', '另一页面正在准备共享朗读资源，请等待或由该页面取消。')
       try {
         if (state.repairRequired || await inspectPath(root) && (
@@ -461,6 +466,7 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
       } catch (cause) { return failure(describeError(cause).code, describeError(cause).message) }
       // Filesystem validation above awaits. Recheck the public operation owner
       // before the synchronous generation allocation to serialize rapid clicks.
+      if (deleting) return failure('speech_assets_deleting', '正在删除共享 Kokoro 资源；完成后才能明确重新准备。')
       if (task) return task.owner === owner ? success(snapshot(owner)) : failure('speech_busy', '另一页面正在准备共享朗读资源，请等待或由该页面取消。')
       const generation = randomUUID()
       const job = { generation, owner, controller: new AbortController(), staging: join(root, `.prepare-${generation}`) }
@@ -471,6 +477,7 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
     },
     async repair(owner) {
       if (disposed) return failure('speech_disposed', '插件已停止，无法修复资源。')
+      if (deleting) return failure('speech_assets_deleting', '正在删除共享 Kokoro 资源；完成后才能明确重新准备。')
       if (task) return task.owner === owner ? success(snapshot(owner)) : failure('speech_busy', '另一页面正在准备共享朗读资源，请等待或由该页面取消。')
       await checkExisting()
       let previous, activeRecord
@@ -481,6 +488,7 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
         await replacements()
       } catch (cause) { const described = describeError(cause); return failure(described.code, described.message) }
       if (task) return task.owner === owner ? success(snapshot(owner)) : failure('speech_busy', '另一页面正在准备共享朗读资源，请等待或由该页面取消。')
+      if (deleting) return failure('speech_assets_deleting', '正在删除共享 Kokoro 资源；完成后才能明确重新准备。')
       const generation = randomUUID()
       const job = { generation, owner, repair: true, previous, activeIdentity: activeRecord.identity, controller: new AbortController(), staging: join(root, `.prepare-${generation}`), pointer: join(root, `.active-${generation}.json`) }
       state = { ...state, phase: 'preparing', generation, operation: 'repair', downloadedBytes: 0, validatedBytes: 0, error: null }
@@ -488,19 +496,44 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
       job.done = run(job)
       return success(snapshot(owner))
     },
-    async delete(owner) {
-      try {
-        const sets = await replacements()
-        for (const entry of sets.directories) await removeOwned(entry)
-        state = { ...state, phase: 'unprepared', assetsReady: false, resourceGeneration: null, generation: null,
-          repairRequired: false, diskBytesKnown: true, diskBytes: 0, downloadedBytes: 0, validatedBytes: 0, currentFile: null, error: null }
-        verifiedFingerprint = null
-        return success(snapshot(owner))
-      } catch (cause) {
-        const described = describeError(cause)
-        state = { ...state, phase: 'error', error: described }
-        return failure(described.code, described.message)
-      }
+    delete(owner) {
+      if (disposed) return Promise.resolve(failure('speech_disposed', '插件已停止，无法删除资源。'))
+      if (deletion) return deletion
+      // The gate closes before the first await, including preparation requests
+      // that are currently checking the filesystem before allocating a job.
+      deleting = true
+      const job = task
+      job?.controller.abort()
+      deletion = (async () => {
+        try {
+          await job?.done
+          await checking
+          await onDelete()
+          const active = await readActive({ repair: true })
+          const sets = await replacements()
+          const stages = await partials()
+          for (const entry of stages) await removeStaging(entry)
+          for (const entry of sets.directories) await removeOwned(entry)
+          for (const entry of sets.pointers) await removePointer(entry)
+          if (active.identity) {
+            await inspectPath(root)
+            const identity = await pointerIdentity()
+            if (!identity || !sameFile(identity, active.identity)) throw error('speech_assets_changed', '活动记录在删除时改变；未清理该记录，请重新检查。')
+            await fs.unlink(pointerPath)
+          }
+          currentRoot = finalRoot
+          state = { ...state, phase: 'unprepared', assetsReady: false, resourceGeneration: null, generation: null,
+            repairRequired: false, diskBytesKnown: true, diskBytes: 0, downloadedBytes: 0, validatedBytes: 0, currentFile: null, error: null }
+          verifiedFingerprint = null
+          deleting = false
+          return success(snapshot(owner))
+        } catch (cause) {
+          const described = describeError(cause)
+          state = { ...state, phase: 'error', assetsReady: false, diskBytesKnown: false, error: described }
+          return failure(described.code, described.message)
+        } finally { deleting = false; deletion = null }
+      })()
+      return deletion
     },
     async cancel(owner) {
       if (!task) return success(snapshot(owner))

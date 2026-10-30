@@ -80,6 +80,50 @@ function wav(bytes = 240) {
 
 const sample = { text: 'Hello. Let us practise English together.', voice: 'af_heart', rate: 1 }
 
+test('confirmed global deletion invalidates both slots across pages and awaits actual runtime disposal', { skip: realAssets }, async t => {
+  let finishGeneration, finishDispose, entered = false, disposing = false, downloads = 0
+  const generating = new Promise(resolve => { finishGeneration = resolve })
+  const disposal = new Promise(resolve => { finishDispose = resolve; setTimeout(resolve, 1000).unref() })
+  const entries = []
+  const h = await prepared(t, { download: (asset, { signal }) => {
+    downloads++; return createReadStream(join(process.env.ENGLISH_COACH_TEST_ASSETS, asset.path), { signal })
+  }, runtimeFactory: () => ({
+    async synthesize(input, { signal }) { entries.push({ input, signal }); if (entries.length > 1) { entered = true; await generating }; return wav() },
+    async dispose() { disposing = true; finishGeneration(); await disposal }
+  }) })
+  const a = await h.request('speech.synthesize', sample)
+  await waitFor(() => h.request('speech.status', { taskId: a.data.taskId }), value => value.data?.phase === 'ready', 'delivered foreground')
+  assert.equal((await h.request('speech.audio', { taskId: a.data.taskId })).httpStatus, 200)
+  const prefetch = await h.request('speech.synthesize', { ...sample, text: 'Upcoming.', priority: 'prefetch' })
+  await waitFor(() => h.request('speech.status', { taskId: prefetch.data.taskId }), value => entered, 'active speculative work')
+  const pageB = { page: 'b'.repeat(48) }
+  const b = await h.request('speech.synthesize', { ...sample, text: 'Other page waiting.' }, pageB)
+  let completed = false
+  const removed = h.request('speech.assets.delete', {}, pageB).then(value => { completed = true; return value })
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(disposing, true, 'confirmed global deletion actually disposes the shared runtime')
+  assert.equal(completed, false, 'the response waits for actual disposal')
+  for (const [job, page] of [[a, {}], [prefetch, {}], [b, pageB]]) {
+    assert.equal((await h.request('speech.status', { taskId: job.data.taskId }, page)).httpStatus, 404)
+    assert.equal((await h.request('speech.audio', { taskId: job.data.taskId }, page)).httpStatus, 404)
+  }
+  assert.equal(entries.at(-1).signal.aborted, true)
+  assert.equal((await h.request('speech.synthesize', sample)).code, 'speech_assets_changing')
+  finishDispose()
+  assert.equal((await removed).data.phase, 'unprepared')
+  assert.deepEqual(await fs.readdir(h.speechRoot), [])
+  assert.deepEqual((await h.request('speech.session.touch')).data, { active: false, leaseMs: 15000, assetsReady: false, resourceGeneration: null })
+  const after = await h.request('speech.synthesize', sample)
+  await waitFor(() => h.request('speech.status', { taskId: after.data.taskId }), value => value.data?.phase === 'error', 'manual playback after deletion').catch(cause => {
+    // waitFor rejects terminal errors by default; this branch is not used when
+    // the accept predicate has observed the expected unavailable state.
+    throw cause
+  })
+  assert.equal((await h.request('speech.status', { taskId: after.data.taskId })).data.error.code, 'ASSETS_NOT_READY')
+  assert.equal(downloads, 8)
+  assert.equal(entries.length, 2, 'late work never launches the queued page')
+})
+
 test('prepared manual speech returns an owned binary WAV rather than audio in JSON', { skip: realAssets }, async t => {
   let release, entered = false
   const pending = new Promise(resolve => { release = resolve })

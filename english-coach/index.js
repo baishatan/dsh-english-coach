@@ -54,7 +54,8 @@ export function apply(ctx, config) {
   const speechAssets = createSpeechAssets({
     root: config?.speechRoot ?? join(DSH_HOME, 'english-coach', 'speech'),
     download: config?.speechDownload,
-    onActivate: () => speechAudio.invalidate()
+    onActivate: () => speechAudio.invalidate(),
+    onDelete: () => speechAudio.invalidate()
   })
   const speechAudio = createSpeechAudio({ assets: speechAssets, runtimeFactory: config?.speechRuntimeFactory })
   let runtimeCapability

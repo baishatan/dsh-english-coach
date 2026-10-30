@@ -317,6 +317,66 @@ test('confirmed resource removal deletes the prepared physical assets without ch
   assert.equal(downloads, 8, 'delete and status never grant another download')
 })
 
+test('confirmed deletion waits for an aborted late download and excludes new prepare or repair until complete', async t => {
+  let entered, release, downloads = 0, signal
+  const started = new Promise(resolve => { entered = resolve })
+  const pending = new Promise(resolve => { release = resolve; setTimeout(resolve, 1000).unref() })
+  const h = await host(t, { download: async (_asset, options) => {
+    downloads++; signal = options.signal; entered()
+    await pending // External transport can finish its handshake after abort.
+    return Readable.from([Buffer.from('{')])
+  } })
+  t.after(release)
+  await h.request('speech.assets.prepare')
+  await started
+  let completed = false
+  const removing = h.request('speech.assets.delete', {}, { session: 'b'.repeat(48) }).then(value => { completed = true; return value })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(signal.aborted, true, 'global deletion aborts another page transfer')
+  assert.equal(completed, false, 'actual transfer cleanup must finish before success')
+  assert.equal((await h.request('speech.assets.prepare')).code, 'speech_assets_deleting')
+  assert.equal((await h.request('speech.assets.repair')).code, 'speech_assets_deleting')
+  assert.equal((await h.request('speech.assets.status')).data.phase, 'deleting')
+  release()
+  const removed = await removing
+  assert.equal(removed.ok, true, JSON.stringify(removed))
+  assert.equal(removed.data.phase, 'unprepared')
+  assert.equal(removed.data.resourceGeneration, null)
+  assert.deepEqual(await fs.readdir(h.speechRoot), [])
+  assert.equal((await h.request('speech.assets.status')).data.phase, 'unprepared', 'late completion cannot restore readiness')
+  assert.equal(downloads, 1)
+})
+
+test('global removal reclaims owned generations, staging and active metadata idempotently, preserving foreign siblings', {
+  skip: !process.env.ENGLISH_COACH_TEST_ASSETS && 'Requires explicit verified assets fixture'
+}, async t => {
+  let downloads = 0
+  const h = await host(t, { download: (asset, { signal }) => {
+    downloads++; return createReadStream(join(process.env.ENGLISH_COACH_TEST_ASSETS, asset.path), { signal })
+  } })
+  await h.request('speech.assets.prepare'); await settle(h, 'ready')
+  await h.request('speech.assets.repair')
+  const repaired = await settle(h, 'ready')
+  const generation = '12345678-1234-4234-9234-123456789abc'
+  const staging = join(h.speechRoot, `.prepare-${generation}`)
+  await fs.mkdir(staging)
+  await fs.writeFile(join(staging, '_owner.json'), JSON.stringify({ id: repaired.manifest.id, generation }))
+  await fs.writeFile(join(staging, 'config.json'), '{')
+  await fs.writeFile(join(h.speechRoot, `.active-${generation}.json`), JSON.stringify({ id: repaired.manifest.id, revision: repaired.manifest.revision, generation }))
+  await fs.writeFile(join(h.speechRoot, 'foreign-notes.txt'), 'keep foreign sibling')
+  assert.equal((await h.request('speech.assets.delete')).ok, true)
+  assert.deepEqual(await fs.readdir(h.speechRoot), ['foreign-notes.txt'])
+  assert.equal(await fs.readFile(join(h.speechRoot, 'foreign-notes.txt'), 'utf8'), 'keep foreign sibling')
+  assert.equal((await h.request('speech.assets.status')).data.phase, 'unprepared')
+  const repeated = await h.request('speech.assets.delete')
+  assert.equal(repeated.ok, true)
+  assert.equal(repeated.data.resourceGeneration, null)
+  assert.equal(downloads, 16)
+  await h.request('speech.assets.prepare')
+  assert.equal((await settle(h, 'ready')).assetsReady, true)
+  assert.equal(downloads, 24, 'only a new explicit preparation rebuilds resources')
+})
+
 test('an explicit repair replaces a corrupt owned set with all eight fixed assets and survives restart', {
   skip: !process.env.ENGLISH_COACH_TEST_ASSETS && 'Requires explicit verified assets fixture'
 }, async t => {
