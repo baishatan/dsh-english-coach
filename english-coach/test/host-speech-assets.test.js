@@ -129,14 +129,23 @@ test('resource mutations require an admitted owner Peer and page ownership is Pe
 })
 
 async function settle(h, phase) {
-  for (let n = 0; n < 500; n++) {
+  const deadline = performance.now() + 30_000
+  let current = null
+  do {
     const result = await h.request('speech.assets.status')
     assert.equal(result.ok, true, JSON.stringify(result))
-    if (result.data.phase === phase) return result.data
-    if (result.data.phase === 'error' && phase !== 'error') assert.fail(JSON.stringify(result.data.error))
-    await new Promise(resolve => setTimeout(resolve, 5))
-  }
-  assert.fail(`Host did not reach ${phase}`)
+    current = result.data
+    if (current.phase === phase) return current
+    if (current.phase === 'error' && phase !== 'error') assert.fail(JSON.stringify(current.error))
+    // Yield to the real streaming I/O. Count elapsed time, not polling turns:
+    // checksum and disk work can take longer under concurrent test workloads.
+    await new Promise(resolve => setTimeout(resolve, 10))
+  } while (performance.now() < deadline)
+  assert.fail(`Host did not reach ${phase} within 30s: ${JSON.stringify({
+    phase: current?.phase, currentFile: current?.currentFile, error: current?.error,
+    downloadedBytes: current?.downloadedBytes, validatedBytes: current?.validatedBytes,
+    diskBytes: current?.diskBytes
+  })}`)
 }
 
 test('simultaneous prepare requests share one generation and one bounded transfer', async t => {
@@ -303,6 +312,20 @@ test('network, full disk, truncated, oversized and checksum failures stay unavai
     assert.equal((await h.request('speech.assets.status')).data.phase, 'error')
     await h.dispose()
   }
+})
+
+test('preparation can complete after a slow external download handshake without masking real errors', {
+  skip: !process.env.ENGLISH_COACH_TEST_ASSETS && 'Requires explicit verified assets fixture'
+}, async t => {
+  const fixture = process.env.ENGLISH_COACH_TEST_ASSETS
+  const h = await host(t, { download: async (asset, { signal }) => {
+    if (asset.path === 'config.json') await new Promise(resolve => setTimeout(resolve, 3200))
+    return createReadStream(join(fixture, asset.path), { signal })
+  } })
+  await h.request('speech.assets.prepare')
+  const ready = await settle(h, 'ready')
+  assert.equal(ready.assetsReady, true)
+  assert.equal(ready.validatedBytes, 94_453_730)
 })
 
 test('all eight fixed assets become ready atomically and a rebuilt Host validates and reuses them offline', {
