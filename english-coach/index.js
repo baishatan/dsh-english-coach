@@ -877,6 +877,14 @@ export function apply(ctx, config) {
               return sendJson(res, 400, { ok: false, code: 'unknown_speech_command', message: '不支持的朗读资源操作。' })
             }
             if (isSpeech) {
+              if (command === 'speech.session.touch') {
+                const result = speechAudio.heartbeat(speechOwner, payload)
+                if (result.ok) {
+                  const status = await speechAssets.status(speechOwner)
+                  result.data = { ...result.data, assetsReady: status.assetsReady, resourceGeneration: status.resourceGeneration }
+                }
+                return sendJson(res, result.ok ? 200 : 400, result)
+              }
               const result = command === 'speech.synthesize' ? speechAudio.request(speechOwner, payload)
                 : command === 'speech.status' ? speechAudio.status(speechOwner, payload)
                   : command === 'speech.audio' ? speechAudio.audio(speechOwner, payload)

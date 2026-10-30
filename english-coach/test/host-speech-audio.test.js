@@ -234,6 +234,67 @@ test('public page release reclaims only admitted ownership and awaits the last r
   assert.equal((await h.request('speech.session.release')).ok, true, 'release is idempotent')
 })
 
+test('unreachable page leases expire without releasing another page that is still active', { skip: realAssets }, async t => {
+  const entries = [], pending = []
+  let disposals = 0
+  const h = await prepared(t, { runtimeFactory: () => ({
+    synthesize(input, { signal }) { entries.push({ ...input, signal }); return new Promise(resolve => pending.push(resolve)) },
+    async dispose() { disposals++; for (const resolve of pending.splice(0)) resolve(wav()) }
+  }) })
+  const a = await h.request('speech.synthesize', sample)
+  await waitFor(() => h.request('speech.status', { taskId: a.data.taskId }), value => value.data?.phase === 'generating', 'A leased block')
+  pending.shift()(wav())
+  await waitFor(() => h.request('speech.status', { taskId: a.data.taskId }), value => value.data?.phase === 'ready', 'A retained audio')
+  await h.request('speech.audio', { taskId: a.data.taskId })
+  const pageB = { page: 'b'.repeat(48) }
+  const b = await h.request('speech.synthesize', { ...sample, text: 'B remains connected.' }, pageB)
+  await waitFor(() => h.request('speech.status', { taskId: b.data.taskId }, pageB), value => value.data?.phase === 'generating', 'B leased block')
+  const now = Date.now()
+  let elapsed = 10_000
+  const clock = t.mock.method(Date, 'now', () => now + elapsed)
+  assert.equal((await h.request('speech.status', { taskId: b.data.taskId }, pageB)).data.phase, 'generating')
+  elapsed = 15_001
+  assert.equal((await h.request('speech.audio', { taskId: a.data.taskId })).httpStatus, 404, 'lost close request has a bounded owner lease')
+  assert.equal(entries[1].signal.aborted, false, 'A lease expiry cannot cancel active B')
+  assert.equal(disposals, 0)
+  elapsed = 25_002
+  assert.equal((await h.request('speech.status', { taskId: b.data.taskId }, pageB)).httpStatus, 404)
+  assert.equal(entries[1].signal.aborted, true)
+  await waitFor(async () => ({ ok: true, data: { disposals } }), value => value.data.disposals === 1, 'expired last page runtime reclaimed')
+  clock.mock.restore()
+  assert.equal((await h.request('speech.assets.status')).data.assetsReady, true)
+})
+
+test('active page heartbeat exposes only resource identity and never extends absolute audio TTL', { skip: realAssets }, async t => {
+  let disposals = 0
+  const h = await prepared(t, { runtimeFactory: () => ({ async synthesize() { return wav() }, async dispose() { disposals++ } }) })
+  const job = await h.request('speech.synthesize', sample)
+  await waitFor(() => h.request('speech.status', { taskId: job.data.taskId }), value => value.data?.phase === 'ready', 'leased audio ready')
+  await h.request('speech.audio', { taskId: job.data.taskId })
+  const generation = (await h.request('speech.assets.status')).data.resourceGeneration
+  const initial = await h.request('speech.session.touch')
+  assert.equal(initial.ok, true, 'active media can renew its own lease without reading learning data')
+  assert.deepEqual(initial.data, { active: true, leaseMs: 15_000, assetsReady: true, resourceGeneration: generation })
+  assert.equal((await h.request('speech.session.touch', {}, { page: 'c'.repeat(48) })).data.active, false)
+  assert.equal((await h.request('speech.session.touch', {}, { headers: { cookie: 'other-peer' } })).data.active, false)
+  assert.doesNotMatch(JSON.stringify(initial.data), /text|taskId|owner|path|Hello/)
+  const now = Date.now()
+  let elapsed = 0
+  const clock = t.mock.method(Date, 'now', () => now + elapsed)
+  for (elapsed = 10_000; elapsed <= 110_000; elapsed += 10_000) assert.equal((await h.request('speech.session.touch')).data.active, true)
+  elapsed = 120_001
+  assert.equal((await h.request('speech.session.touch')).data.active, false, 'heartbeat does not keep old audio or owners alive beyond task TTL')
+  assert.equal((await h.request('speech.audio', { taskId: job.data.taskId })).httpStatus, 404)
+  assert.equal(disposals, 1)
+  clock.mock.restore()
+  for (const command of ['speech.session.touch', 'speech.session.release']) {
+    for (const [headers, status] of [[{ cookie: undefined }, 401], [{ cookie: 'non-owner' }, 403], [{ origin: 'https://foreign.example' }, 403], [{ 'content-type': 'text/plain' }, 403], [{ 'x-english-coach-speech-session': '' }, 403]]) assert.equal((await h.request(command, {}, { headers })).httpStatus, status)
+    assert.equal((await h.request(command, { page: 'b'.repeat(48) })).httpStatus, 400)
+    assert.equal((await h.request(command, {}, { query: '?owner=someone' })).httpStatus, 403)
+    assert.equal((await h.request(command, { padding: 'x'.repeat(4096) })).httpStatus, 413)
+  }
+})
+
 test('bounded article prefetch retains delivered foreground audio and yields to queued foreground work', { skip: realAssets }, async t => {
   const entries = [], pending = []
   const h = await prepared(t, { runtimeFactory: () => ({
