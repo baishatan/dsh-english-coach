@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import test from 'node:test'
+import { createRequire, syncBuiltinESMExports } from 'node:module'
 import { apply } from '../index.js'
 import { execute } from '../core/index.js'
 
@@ -133,6 +134,202 @@ test('one Host synthesis lane keeps each page latest without interrupting anothe
   assert.equal((await h.request('speech.audio', { taskId: first.data.taskId })).httpStatus, 404, 'late cancelled audio never revives')
   await h.dispose()
   assert.equal(disposals, 1, 'Host awaits the one runtime disposal')
+})
+
+test('hot page latest clicks yield a round to both waiting pages after the current block', { skip: realAssets }, async t => {
+  const entries = [], pending = []
+  const h = await prepared(t, { runtimeFactory: () => ({
+    synthesize(input, { signal }) { entries.push({ ...input, signal }); return new Promise(resolve => pending.push(resolve)) },
+    async dispose() { for (const resolve of pending.splice(0)) resolve(wav()) }
+  }) })
+  const pageA = { page: 'a'.repeat(48) }, pageB = { page: 'b'.repeat(48) }, pageC = { page: 'c'.repeat(48) }
+  const status = (job, page) => h.request('speech.status', { taskId: job.data.taskId }, page)
+  const a = await h.request('speech.synthesize', { ...sample, text: 'A current.' }, pageA)
+  await waitFor(() => status(a, pageA), value => value.data?.phase === 'generating', 'A current block')
+  let latest = await h.request('speech.synthesize', { ...sample, text: 'A latest 0.' }, pageA)
+  const b = await h.request('speech.synthesize', { ...sample, text: 'B finite.' }, pageB)
+  const c = await h.request('speech.synthesize', { ...sample, text: 'C finite.' }, pageC)
+  pending.shift()(wav())
+  await waitFor(async () => ({ ok: true, data: { count: entries.length } }), value => value.data.count === 2, 'next page turn')
+  assert.equal(entries[1].text, 'B finite.', 'running page goes behind already waiting pages')
+  for (let n = 1; n <= 6; n++) latest = await h.request('speech.synthesize', { ...sample, text: `A latest ${n}.` }, pageA)
+  assert.equal(entries[1].signal.aborted, false, 'hot A cannot interrupt B')
+  pending.shift()(wav())
+  await waitFor(async () => ({ ok: true, data: { count: entries.length } }), value => value.data.count === 3, 'C round')
+  assert.equal(entries[2].text, 'C finite.')
+  for (let n = 7; n <= 12; n++) latest = await h.request('speech.synthesize', { ...sample, text: `A latest ${n}.` }, pageA)
+  assert.equal(entries[2].signal.aborted, false, 'hot A cannot interrupt C')
+  pending.shift()(wav())
+  await waitFor(() => status(latest, pageA), value => value.data?.phase === 'generating', 'only latest A')
+  assert.deepEqual(entries.map(value => value.text), ['A current.', 'B finite.', 'C finite.', 'A latest 12.'])
+  pending.shift()(wav())
+  await waitFor(() => status(latest, pageA), value => value.data?.phase === 'ready', 'latest A ready')
+  for (const [job, page] of [[b, pageB], [c, pageC]]) assert.equal((await h.request('speech.audio', { taskId: job.data.taskId }, page)).httpStatus, 200)
+})
+
+test('replacing a queued page keeps its fair place while only its latest click can run', { skip: realAssets }, async t => {
+  const entries = [], pending = []
+  const h = await prepared(t, { runtimeFactory: () => ({
+    synthesize(input) { entries.push(input.text); return new Promise(resolve => pending.push(resolve)) },
+    async dispose() { for (const resolve of pending.splice(0)) resolve(wav()) }
+  }) })
+  const blockerPage = { page: 'c'.repeat(48) }, otherPage = { page: 'b'.repeat(48) }
+  const blocker = await h.request('speech.synthesize', { ...sample, text: 'Current small block.' }, blockerPage)
+  await waitFor(() => h.request('speech.status', { taskId: blocker.data.taskId }, blockerPage), value => value.data?.phase === 'generating', 'current small block')
+  const old = await h.request('speech.synthesize', { ...sample, text: 'A old.' })
+  const other = await h.request('speech.synthesize', { ...sample, text: 'B waiting.' }, otherPage)
+  const latest = await h.request('speech.synthesize', { ...sample, text: 'A latest.' })
+  assert.equal((await h.request('speech.status', { taskId: old.data.taskId })).httpStatus, 404)
+  pending.shift()(wav())
+  await waitFor(async () => ({ ok: true, data: { count: entries.length } }), value => value.data.count === 2, 'preserved page turn')
+  assert.equal(entries[1], 'A latest.', 'changing content does not move a waiting page behind B')
+  pending.shift()(wav())
+  await waitFor(() => h.request('speech.status', { taskId: other.data.taskId }, otherPage), value => value.data?.phase === 'generating', 'B finite turn')
+  pending.shift()(wav())
+  await waitFor(() => h.request('speech.status', { taskId: latest.data.taskId }), value => value.data?.phase === 'ready', 'latest ready')
+  assert.deepEqual(entries, ['Current small block.', 'A latest.', 'B waiting.'])
+})
+
+test('public page release reclaims only admitted ownership and awaits the last runtime shutdown', { skip: realAssets }, async t => {
+  const entries = [], pending = []
+  let disposals = 0, finishDispose, holdDispose = false
+  const h = await prepared(t, { runtimeFactory: () => ({
+    synthesize(input, { signal }) { entries.push({ ...input, signal }); return new Promise(resolve => pending.push(resolve)) },
+    async dispose() {
+      disposals++; for (const resolve of pending.splice(0)) resolve(wav())
+      if (holdDispose) await new Promise(resolve => { const fallback = setTimeout(resolve, 1000); finishDispose = () => { clearTimeout(fallback); resolve() } })
+    }
+  }) })
+  const otherPage = { page: 'b'.repeat(48) }
+  const current = await h.request('speech.synthesize', sample)
+  await waitFor(() => h.request('speech.status', { taskId: current.data.taskId }), value => value.data?.phase === 'generating', 'A foreground')
+  pending.shift()(wav())
+  await waitFor(() => h.request('speech.status', { taskId: current.data.taskId }), value => value.data?.phase === 'ready', 'A ready')
+  await h.request('speech.audio', { taskId: current.data.taskId })
+  const other = await h.request('speech.synthesize', { ...sample, text: 'B continues.' }, otherPage)
+  await waitFor(() => h.request('speech.status', { taskId: other.data.taskId }, otherPage), value => value.data?.phase === 'generating', 'B running')
+  const next = await h.request('speech.synthesize', { ...sample, text: 'A upcoming.', priority: 'prefetch' })
+  const released = await h.request('speech.session.release')
+  assert.equal(released.ok, true, 'pagehide can release both slots through the public Host command')
+  for (const job of [current, next]) assert.equal((await h.request('speech.status', { taskId: job.data.taskId })).httpStatus, 404)
+  assert.equal(disposals, 0, 'another active page keeps its runtime')
+  assert.equal(entries[1].signal.aborted, false)
+  for (const payload of [{ owner: `browser-peer:${otherPage.page}` }, { page: otherPage.page }, { taskId: other.data.taskId }, null, []]) {
+    assert.equal((await h.request('speech.session.release', payload)).httpStatus, 400, 'JSON cannot nominate another page')
+  }
+  assert.equal((await h.request('speech.session.release', {}, { page: otherPage.page, headers: { cookie: 'other-peer' } })).ok, true)
+  assert.equal((await h.request('speech.session.release', {}, { page: 'f'.repeat(48) })).ok, true, 'unknown random identity cannot release B')
+  assert.equal(entries[1].signal.aborted, false)
+  pending.shift()(wav())
+  await waitFor(() => h.request('speech.status', { taskId: other.data.taskId }, otherPage), value => value.data?.phase === 'ready', 'B survives A close')
+  assert.equal((await h.request('speech.audio', { taskId: other.data.taskId }, otherPage)).httpStatus, 200)
+  let finished = false
+  holdDispose = true
+  const last = h.request('speech.session.release', {}, otherPage).then(value => { finished = true; return value })
+  await waitFor(async () => ({ ok: true, data: { disposals } }), value => value.data.disposals === 1, 'last runtime shutdown')
+  assert.equal(finished, false, 'release must await actual runtime termination')
+  finishDispose()
+  assert.equal((await last).ok, true)
+  assert.equal((await h.request('speech.audio', { taskId: other.data.taskId }, otherPage)).httpStatus, 404)
+  assert.equal((await h.request('speech.assets.status')).data.assetsReady, true, 'persistent assets remain prepared')
+  assert.equal((await h.request('speech.session.release')).ok, true, 'release is idempotent')
+})
+
+test('unreachable page leases expire without releasing another page that is still active', { skip: realAssets }, async t => {
+  const entries = [], pending = []
+  let disposals = 0
+  const h = await prepared(t, { runtimeFactory: () => ({
+    synthesize(input, { signal }) { entries.push({ ...input, signal }); return new Promise(resolve => pending.push(resolve)) },
+    async dispose() { disposals++; for (const resolve of pending.splice(0)) resolve(wav()) }
+  }) })
+  const a = await h.request('speech.synthesize', sample)
+  await waitFor(() => h.request('speech.status', { taskId: a.data.taskId }), value => value.data?.phase === 'generating', 'A leased block')
+  pending.shift()(wav())
+  await waitFor(() => h.request('speech.status', { taskId: a.data.taskId }), value => value.data?.phase === 'ready', 'A retained audio')
+  await h.request('speech.audio', { taskId: a.data.taskId })
+  const pageB = { page: 'b'.repeat(48) }
+  const b = await h.request('speech.synthesize', { ...sample, text: 'B remains connected.' }, pageB)
+  await waitFor(() => h.request('speech.status', { taskId: b.data.taskId }, pageB), value => value.data?.phase === 'generating', 'B leased block')
+  const now = Date.now()
+  let elapsed = 10_000
+  const clock = t.mock.method(Date, 'now', () => now + elapsed)
+  assert.equal((await h.request('speech.status', { taskId: b.data.taskId }, pageB)).data.phase, 'generating')
+  elapsed = 15_001
+  assert.equal((await h.request('speech.audio', { taskId: a.data.taskId })).httpStatus, 404, 'lost close request has a bounded owner lease')
+  assert.equal(entries[1].signal.aborted, false, 'A lease expiry cannot cancel active B')
+  assert.equal(disposals, 0)
+  elapsed = 25_002
+  assert.equal((await h.request('speech.status', { taskId: b.data.taskId }, pageB)).httpStatus, 404)
+  assert.equal(entries[1].signal.aborted, true)
+  await waitFor(async () => ({ ok: true, data: { disposals } }), value => value.data.disposals === 1, 'expired last page runtime reclaimed')
+  clock.mock.restore()
+  assert.equal((await h.request('speech.assets.status')).data.assetsReady, true)
+})
+
+test('active page heartbeat exposes only resource identity and never extends absolute audio TTL', { skip: realAssets }, async t => {
+  let disposals = 0
+  const h = await prepared(t, { runtimeFactory: () => ({ async synthesize() { return wav() }, async dispose() { disposals++ } }) })
+  const job = await h.request('speech.synthesize', sample)
+  await waitFor(() => h.request('speech.status', { taskId: job.data.taskId }), value => value.data?.phase === 'ready', 'leased audio ready')
+  await h.request('speech.audio', { taskId: job.data.taskId })
+  const generation = (await h.request('speech.assets.status')).data.resourceGeneration
+  const initial = await h.request('speech.session.touch')
+  assert.equal(initial.ok, true, 'active media can renew its own lease without reading learning data')
+  assert.deepEqual(initial.data, { active: true, leaseMs: 15_000, assetsReady: true, resourceGeneration: generation })
+  assert.equal((await h.request('speech.session.touch', {}, { page: 'c'.repeat(48) })).data.active, false)
+  assert.equal((await h.request('speech.session.touch', {}, { headers: { cookie: 'other-peer' } })).data.active, false)
+  assert.doesNotMatch(JSON.stringify(initial.data), /text|taskId|owner|path|Hello/)
+  const now = Date.now()
+  let elapsed = 0
+  const clock = t.mock.method(Date, 'now', () => now + elapsed)
+  for (elapsed = 10_000; elapsed <= 110_000; elapsed += 10_000) assert.equal((await h.request('speech.session.touch')).data.active, true)
+  elapsed = 120_001
+  assert.equal((await h.request('speech.session.touch')).data.active, false, 'heartbeat does not keep old audio or owners alive beyond task TTL')
+  assert.equal((await h.request('speech.audio', { taskId: job.data.taskId })).httpStatus, 404)
+  assert.equal(disposals, 1)
+  clock.mock.restore()
+  for (const command of ['speech.session.touch', 'speech.session.release']) {
+    for (const [headers, status] of [[{ cookie: undefined }, 401], [{ cookie: 'non-owner' }, 403], [{ origin: 'https://foreign.example' }, 403], [{ 'content-type': 'text/plain' }, 403], [{ 'x-english-coach-speech-session': '' }, 403]]) assert.equal((await h.request(command, {}, { headers })).httpStatus, status)
+    assert.equal((await h.request(command, { page: 'b'.repeat(48) })).httpStatus, 400)
+    assert.equal((await h.request(command, {}, { query: '?owner=someone' })).httpStatus, 403)
+    assert.equal((await h.request(command, { padding: 'x'.repeat(4096) })).httpStatus, 413)
+  }
+})
+
+test('a new page waits for last-page reclamation and cannot reuse a stopping runtime', { skip: realAssets }, async t => {
+  let factories = 0, finishDispose
+  const h = await prepared(t, { runtimeFactory: () => {
+    factories++
+    return { async synthesize() { return wav() }, async dispose() { await new Promise(resolve => { const fallback = setTimeout(resolve, 1000); finishDispose = () => { clearTimeout(fallback); resolve() } }) } }
+  } })
+  const first = await h.request('speech.synthesize', sample)
+  await waitFor(() => h.request('speech.status', { taskId: first.data.taskId }), value => value.data?.phase === 'ready', 'first owner ready')
+  const releasing = h.request('speech.session.release')
+  await waitFor(async () => ({ ok: true, data: { started: !!finishDispose } }), value => value.data.started, 'worker stopping')
+  const pageB = { page: 'b'.repeat(48) }
+  const early = await h.request('speech.synthesize', { ...sample, text: 'New page during release.' }, pageB)
+  assert.equal(early.code, 'speech_assets_changing')
+  assert.equal(factories, 1)
+  finishDispose(); await releasing
+  const next = await h.request('speech.synthesize', { ...sample, text: 'New page after release.' }, pageB)
+  await waitFor(() => h.request('speech.status', { taskId: next.data.taskId }, pageB), value => value.data?.phase === 'ready', 'new runtime after actual shutdown')
+  assert.equal(factories, 2)
+  assert.equal((await h.request('speech.audio', { taskId: first.data.taskId })).httpStatus, 404)
+})
+
+test('lease-triggered reclamation rejects a fresh page until actual shutdown finishes', { skip: realAssets }, async t => {
+  let finishDispose, held = false
+  const h = await prepared(t, { runtimeFactory: () => ({
+    async synthesize() { return wav() },
+    async dispose() { if (held) await new Promise(resolve => { const fallback = setTimeout(resolve, 1000); finishDispose = () => { clearTimeout(fallback); resolve() } }) }
+  }) })
+  const first = await h.request('speech.synthesize', sample)
+  await waitFor(() => h.request('speech.status', { taskId: first.data.taskId }), value => value.data?.phase === 'ready', 'lease owner ready')
+  held = true
+  const now = Date.now(), clock = t.mock.method(Date, 'now', () => now + 15_001)
+  const next = await h.request('speech.synthesize', { ...sample, text: 'New owner at expired lease.' }, { page: 'b'.repeat(48) })
+  assert.equal(next.code, 'speech_assets_changing', 'a lease expiry must recheck admission after it starts asynchronous runtime shutdown')
+  finishDispose(); clock.mock.restore()
 })
 
 test('bounded article prefetch retains delivered foreground audio and yields to queued foreground work', { skip: realAssets }, async t => {
@@ -268,6 +465,171 @@ test('global cache pressure, page capacity and task deadlines stay bounded throu
   release(wav())
   await h.dispose()
   assert.equal(disposeDone, true)
+})
+
+test('two visible clients share the actual Host adapter but never share media, status, errors or close ownership', { skip: realAssets }, async t => {
+  const { mountClient } = await import('./client-harness.js')
+  const entries = [], pending = [], requests = [], responses = [], inFlight = new Set()
+  let disposals = 0, uiA, uiB
+  t.after(async () => { await uiB?.close(); await uiA?.close(); await Promise.all([...inFlight]) })
+  const h = await prepared(t, { runtimeFactory: () => ({
+    synthesize(input, { signal }) { entries.push({ ...input, signal }); return new Promise((resolve, reject) => pending.push({ resolve, reject })) },
+    async dispose() { disposals++; for (const value of pending.splice(0)) value.resolve(wav()) }
+  }) })
+  const now = new Date(), date = now.toLocaleDateString('en-CA')
+  const run = (command, payload) => execute(h.root, command, payload, { now })
+  assert.equal((await run('profile.save', { goal: 'work', minutesPerDay: 30, interests: [] })).ok, true)
+  assert.equal((await run('settings.save', { audio: { provider: 'kokoro', kokoroVoice: 'af_heart', rate: 1 } })).ok, true)
+  assert.equal((await run('lesson.save', { date, title: '多页非个人材料', sources: [{ id: 'synthetic', url: 'https://example.com/shared-host', fetchedAt: now.toISOString(), license: 'Synthetic test text' }], items: [
+    { id: 'read', type: 'reading', sourceId: 'synthetic', body: 'A quiet bird landed. It rested by the river.' },
+    { id: 'listen', type: 'listening', sourceId: 'synthetic', transcript: 'B takes a train. It arrives at noon.' },
+    { id: 'express', type: 'expressions', expressions: [{ term: 'take a train', meaning: '乘火车' }] },
+    { id: 'quiz', type: 'quiz', questions: [{ prompt: 'Choose.', choices: ['甲', '乙', '丙', '丁'], answerIndex: 0 }] }
+  ] })).ok, true)
+  assert.equal((await run('lesson.start', { date })).ok, true)
+  const learningBefore = (await run('state.get')).data, settingsBefore = (await run('settings.get')).data
+  function client() {
+    const media = [], urls = []
+    return { media, urls, setupWindow(window) {
+      window.URL.createObjectURL = blob => { const url = `blob:client-${urls.length}`; urls.push({ url, blob }); return url }
+      window.URL.revokeObjectURL = () => {}
+      window.Audio = class {
+        constructor() { this.src = ''; media.push(this) }
+        play() { return Promise.resolve() }
+        pause() {}
+        removeAttribute(name) { if (name === 'src') this.src = '' }
+        load() {}
+      }
+    }, request(command, payload, options) {
+      const page = options.headers['x-english-coach-speech-session']
+      requests.push({ command, payload, page, options })
+      const task = h.request(command, payload, { page }).then(value => {
+        responses.push({ command, page, value })
+        return value.bytes ? new Response(value.bytes, { status: value.httpStatus, headers: value.headers }) : value
+      })
+      inFlight.add(task); task.then(() => inFlight.delete(task), () => inFlight.delete(task)); return task
+    } }
+  }
+  const a = client(), b = client()
+  uiA = await mountClient(a); uiB = await mountClient(b)
+  async function settle(ui) { await ui.flush(async () => { while (inFlight.size) await Promise.all([...inFlight]) }) }
+  const article = ui => ui.container.querySelector('.ec-item-body')
+  async function pollUntil(ui, accept, label) {
+    const deadline = Date.now() + 10000
+    while (!accept()) { assert.ok(Date.now() < deadline, label); await ui.poll(); await settle(ui); await new Promise(resolve => setTimeout(resolve, 5)) }
+  }
+  await settle(uiA); await settle(uiB)
+  await uiA.click('播放'); await settle(uiA)
+  await pollUntil(uiA, () => /生成/.test(article(uiA).textContent), 'A visible generating')
+  const listenRow = [...uiB.container.querySelectorAll('.ec-li')].find(value => value.textContent.includes('听力'))
+  assert.ok(listenRow, 'the second client can open its listening article')
+  await uiB.click(listenRow); await settle(uiB)
+  await uiB.click('播放'); await settle(uiB)
+  assert.match(article(uiB).textContent, /排队/)
+  assert.doesNotMatch(article(uiB).textContent, /播放中/)
+  assert.equal(entries.length, 1)
+  assert.equal(entries[0].signal.aborted, false, 'B cannot interrupt A')
+  const front = requests.filter(value => value.command === 'speech.synthesize' && !value.payload.priority)
+  assert.notEqual(front[0].page, front[1].page)
+  assert.match(front[0].page, /^[a-f0-9]{48}$/)
+  pending.shift().reject(Object.assign(new Error('synthetic external limit'), { code: 'TEXT_TOO_LONG' }))
+  await pollUntil(uiA, () => /超过本地合成上限/.test(article(uiA).textContent), 'A own error')
+  await pollUntil(uiB, () => /生成/.test(article(uiB).textContent), 'B own generating')
+  assert.doesNotMatch(article(uiB).textContent, /超过本地合成上限/)
+  assert.equal(entries[1].text, 'B takes a train.')
+  pending.shift().resolve(wav())
+  await pollUntil(uiB, () => b.media.length === 1, 'B receives only its own media')
+  await uiB.flush(() => b.media[0].onplaying())
+  assert.match(article(uiB).textContent, /播放中/)
+  assert.equal(a.media.length, 0)
+  const beforePoll = requests.length
+  await uiB.poll(); await settle(uiB)
+  assert.ok(requests.slice(beforePoll).some(value => value.command === 'speech.session.touch'))
+  await uiA.close(); await settle(uiB)
+  assert.match(article(uiB).textContent, /播放中/)
+  assert.notEqual(b.media[0].src, '')
+  assert.equal(disposals, 0)
+  assert.ok(entries.filter(value => value.text.startsWith('It arrives')).every(value => !value.signal.aborted))
+  const bJob = responses.find(value => value.command === 'speech.synthesize' && value.page === front[1].page).value.data.taskId
+  assert.equal((await h.request('speech.audio', { taskId: bJob }, { page: front[0].page })).httpStatus, 404)
+  await uiB.close(); await settle(uiA)
+  assert.equal(disposals, 1)
+  assert.equal(b.media[0].src, '')
+  const final = (await run('state.get')).data
+  assert.deepEqual(final.todayLesson, learningBefore.todayLesson)
+  assert.deepEqual(final.review, learningBefore.review)
+  assert.deepEqual((await run('settings.get')).data, settingsBefore)
+})
+
+test('two actual Host pages use one CPU worker and closing one leaves the other ready before final process reclamation', { skip: realAssets, timeout: 120000 }, async t => {
+  // Observe only the real external fork: no runtime factory, fake process,
+  // injected worker, IPC result, resource counters or memory substitutions.
+  const childProcess = createRequire(import.meta.url)('node:child_process')
+  const originalFork = childProcess.fork, children = []
+  let live = 0, maxLive = 0
+  childProcess.fork = (...args) => {
+    const child = originalFork(...args)
+    if (String(args[0]).endsWith('/speech/worker.js')) {
+      const row = { child, pid: child.pid, closed: false }
+      children.push(row); live++; maxLive = Math.max(maxLive, live)
+      child.once('exit', () => { live--; row.exited = true })
+      child.once('disconnect', () => { row.disconnected = true })
+      child.once('close', () => { row.closed = true })
+    }
+    return child
+  }
+  syncBuiltinESMExports()
+  let h
+  try {
+    h = await prepared(t)
+    const before = (await h.request('settings.get')).data
+    const pageB = { page: 'b'.repeat(48) }, startedAt = performance.now()
+    const a = await h.request('speech.synthesize', { ...sample, text: 'A quiet bird.' })
+    const b = await h.request('speech.synthesize', { ...sample, text: 'B takes a train.' }, pageB)
+    const records = []
+    await waitFor(async () => {
+      const [one, two] = await Promise.all([
+        h.request('speech.status', { taskId: a.data.taskId }),
+        h.request('speech.status', { taskId: b.data.taskId }, pageB)
+      ])
+      assert.ok(one.ok && two.ok)
+      assert.equal([one, two].filter(value => value.data.phase === 'generating').length <= 1, true)
+      for (const value of [one, two]) if (value.data.phase === 'error') assert.fail(JSON.stringify(value))
+      return { ok: true, data: { ready: one.data.phase === 'ready' && two.data.phase === 'ready' } }
+    }, value => value.data.ready, 'two real CPU pages')
+    for (const [job, page] of [[a, {}], [b, pageB]]) {
+      const audio = await h.request('speech.audio', { taskId: job.data.taskId }, page)
+      assert.equal(audio.httpStatus, 200); assert.equal(audio.bytes.readUInt32LE(24), 24000)
+      let peak = 0
+      for (let offset = 44; offset < audio.bytes.length; offset += 4) { const value = audio.bytes.readFloatLE(offset); assert.ok(Number.isFinite(value)); peak = Math.max(peak, Math.abs(value)) }
+      assert.ok(peak > 0.00001)
+      records.push({ page: page.page ? 'B' : 'A', bytes: audio.bytes.length, peak })
+    }
+    assert.equal(children.length, 1, 'both pages reuse the same real model process')
+    assert.equal(maxLive, 1)
+    const worker = children[0]
+    await h.request('speech.session.release')
+    assert.doesNotThrow(() => process.kill(worker.pid, 0), 'closing A keeps B worker alive')
+    assert.equal((await h.request('speech.audio', { taskId: b.data.taskId }, pageB)).httpStatus, 200)
+    assert.equal((await h.request('speech.audio', { taskId: a.data.taskId })).httpStatus, 404)
+    const cancel = await h.request('speech.synthesize', { ...sample, text: 'The final active page is cancelled.' }, pageB)
+    await waitFor(() => h.request('speech.status', { taskId: cancel.data.taskId }, pageB), value => value.data?.phase === 'generating', 'cancel actual active final page')
+    await h.request('speech.session.release', {}, pageB)
+    assert.ok(worker.exited && worker.disconnected, 'release awaits real process exit and IPC disconnection')
+    assert.throws(() => process.kill(worker.pid, 0), { code: 'ESRCH' })
+    assert.equal((await h.request('speech.audio', { taskId: cancel.data.taskId }, pageB)).httpStatus, 404)
+    assert.equal((await h.request('speech.assets.status')).data.assetsReady, true)
+    assert.deepEqual((await h.request('settings.get')).data, before)
+    const last = await h.request('speech.synthesize', { ...sample, text: 'Host unload cancels this block.' }, pageB)
+    await waitFor(() => h.request('speech.status', { taskId: last.data.taskId }, pageB), value => value.data?.phase === 'generating' && children.length === 2, 'actual worker after released session')
+    await h.dispose()
+    for (const row of children) assert.throws(() => process.kill(row.pid, 0), { code: 'ESRCH' })
+    assert.equal(maxLive, 1, 'last-session reload never overlaps actual heavy workers')
+    t.diagnostic(JSON.stringify({ actualTwoPageCpu: { records, pids: children.map(value => value.pid), maxLiveWorkers: maxLive, elapsedMs: Math.round(performance.now() - startedAt), finalReleaseAndHostDisposeExited: true } }))
+  } finally {
+    await h?.dispose()
+    childProcess.fork = originalFork; syncBuiltinESMExports()
+  }
 })
 
 test('public Host uses the real packaged runtime and a restarted Host reuses prepared assets offline', { skip: realAssets, timeout: 120000 }, async t => {

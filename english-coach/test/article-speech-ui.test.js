@@ -199,6 +199,55 @@ test('article playback rejection offers the same generated audio, and hiding rel
   assert.equal(api.revoked.length, 1)
 })
 
+test('pagehide and final unmount release the page session through the existing authenticated JSON transport', async t => {
+  const { ui, api } = await open(t)
+  await ui.click('播放'); await ready(ui, api)
+  const current = api.media.at(-1)
+  await ui.flush(() => current.onplaying())
+  await ui.flush(() => ui.window.dispatchEvent(new ui.window.Event('pagehide')))
+  const release = api.calls.find(value => value.command === 'speech.session.release')
+  assert.ok(release, 'closing a page releases its Host owner, not just the current task')
+  assert.deepEqual(release.payload, {})
+  assert.equal(release.options.keepalive, true)
+  assert.equal(release.options.headers['content-type'], 'application/json')
+  assert.match(release.options.headers['x-english-coach-speech-session'], /^[a-f0-9]{48}$/)
+  assert.ok(Buffer.byteLength(JSON.stringify(release.payload)) <= 4096)
+  assert.equal(current.src, '')
+  assert.equal(ui.field('文本进度').value, '0')
+  const before = api.calls.filter(value => value.command === 'speech.session.release').length
+  await ui.click('继续'); await ready(ui, api)
+  await ui.close()
+  assert.ok(api.calls.filter(value => value.command === 'speech.session.release').length > before, 'the last subscriber releases even without pagehide')
+})
+
+test('only an active visible Kokoro owner heartbeats through waiting, media and paused states', async t => {
+  const { ui, api } = await open(t)
+  const heartbeats = () => api.calls.filter(value => value.command === 'speech.session.touch')
+  await ui.poll()
+  assert.equal(heartbeats().length, 0, 'opening a learning page starts no session polling')
+  await ui.click('播放'); await ui.poll()
+  assert.ok(heartbeats().length > 0, 'queued or cold-loading owner renews its lease')
+  await ready(ui, api)
+  const current = api.media.at(-1)
+  await ui.flush(() => current.onplaying())
+  let count = heartbeats().length
+  await ui.poll()
+  assert.ok(heartbeats().length > count, 'delivered media keeps the same lightweight heartbeat')
+  await ui.click('暂停'); count = heartbeats().length
+  await ui.poll()
+  assert.ok(heartbeats().length > count, 'paused retained media still observes resource lifecycle')
+  assert.equal(api.media.length, 1)
+  assert.ok(heartbeats().every(value => Object.keys(value.payload).length === 0))
+  Object.defineProperty(ui.window.document, 'hidden', { configurable: true, value: true })
+  await ui.flush(() => ui.window.document.dispatchEvent(new ui.window.Event('visibilitychange')))
+  count = heartbeats().length; await ui.poll()
+  assert.equal(heartbeats().length, count, 'hidden owner releases and stops heartbeat')
+  Object.defineProperty(ui.window.document, 'hidden', { configurable: true, value: false })
+  await ui.input('音频来源', 'web-speech'); await ui.click('继续'); await ui.poll()
+  assert.equal(heartbeats().length, count, 'system source never polls Kokoro sessions')
+  assert.equal(api.synth.spoken.length, 1)
+})
+
 test('long English clauses and expanding numbers use bounded segments without omitting text', async t => {
   const api = fixture()
   const text = 'We watch the river, '.repeat(24) + 'and count 9876543210 '.repeat(8) + 'before the last boat leaves.'

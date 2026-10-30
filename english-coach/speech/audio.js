@@ -8,6 +8,7 @@ const invalid = () => failure('invalid_speech_request', '朗读参数无效；�
 const validHandle = payload => plain(payload) && Object.keys(payload).length === 1 && typeof payload.taskId === 'string' && /^[a-f0-9-]{36}$/.test(payload.taskId)
 const notFound = () => failure('speech_not_found', '朗读任务不存在或已过期。')
 const TTL_MS = 120_000
+const PAGE_LEASE_MS = 15_000
 const MAX_PAGES = 16
 const MAX_AUDIO_BYTES = 16 * 1024 * 1024
 const MAX_CACHE_BYTES = 64 * 1024 * 1024
@@ -33,6 +34,15 @@ export function createSpeechAudio({ assets, runtimeFactory } = {}) {
     queue = queue.filter(value => value !== task)
     task.payload = null
   }
+  function reapRuntime() {
+    if (invalidation) return invalidation
+    if (pages.size || !runtime && !active) return Promise.resolve()
+    const previousRuntime = runtime, previousTask = active
+    runtime = null; runtimeRoot = null
+    invalidation = (async () => { await previousRuntime?.dispose(); await previousTask?.done })()
+      .finally(() => { invalidation = null; pump() })
+    return invalidation
+  }
   function evict(key) {
     const entry = cache.get(key)
     if (!entry) return
@@ -40,9 +50,21 @@ export function createSpeechAudio({ assets, runtimeFactory } = {}) {
     cache.delete(key)
     for (const task of tasks.values()) if (task.cacheKey === key && task.phase === 'ready') remove(task)
   }
+  function releaseOwner(owner) {
+    for (const task of tasks.values()) if (task.owner === owner) remove(task)
+    for (const [key, entry] of cache) if (entry.owner === owner) evict(key)
+  }
+  function touch(owner) {
+    const page = pages.get(owner)
+    if (page) page.leaseExpires = Date.now() + PAGE_LEASE_MS
+  }
   function expire() {
+    for (const [owner, page] of pages) if (page.leaseExpires <= Date.now()) releaseOwner(owner)
     for (const task of tasks.values()) if (task.expires <= Date.now()) remove(task)
     for (const [key, entry] of cache) if (entry.expires <= Date.now()) evict(key)
+    // HTTP cannot detect a vanished page. Its bounded lease eventually releases
+    // only that owner, and the final owner reaps the actual worker as well.
+    void reapRuntime()
   }
   function retain(task, audio) {
     const ownerBytes = () => [...cache.values()].filter(entry => entry.owner === task.owner).reduce((total, entry) => total + entry.audio.length, 0)
@@ -114,7 +136,12 @@ export function createSpeechAudio({ assets, runtimeFactory } = {}) {
     const task = queue.splice(foreground < 0 ? 0 : foreground, 1)[0]
     if (!task) return
     active = task
-    task.done = run(task).finally(() => { active = null; pump() })
+    task.done = run(task).finally(() => {
+      // A page may replace its running block many times. Its latest pending
+      // request gets the next round, behind every other page already waiting.
+      queue = [...queue.filter(value => value.owner !== task.owner), ...queue.filter(value => value.owner === task.owner)]
+      active = null; pump()
+    })
   }
   return {
     request(owner, payload) {
@@ -126,9 +153,11 @@ export function createSpeechAudio({ assets, runtimeFactory } = {}) {
       if (disposed) return failure('RUNTIME_DISPOSED', '插件已停止，请重新打开后手动播放。')
       if (invalidation) return failure('speech_assets_changing', '共享朗读资源正在切换；请完成后重新点击播放。')
       expire()
+      if (invalidation) return failure('speech_assets_changing', '共享朗读资源正在切换；请完成后重新点击播放。')
       if (!pages.has(owner) && pages.size >= MAX_PAGES) return failure('speech_capacity', '朗读页面已达上限，请稍后手动重试。')
       const priority = payload.priority ?? 'foreground'
       let page = pages.get(owner)
+      const previousIndex = queue.indexOf(page?.[priority])
       if (priority === 'prefetch') {
         if (!page?.foreground?.delivered) return failure('speech_not_ready', '当前朗读音频尚未领取，不能预取下一句段。')
         if (page.prefetch) remove(page.prefetch)
@@ -140,7 +169,9 @@ export function createSpeechAudio({ assets, runtimeFactory } = {}) {
       const cacheKey = createHash('sha256').update(JSON.stringify([owner, assetManifest.id, assetManifest.revision, 'wav-f32-24k-v1', payload.text, payload.voice, payload.rate])).digest('hex')
       const task = { id: randomUUID(), owner, priority, delivered: false, cacheKey, payload: { text: payload.text, voice: payload.voice, rate: payload.rate }, phase: 'queued', error: null, epoch, expires: Date.now() + TTL_MS, controller: new AbortController() }
       page[priority] = task
-      tasks.set(task.id, task); pages.set(owner, page); queue.push(task)
+      tasks.set(task.id, task); pages.set(owner, page); touch(owner)
+      if (previousIndex < 0) queue.push(task)
+      else queue.splice(Math.min(previousIndex, queue.length), 0, task)
       pump()
       return success(snapshot(task))
     },
@@ -148,7 +179,9 @@ export function createSpeechAudio({ assets, runtimeFactory } = {}) {
       if (!validHandle(payload)) return invalid()
       expire()
       const task = tasks.get(payload.taskId)
-      return task?.owner === owner ? success(snapshot(task)) : notFound()
+      if (task?.owner !== owner) return notFound()
+      touch(owner)
+      return success(snapshot(task))
     },
     cancel(owner, payload) {
       if (!validHandle(payload)) return invalid()
@@ -164,9 +197,22 @@ export function createSpeechAudio({ assets, runtimeFactory } = {}) {
       expire()
       const task = tasks.get(payload.taskId)
       if (task?.owner !== owner) return notFound()
+      touch(owner)
       if (task.phase !== 'ready' || !cache.has(task.cacheKey)) return failure('speech_not_ready', '生成音频尚未就绪。')
       task.delivered = true
       return { ok: true, audio: cache.get(task.cacheKey).audio }
+    },
+    heartbeat(owner, payload) {
+      if (!plain(payload) || Object.keys(payload).length) return invalid()
+      expire()
+      touch(owner)
+      return success({ active: pages.has(owner), leaseMs: PAGE_LEASE_MS })
+    },
+    async release(owner, payload) {
+      if (!plain(payload) || Object.keys(payload).length) return invalid()
+      releaseOwner(owner)
+      await reapRuntime()
+      return success({ released: true })
     },
     invalidate() {
       if (invalidation) return invalidation
