@@ -459,16 +459,28 @@ window.__ModuleLoader__.load({
         : { error: '', status: '', manualPlay: false }
       const reportShort = (owner, change) => { if (shortFeedback?.owner === owner) Object.assign(shortFeedback, change) }
       const changedPreferences = new Set()
-      let readyKokoro = false
+      let kokoroResources = null, kokoroStatusUnconfirmed = false
       const preferences = { provider: 'kokoro', kokoroVoice: 'af_heart', voiceURI: null, rate: 1, voices: [], notice: '', error: '', localStatus: '', manualPlay: false }
-      const kokoroUnavailable = 'Kokoro 尚未准备。请先在朗读设置准备资源，再手动播放；不会自动下载或改用系统语音。'
+      const kokoroUnavailable = 'Kokoro 尚未准备。请先在「Kokoro 资源准备」准备资源，再手动播放；不会自动下载或改用系统语音。'
       const playbackIssue = () => {
         if (!['kokoro', 'web-speech'].includes(preferences.provider)) return '已保存的音频来源当前不可用，请重新选择来源。'
-        if (preferences.provider === 'kokoro') return KOKORO_VOICES.some(voice => voice.id === preferences.kokoroVoice) ? readyKokoro ? '' : kokoroUnavailable : '已保存的 Kokoro 音色当前不可用，请重新选择音色。'
+        if (preferences.provider === 'kokoro') {
+          if (!KOKORO_VOICES.some(voice => voice.id === preferences.kokoroVoice)) return '已保存的 Kokoro 音色当前不可用，请重新选择音色。'
+          if (kokoroStatusUnconfirmed) return 'Kokoro 资源状态暂未确认；请重试资源状态，手动播放时会重新检查。'
+          if (!kokoroResources) return '正在检查 Kokoro 资源；不会自动下载或发声。'
+          if (!kokoroResources.assetsReady) return kokoroUnavailable
+          return kokoroResources.runtimeAvailable ? '' : 'Kokoro 资源已校验，合成运行时尚不可用；请安装兼容插件后手动重试。'
+        }
         if (!available()) return t('noSpeech')
         if (!preferences.voices.length) return '暂无可用英语音色：当前设备没有本地英语 Shelley、Reed、Sandy，或声库尚未就绪；请重试声源。'
         if (!selectedVoice()) return preferences.voiceURI ? '偏好音色当前不可用，请重新选择；不会自动换声。' : '请选择本地英语音色，再手动播放。'
         return ''
+      }
+      function resourceStatus(status) {
+        if (status) kokoroResources = { assetsReady: status.assetsReady === true, runtimeAvailable: status.runtimeAvailable === true }
+        kokoroStatusUnconfirmed = !status
+        preferences.notice = playbackIssue()
+        emit()
       }
       function refreshVoices() {
         try {
@@ -719,8 +731,8 @@ window.__ModuleLoader__.load({
         try {
           const assets = await call('speech.assets.status', {}, { signal: value.controller.signal })
           if (!current()) return
+          resourceStatus(assets.ok ? assets.data : null)
           if (!assets.ok) { fail(assets.message); return }
-          readyKokoro = assets.data.assetsReady && assets.data.runtimeAvailable
           if (!assets.data.assetsReady) { fail(kokoroUnavailable); return }
           if (!assets.data.runtimeAvailable) { fail('Kokoro 合成运行时尚不可用；请安装兼容插件后手动重试。'); return }
           preferences.notice = ''
@@ -800,7 +812,7 @@ window.__ModuleLoader__.load({
       }
       function suspend() { if (active?.article) pause(active.article); if (active || shortFeedback) { cancel(); emit() } }
       const hidden = () => { if (document.hidden) suspend() }
-      return { article, pause, play, restart, seek, save, restore, preferences, configure, selectedVoice, refreshVoices, short, shortState, playLocal,
+      return { article, pause, play, restart, seek, save, restore, preferences, configure, selectedVoice, refreshVoices, resourceStatus, short, shortState, playLocal,
         stop() { if (active) { suspend(); emit() } },
         releaseArticle(value) { pause(value); if (active?.article === value) { cancel(); emit() } },
         release(owner) { if (active?.owner === owner || shortFeedback?.owner === owner) { cancel(); emit() } },
@@ -1463,6 +1475,7 @@ window.__ModuleLoader__.load({
         const request = ++order.current
         const result = await call('speech.assets.status')
         if (!mounted.current || request !== order.current) return
+        speech.resourceStatus(result.ok ? result.data : null)
         if (result.ok) { setAssets(result.data); setError(null) }
         else setError(result.message)
       }, [])
@@ -1486,6 +1499,7 @@ window.__ModuleLoader__.load({
         try {
           const result = await call(`speech.assets.${action}`)
           if (!mounted.current || request !== order.current) return
+          speech.resourceStatus(result.ok ? result.data : null)
           if (result.ok) setAssets(result.data)
           else setError(result.message)
         } finally { pending.current = false; if (mounted.current) setBusy(false) }

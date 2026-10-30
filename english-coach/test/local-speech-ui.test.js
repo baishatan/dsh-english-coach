@@ -93,6 +93,26 @@ test('replacement, hidden pages and unmount cancel only their own task and ignor
   assert.ok(cancels.every(value => /^task-\d+$/.test(value.payload.taskId)))
 })
 
+test('resource checks update readiness without clearing an actual audition media error', async t => {
+  const api = fixture(), request = api.request
+  api.setPhase('ready')
+  api.request = (command, payload, options) => command === 'speech.assets.check'
+    ? Promise.resolve({ ok: true, data: structuredClone(api.assets) }) : request(command, payload, options)
+  const ui = await mountClient({ request: api.request, setupWindow: api.setupWindow })
+  t.after(() => ui.close())
+  const settings = ui.container.querySelector('[aria-label="朗读设置"]')
+  assert.doesNotMatch(settings.textContent, /尚未准备/)
+  await ui.click('试听音色'); await ui.poll()
+  assert.equal(api.media.length, 1)
+  await ui.flush(() => api.media[0].onerror())
+  assert.match(settings.textContent, /播放失败/)
+  await ui.click('检查资源版本')
+  assert.match(settings.textContent, /播放失败/)
+  assert.doesNotMatch(settings.textContent, /尚未准备/)
+  assert.equal(api.calls.filter(value => value.command === 'speech.synthesize').length, 1)
+  assert.equal(api.calls.filter(value => value.command === 'speech.audio').length, 1)
+})
+
 test('manual Kokoro audition shows real waiting and only media events can mark playback', async t => {
   const api = fixture()
   const ui = await mountClient({ request: api.request, setupWindow: api.setupWindow })
