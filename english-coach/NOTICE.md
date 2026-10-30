@@ -25,3 +25,15 @@ ECDICT 来源为 [skywind3000/ECDICT 固定提交](<https://github.com/skywind30
 ## 图标
 
 `icon.svg` 为本项目原创。
+
+## 本地主机朗读运行时
+
+本项目代码的 MIT 许可不替代随包第三方代码、数据与图的许可。固定来源版本、逐文件校验和、原字节身份和本地导入路径修改记录见 [朗读来源清单](<speech/vendor/SOURCE.json>)。
+
+- 随包提供定向 Node ESM／CPU WASM 子树：ONNX Runtime Web／Common 1.31.1、`@titan-design/speech-g2p` 0.0.0 的本地 US／GB 前端、Misaki 英美词典、spaCy tokenizer 数据，以及 compromise 14.18.0、efrt 2.9.0、grad-school 0.0.9、suffix-thumb 6.0.0。原许可证、包元数据、README 和适用通知均保留；这些目录不是完整、可独立安装或任意切换 exports 的 npm 包。
+- Misaki 数据／规则适用 Apache-2.0，前端代码和 spaCy tokenizer 的许可与本地 US／GB 修改见 [前端 NOTICE](<speech/vendor/frontend/NOTICE>)、[MIT 正文](<speech/vendor/frontend/LICENSE>)及 [Apache 正文](<speech/vendor/frontend/LICENSE-APACHE-2.0>)。
+- 两个小型 G2P ONNX 为既有本地导出，**不是上游原发 ONNX**。原模型卡、固定 revision／权重身份、导出方式和图哈希见 [派生说明](<speech/vendor/exports/DERIVATIONS.json>)；该原记录中的 `gpl-free/` 图／许可路径在本包映射到 `speech/vendor/`，`notices/` 相对于 vendor 目录。Hermes 方法参考的 [MIT 原文](<speech/vendor/notices/Hermes-MIT.txt>)也保留。本包不要求用户运行 Python 或导出图。
+- ORT 的 [MIT 正文](<speech/vendor/ort/LICENSE>)及原 [ThirdPartyNotices](<speech/vendor/notices/onnxruntime-1.31.1-ThirdPartyNotices.txt>)随包保留。后者是上游仓库级 superset，不是本 WASM 的完整组成证明。**ORT／Eigen 等精确对应源码、构建工件映射及适用通知闭包仍待核验；本实现不表示完整无 GPL、全部 MIT 或正式分发许可已准入。**
+- 大型 Kokoro 权重与四声音色不随普通插件包提供。固定八项资源共 94,453,730 B，仅由 Host 的明确准备操作获取与校验；朗读运行时本身不会下载或修复资源。原 [Kokoro 许可](<speech/vendor/notices/Kokoro-LICENSE>)随包保留。
+
+运行时仅由 Host 构造 `createSpeechRuntime({ assetRoot })`，接收已准备的插件专属本地资源目录；每次 `synthesize({ text, voice, rate }, { signal }?)` 返回 24kHz 单声道 Float32 WAV Buffer。Host 负责上层分段与排队、会话归属和播放。本层只接收最多 400 字符／510 音素的小段，未读或未映射字符、超限内容会明确拒绝，不截断、不回退到系统／联网 TTS。当前保守字符范围不覆盖所有带重音拉丁词或货币符号。模型在首次合成才读取，默认空闲 30 秒终止子进程，`dispose()` 终止并等待退出；下载资源不删除，生成音频不写入磁盘。

@@ -1,0 +1,13 @@
+{
+  "accent": "gb",
+  "graphemes": "____AIQWYabdfhijklmnpstuvwz'-.BCDEFGHJKLMNOPRSTUVXZcegoqrxy",
+  "phonemes": "____AIQWYabdfhijklmnpstuvwzðŋɑɒɔəɛɜɡɪɹʃʊʌʒʤʧˈˌːθᵊ",
+  "bosId": 1,
+  "eosId": 2,
+  "startId": 1,
+  "unknownId": 3,
+  "maxLength": 64,
+  "forcedEosId": 2,
+  "vocabSize": 63,
+  "opset": 17
+}

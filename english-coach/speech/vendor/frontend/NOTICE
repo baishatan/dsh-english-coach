@@ -1,0 +1,43 @@
+@titan-design/speech-g2p vendors data derived from third-party projects.
+
+misaki (https://github.com/hexgrad/misaki), version 0.9.4
+  Files: data/us_gold.json, data/us_silver.json (verbatim from the wheel).
+  Licence: Apache License 2.0. Copyright the misaki authors.
+  The package's English G2P is a TypeScript port of misaki's en.py. The Apache-2.0
+  text is at https://www.apache.org/licenses/LICENSE-2.0
+
+spaCy (https://github.com/explosion/spaCy), version 3.8.16, and en_core_web_sm 3.8.0
+  Tokenizer rules and patterns, dumped into data/ by a later release of this package.
+  Licence: MIT. Copyright (C) Explosion AI GmbH.
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy of this
+  software and associated documentation files (the "Software"), to deal in the Software
+  without restriction, including without limitation the rights to use, copy, modify,
+  merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+  permit persons to whom the Software is furnished to do so, subject to the following
+  conditions: The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS",
+  WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+  WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+
+Local US/GB fork source clarification, 2026-10-30
+  Behaviour revisions were made locally on 2026-10-29; no upstream authorship is claimed.
+  Both US and GB dictionaries below are verbatim from hexgrad/misaki@fba1236595f2d2bf21d414ba6e57d25256afada3.
+  This extends the historical US-only data list above; it does not remove its attribution.
+  File: data/us_gold.json
+    Source: https://raw.githubusercontent.com/hexgrad/misaki/fba1236595f2d2bf21d414ba6e57d25256afada3/misaki/data/us_gold.json
+    SHA256: dc414872a49a28ae6c141463d502fd945f3b2fde040484fdc47d00cc4612686f (3000469 bytes)
+  File: data/us_silver.json
+    Source: https://raw.githubusercontent.com/hexgrad/misaki/fba1236595f2d2bf21d414ba6e57d25256afada3/misaki/data/us_silver.json
+    SHA256: de8f67be911bb6c659187b4a65fd966b6a30e56350e0f790d763210b053ac475 (3099517 bytes)
+  File: data/gb_gold.json
+    Source: https://raw.githubusercontent.com/hexgrad/misaki/fba1236595f2d2bf21d414ba6e57d25256afada3/misaki/data/gb_gold.json
+    SHA256: 29e62f4b60261c88f7f3c2c7811ca3825978948090b72d2b27d565b729282f71 (2838552 bytes)
+  File: data/gb_silver.json
+    Source: https://raw.githubusercontent.com/hexgrad/misaki/fba1236595f2d2bf21d414ba6e57d25256afada3/misaki/data/gb_silver.json
+    SHA256: 48131e2d92ccc41655f4543e87e0f938e71463eb5a54be7f0693bb712ebb6bce (3663898 bytes)
+  GB suffix-rule reference: https://raw.githubusercontent.com/hexgrad/misaki/fba1236595f2d2bf21d414ba6e57d25256afada3/misaki/en.py
+    SHA256: a9c36c90a3fa6c6084e9042fd8e19f6049add4f1435d8fe5ca1b77f3529a98f4
+  Licence declaration: Apache-2.0, as part of Misaki; full text: LICENSE-APACHE-2.0.
+  This records the fixed immediate source, not independently verified earlier word-list provenance.
+  Original MIT, Apache and spaCy attributions above are retained; no new copyright is invented.

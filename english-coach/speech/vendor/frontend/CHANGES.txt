@@ -1,0 +1,9 @@
+Isolated admission fork, 2026-10-29. Original: @titan-design/speech-g2p@0.0.0.
+Added British dictionary selection and the three suffix rules from fixed Misaki en.py.
+Compiled with Node24 stripTypeScriptTypes. No original files modified. Not a production frontend.
+
+2026-10-30 next experimental candidate, notices only:
+Added prominent local US/GB modification notices to engine.js, lexicon-data.js, lexicon.js and misaki-english.js.
+Preserved original comments as history and clarified that US-only scope is superseded.
+Extended NOTICE with fixed US/GB dictionary and GB suffix-rule origins.
+No frontend executable statement, data byte, graph, runtime, model or voice changed.

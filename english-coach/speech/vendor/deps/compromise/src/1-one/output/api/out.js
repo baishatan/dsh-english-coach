@@ -1,0 +1,106 @@
+import debug from './debug.js'
+import wrap from './wrap.js'
+import hash from '../methods/hash.js'
+import toSpec from './_spec.js'
+
+const isObject = val => {
+  return Object.prototype.toString.call(val) === '[object Object]'
+}
+
+// sort by frequency
+const topk = function (arr) {
+  const counts = new Map()
+  arr.forEach(word => {
+    counts.set(word, (counts.get(word) ?? 0) + 1)
+  })
+  const res = Array.from(counts, ([normal, count]) => ({ normal, count }))
+  return res.sort((a, b) => b.count - a.count)
+}
+
+/** some named output formats */
+const out = function (method) {
+  // support custom outputs
+  if (isObject(method)) {
+    return wrap(this, method)
+  }
+  // text out formats
+  if (method === 'text') {
+    return this.text()
+  }
+  if (method === 'normal') {
+    return this.text('normal')
+  }
+  if (method === 'root') {
+    return this.text('root')
+  }
+  if (method === 'machine' || method === 'reduced') {
+    return this.text('machine')
+  }
+  if (method === 'hash' || method === 'md5') {
+    return hash(this.text())
+  }
+  // tagged-sentence format for LLMs (see docs/spec-format.md)
+  if (method === 'spec') {
+    return toSpec(this, this.world)
+  }
+  // json data formats
+  if (method === 'json') {
+    return this.json()
+  }
+  if (method === 'offset' || method === 'offsets') {
+    this.compute('offset')
+    return this.json({ offset: true })
+  }
+  if (method === 'array') {
+    const arr = this.docs.map(terms => {
+      return terms
+        .reduce((str, t) => {
+          return str + t.pre + t.text + t.post
+        }, '')
+        .trim()
+    })
+    return arr.filter(str => str)
+  }
+  // return terms sorted by frequency
+  if (method === 'freq' || method === 'frequency' || method === 'topk') {
+    return topk(this.json({ normal: true }).map(o => o.normal))
+  }
+
+  // some handy ad-hoc outputs
+  if (method === 'terms') {
+    return this.docs.flatMap(terms => terms.map(t => t.text).filter(Boolean))
+  }
+  if (method === 'tags') {
+    return this.docs.map(terms => {
+      return terms.reduce((h, t) => {
+        h[t.implicit || t.normal] = Array.from(t.tags)
+        return h
+      }, {})
+    })
+  }
+  if (method === 'best-tag') {
+    this.compute('tagRank')
+    return this.docs
+      .map(ts => {
+        return ts.map(t => (t.tagRank?.[0] ? `#${t.tagRank[0]}` : '')).join(' ')
+      })
+      .join('\n')
+  }
+  if (method === 'debug') {
+    return this.debug() //allow
+  }
+  return this.text()
+}
+
+const methods = {
+  /** */
+  debug: debug,
+  /** */
+  out,
+  /** */
+  wrap: function (obj) {
+    return wrap(this, obj)
+  },
+}
+
+export default methods

@@ -1,0 +1,12 @@
+{
+  "rows": [
+    {
+      "accent": "us",
+      "graphSha256": "02850c2e6fb1d5643e6aa5efa77c82c7dea8eac4344839506f386079243a58c2"
+    },
+    {
+      "accent": "gb",
+      "graphSha256": "0fdbd7912e18114d32ce08ad188f2c7b791137e8b8c360baca54c26cb1f0a32d"
+    }
+  ]
+}
