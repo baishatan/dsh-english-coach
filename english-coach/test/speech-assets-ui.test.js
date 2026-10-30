@@ -109,6 +109,65 @@ test('准备遇到跨页变更时保留失败提示并刷新当前状态，不�
   assert.equal(api.calls.some(call => call.command === 'speech.assets.repair'), false)
 })
 
+test('另一页面刚开始准备且无取消权时可确认删除共享资源，取消确认无副作用', async t => {
+  const api = fixture(), request = api.request
+  api.setAssets({ phase: 'preparing', assetsReady: false, canCancel: false, downloadedBytes: 0, diskBytes: 0 })
+  api.request = async (command, payload, options) => {
+    if (command === 'speech.assets.delete') {
+      api.calls.push({ command, payload, options })
+      api.setAssets({ phase: 'unprepared', assetsReady: false, canCancel: false })
+      return request('speech.assets.status', {}, options)
+    }
+    return request(command, payload, options)
+  }
+  const ui = await mountClient({ request: api.request, setupWindow: api.setupWindow })
+  t.after(() => ui.close())
+  const section = ui.container.querySelector('[aria-label="Kokoro 资源准备"]')
+  assert.match(section.textContent, /另一页面正在准备/)
+  assert.equal(ui.buttons('取消准备').length, 0)
+  await ui.click('删除资源')
+  const dialog = ui.container.querySelector('[role="dialog"][aria-label="确认删除 Kokoro 资源"]')
+  assert.match(dialog.textContent, /共享.*主机|主机.*共享/)
+  await ui.click('暂不删除')
+  assert.equal(api.calls.some(call => call.command === 'speech.assets.delete'), false)
+  await ui.click('删除资源'); await ui.click('确认删除此主机 Kokoro 资源')
+  assert.equal(api.calls.filter(call => call.command === 'speech.assets.delete').length, 1)
+  assert.equal(ui.buttons('准备').length, 1)
+  assert.equal(api.calls.some(call => /speech\.assets\.prepare|speech\.synthesize/.test(call.command)), false)
+})
+
+test('跨页删除遇到慢状态响应时轮询不会饿死，最终恢复准备入口', async t => {
+  const api = fixture(), request = api.request, slow = []
+  api.setAssets({ phase: 'deleting', assetsReady: false, canCancel: false, diskBytes: 100 })
+  let delayStatus = false
+  api.request = (command, payload, options) => {
+    if (command === 'speech.assets.status' && delayStatus) {
+      const pending = deferred()
+      slow.push(pending)
+      return pending.promise
+    }
+    return request(command, payload, options)
+  }
+  const ui = await mountClient({ request: api.request, setupWindow: api.setupWindow })
+  t.after(async () => {
+    await ui.close()
+    for (const pending of slow) pending.resolve({ ok: false, message: 'fixture closed' })
+  })
+  const section = ui.container.querySelector('[aria-label="Kokoro 资源准备"]')
+  assert.match(section.textContent, /正在删除/)
+  delayStatus = true
+  await ui.poll() // 1s: first slow request starts
+  await ui.poll() // 2s: still pending; no overlapping status read
+  await ui.poll() // 3s: still pending
+  delayStatus = false
+  api.setAssets({ phase: 'unprepared', assetsReady: false, diskBytes: 0 })
+  await ui.flush(async () => slow[0].resolve(await request('speech.assets.status', {})))
+  assert.equal(ui.buttons('准备').length, 1, 'a slow response still updates the visible state')
+  assert.doesNotMatch(section.textContent, /正在删除/)
+  assert.equal(slow.length, 1, 'status reads are single-flight rather than an unbounded queue')
+  assert.equal(api.calls.some(call => /speech\.assets\.(prepare|delete)|speech\.synthesize/.test(call.command)), false)
+})
+
 test('跨页删除进行中继续读取直至完成，中断残留可确认删除，修复失败可重试', async t => {
   const api = fixture()
   api.setAssets({ phase: 'deleting', assetsReady: false, canCancel: false, diskBytes: 100 })
@@ -272,6 +331,67 @@ test('resource repair discloses the fixed target and shared-host impact before e
   assert.equal(api.calls.filter(call => call.command === 'speech.assets.repair').length, 1)
   assert.equal(api.spoken.length, 0)
   assert.equal(api.calls.filter(call => /settings.save|review.answer|lesson.complete|speech.synth/.test(call.command)).length, 0)
+})
+
+test('过期的慢状态读取结束后，切回本地仍会按最新共享状态刷新', async t => {
+  const api = fixture(), request = api.request, slow = deferred()
+  api.setAssets({ phase: 'downloading', assetsReady: false, canCancel: true, downloadedBytes: 100 })
+  let delayStatus = false
+  api.request = (command, payload, options) => command === 'speech.assets.status' && delayStatus
+    ? slow.promise : request(command, payload, options)
+  const ui = await mountClient({ request: api.request, setupWindow: api.setupWindow })
+  t.after(async () => { await ui.close(); slow.resolve({ ok: false, message: 'fixture closed' }) })
+  const section = ui.container.querySelector('[aria-label="Kokoro 资源准备"]')
+  delayStatus = true
+  await ui.poll()
+  delayStatus = false
+  await ui.click('取消准备')
+  api.setAssets({ phase: 'ready', assetsReady: true, runtimeAvailable: true, canCancel: false })
+  await ui.input('英语音色', 'system:fixture-system')
+  await ui.input('英语音色', 'kokoro:af_heart')
+  await ui.flush(() => slow.resolve({ ok: true, data: {
+    phase: 'downloading', assetsReady: false, canCancel: true, downloadedBytes: 100,
+    manifest: { revision: 'fixture', downloadBytes: 94453730 }
+  } }))
+  assert.match(section.textContent, /资源已校验/)
+  assert.equal(ui.buttons('删除资源').length, 1)
+  assert.equal(ui.buttons('准备').length, 0)
+  assert.equal(api.calls.some(call => /speech\.assets\.(prepare|delete)|speech\.synthesize/.test(call.command)), false)
+})
+
+test('慢状态读取早于明确取消或删除时不能覆盖用户操作结果', async t => {
+  for (const action of ['cancel', 'delete']) {
+    const api = fixture(), request = api.request, slow = deferred()
+    api.setAssets({ phase: 'downloading', assetsReady: false, canCancel: true, downloadedBytes: 100 })
+    let delayStatus = false
+    api.request = (command, payload, options) => {
+      if (command === 'speech.assets.status' && delayStatus) return slow.promise
+      if (command === 'speech.assets.delete') {
+        api.calls.push({ command, payload, options })
+        api.setAssets({ phase: 'unprepared', assetsReady: false, canCancel: false, downloadedBytes: 0 })
+        return request('speech.assets.status', {}, options)
+      }
+      return request(command, payload, options)
+    }
+    const ui = await mountClient({ request: api.request, setupWindow: api.setupWindow })
+    t.after(async () => { await ui.close(); slow.resolve({ ok: false, message: 'fixture closed' }) })
+    const section = ui.container.querySelector('[aria-label="Kokoro 资源准备"]')
+    delayStatus = true
+    await ui.poll()
+    delayStatus = false
+    if (action === 'cancel') await ui.click('取消准备')
+    else { await ui.click('删除资源'); await ui.click('确认删除此主机 Kokoro 资源') }
+    assert.equal(api.calls.filter(call => call.command === `speech.assets.${action}`).length, 1)
+    assert.match(section.textContent, action === 'cancel' ? /已取消/ : /尚未准备/)
+    await ui.flush(() => slow.resolve({ ok: true, data: {
+      phase: 'downloading', assetsReady: false, canCancel: true, downloadedBytes: 100,
+      manifest: { revision: 'fixture', downloadBytes: 94453730 }
+    } }))
+    assert.doesNotMatch(section.textContent, /下载中/)
+    assert.match(section.textContent, action === 'cancel' ? /已取消/ : /尚未准备/)
+    assert.equal(ui.buttons('准备').length, 1)
+    await ui.close()
+  }
 })
 
 test('confirmed deletion during a download cannot lose its final result to the existing progress poll', async t => {

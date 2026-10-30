@@ -1519,16 +1519,28 @@ window.__ModuleLoader__.load({
     function SpeechAssetsPreparation() {
       const audio = useSpeech(), resourceEpoch = audio.preferences.resourceEpoch
       const [assets, setAssets] = useState(null), [error, setError] = useState(null), [busy, setBusy] = useState(false), [confirmRepair, setConfirmRepair] = useState(false), [confirmDelete, setConfirmDelete] = useState(false)
-      const mounted = useRef(false), order = useRef(0), pending = useRef(false), section = useRef(null), previousProvider = useRef(audio.preferences.provider)
+      const mounted = useRef(false), order = useRef(0), pending = useRef(false), reading = useRef(false), refreshAfterRead = useRef(false), section = useRef(null), previousProvider = useRef(audio.preferences.provider)
       const active = assets && ['preparing', 'downloading', 'validating', 'activating'].includes(assets.phase)
-      const read = useCallback(async () => {
+      const read = useCallback(async (refresh = false) => {
         if (pending.current) return
+        if (reading.current) {
+          if (refresh) refreshAfterRead.current = true
+          return
+        }
+        reading.current = true
         const request = ++order.current
-        const result = await call('speech.assets.status')
-        if (!mounted.current || request !== order.current) return
-        speech.resourceStatus(result.ok ? result.data : null)
-        if (result.ok) { setAssets(result.data); setError(null) }
-        else setError(result.message)
+        try {
+          const result = await call('speech.assets.status')
+          if (!mounted.current || request !== order.current) return
+          speech.resourceStatus(result.ok ? result.data : null)
+          if (result.ok) { setAssets(result.data); setError(null) }
+          else setError(result.message)
+        } finally {
+          reading.current = false
+          const again = refreshAfterRead.current
+          refreshAfterRead.current = false
+          if (again && mounted.current && !pending.current) void read()
+        }
       }, [])
       useEffect(() => {
         mounted.current = true
@@ -1540,10 +1552,10 @@ window.__ModuleLoader__.load({
         previousProvider.current = audio.preferences.provider
         // Other pages may prepare or remove shared resources while this view
         // is hidden. A pending confirmed action supplies its own final status.
-        if (previous !== 'kokoro' && audio.preferences.provider === 'kokoro' && !pending.current) void read()
+        if (previous !== 'kokoro' && audio.preferences.provider === 'kokoro' && !pending.current) void read(true)
       }, [audio.preferences.provider, read])
       useEffect(() => {
-        const refresh = () => { if (audio.preferences.provider === 'kokoro' && !document.hidden) void read() }
+        const refresh = () => { if (audio.preferences.provider === 'kokoro' && !document.hidden) void read(true) }
         const settings = section.current?.closest('section[aria-label="朗读设置"]')
         const focusVoice = event => { if (event.target.matches('select[aria-label="英语音色"]')) refresh() }
         window.addEventListener('focus', refresh)
@@ -1554,16 +1566,17 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         // Resource invalidation wakes the existing status read once. The
         // caller's in-flight confirmed action supplies its own final result.
-        if (resourceEpoch && !pending.current) void read()
+        if (resourceEpoch && !pending.current) void read(true)
       }, [read, resourceEpoch])
       useEffect(() => {
         if (!active && assets?.phase !== 'deleting') return
-        const timer = setInterval(read, 1000)
+        const timer = setInterval(() => { void read() }, 1000)
         return () => clearInterval(timer)
       }, [active, assets?.phase, read])
       async function act(action) {
         if (pending.current) return
         pending.current = true
+        refreshAfterRead.current = false
         setConfirmRepair(false); setConfirmDelete(false)
         if (action === 'delete') speech.resourceInvalidation({ assetsReady: false, resourceGeneration: null })
         const request = ++order.current
@@ -1613,12 +1626,12 @@ window.__ModuleLoader__.load({
             h(Btn, { small: true, disabled: busy, onClick: () => setConfirmDelete(false) }, '暂不删除'),
             h(Btn, { small: true, disabled: busy, onClick: () => act('delete') }, '确认删除此主机 Kokoro 资源'))) : null,
         h('div', { className: 'ec-row', style: { marginTop: 10 } },
-          assets && (assets.assetsReady || assets.repairRequired || assets.downloadedBytes > 0 || assets.diskBytes > 0 || assets.phase === 'error' || assets.phase === 'deleting') ? h(Btn, { small: true, disabled: busy || assets.phase === 'deleting', onClick: () => { setConfirmRepair(false); setConfirmDelete(true) } }, '删除资源') : null,
+          assets && (active || assets.assetsReady || assets.repairRequired || assets.downloadedBytes > 0 || assets.diskBytes > 0 || assets.phase === 'error' || assets.phase === 'deleting') ? h(Btn, { small: true, disabled: busy || assets.phase === 'deleting', onClick: () => { setConfirmRepair(false); setConfirmDelete(true) } }, '删除资源') : null,
           active ? assets.canCancel ? h(Btn, { small: true, disabled: busy, onClick: () => act('cancel') }, '取消准备') : h('span', { className: 'ec-muted' }, '另一页面正在准备；仅该页面可取消。') :
           assets && !assets.assetsReady && !assets.repairRequired && assets.phase !== 'deleting' ? h(Btn, { primary: true, small: true, disabled: busy, onClick: () => act('prepare') }, '准备') : null,
           !active && assets && (assets.repairRequired || assets.phase === 'error') ? h(Btn, { small: true, disabled: busy, onClick: () => act('check') }, '检查资源版本') : null,
           !active && (assets?.repairRequired || assets?.operation === 'repair' && ['error', 'cancelled', 'interrupted'].includes(assets.phase)) ? h(Btn, { small: true, disabled: busy, onClick: () => setConfirmRepair(true) }, '修复') : null,
-          !active && error ? h(Btn, { small: true, disabled: busy, onClick: read }, '重试资源状态') : null))
+          !active && error ? h(Btn, { small: true, disabled: busy, onClick: () => { void read(true) } }, '重试资源状态') : null))
     }
 
     function SpeechOptions() {
