@@ -9,14 +9,15 @@ const { JSDOM } = require('jsdom')
 const React = require('react')
 const { act } = React
 let createRoot
+const environments = []
+let originalGlobals
 
 export async function mountClient({ request, slot = 'main', setupWindow, layout } = {}) {
   const dom = new JSDOM('<!doctype html><div id="test-root"></div>', { url: 'http://localhost/', pretendToBeVisual: true })
-  const previous = new Map()
-  for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, navigator: dom.window.navigator, HTMLElement: dom.window.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true })) {
-    previous.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value })
-  }
+  const environment = { window: dom.window, document: dom.window.document, navigator: dom.window.navigator, HTMLElement: dom.window.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true }
+  if (!environments.length) originalGlobals = new Map(Object.keys(environment).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]))
+  environments.push(environment)
+  for (const [key, value] of Object.entries(environment)) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value })
   // React DOM detects browser input support at import time, after the DOM exists.
   createRoot ??= require('react-dom/client').createRoot
   setupWindow?.(dom.window)
@@ -92,9 +93,15 @@ export async function mountClient({ request, slot = 'main', setupWindow, layout 
       closed = true
       await act(async () => root.unmount())
       dom.window.close()
-      for (const [key, descriptor] of previous) {
-        if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-        else delete globalThis[key]
+      environments.splice(environments.indexOf(environment), 1)
+      if (environments.length) {
+        for (const [key, value] of Object.entries(environments.at(-1))) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value })
+      } else {
+        for (const [key, descriptor] of originalGlobals) {
+          if (descriptor) Object.defineProperty(globalThis, key, descriptor)
+          else delete globalThis[key]
+        }
+        originalGlobals = null
       }
     }
   }
