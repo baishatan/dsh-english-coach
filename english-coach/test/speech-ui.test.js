@@ -38,6 +38,7 @@ function fixture() {
     if (command === 'state.get') return { ok: true, data: structuredClone(state) }
     if (command === 'review.list') return { ok: true, data: { items: words, dueCount: 1 } }
     if (command === 'settings.get') return { ok: true, data: structuredClone(state.settings) }
+    if (command === 'speech.assets.status') return { ok: true, data: { phase: 'unprepared', assetsReady: false, runtimeAvailable: false, manifest: { revision: '1939ad2a8e416c0acfeecc08a694d14ef25f2231', downloadBytes: 94453730 }, downloadedBytes: 0, validatedBytes: 0, diskBytes: 0, canCancel: false } }
     if (command === 'settings.save') { Object.assign(state.settings.audio, payload.audio); return { ok: true, data: state.settings } }
     if (command === 'audio.bookmark.get') {
       const saved = bookmarks.get(payload.materialId)
@@ -78,7 +79,7 @@ test('新学习者在独立来源菜单看到Kokoro四声和未准备状态，�
   assert.equal(synth.spoken.length, 0, 'unprepared Kokoro never uses a system fallback')
   assert.match(ui.text(), /Kokoro.*未准备/)
   assert.equal(api.state.settings.audio.kokoroVoice, 'bm_george')
-  assert.deepEqual(api.calls.filter(({ command }) => !['state.get', 'review.list', 'study.batch', 'settings.get', 'settings.save', 'audio.bookmark.get', 'job.status'].includes(command)), [])
+  assert.deepEqual(api.calls.filter(({ command }) => !['state.get', 'review.list', 'study.batch', 'settings.get', 'settings.save', 'audio.bookmark.get', 'job.status', 'speech.assets.status'].includes(command)), [])
   assert.deepEqual(api.calls.filter(({ command }) => command === 'settings.save').map(({ payload }) => payload), [{ audio: { kokoroVoice: 'bm_george' } }, { audio: { rate: 0.5 } }])
 })
 
