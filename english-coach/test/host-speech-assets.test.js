@@ -290,6 +290,33 @@ test('removing a ready directory invalidates cached readiness without downloadin
   assert.equal(missing.phase, 'unprepared')
 })
 
+test('confirmed resource removal deletes the prepared physical assets without changing learning files', {
+  skip: !process.env.ENGLISH_COACH_TEST_ASSETS && 'Requires explicit verified assets fixture'
+}, async t => {
+  let downloads = 0
+  const h = await host(t, { download: (asset, { signal }) => {
+    downloads++
+    return createReadStream(join(process.env.ENGLISH_COACH_TEST_ASSETS, asset.path), { signal })
+  } })
+  await h.request('settings.save', { audio: { provider: 'kokoro', kokoroVoice: 'af_heart', rate: 1.5 } })
+  const learningBefore = await Promise.all((await fs.readdir(h.root)).sort().map(async name => [name, await fs.readFile(join(h.root, name))]))
+  await h.request('speech.assets.prepare')
+  const prepared = await settle(h, 'ready')
+  const owned = join(h.speechRoot, prepared.manifest.id)
+  assert.ok((await fs.stat(join(owned, 'onnx/model_quantized.onnx'))).size > 90_000_000)
+  const removed = await h.request('speech.assets.delete')
+  assert.equal(removed.ok, true, JSON.stringify(removed))
+  assert.equal(removed.data.phase, 'unprepared')
+  assert.equal(removed.data.assetsReady, false)
+  assert.equal(removed.data.resourceGeneration, null)
+  assert.equal(removed.data.diskBytes, 0)
+  await assert.rejects(fs.access(owned), { code: 'ENOENT' })
+  assert.deepEqual(await fs.readdir(h.speechRoot), [])
+  assert.deepEqual(await Promise.all((await fs.readdir(h.root)).sort().map(async name => [name, await fs.readFile(join(h.root, name))])), learningBefore)
+  assert.equal((await h.request('speech.assets.status')).data.assetsReady, false)
+  assert.equal(downloads, 8, 'delete and status never grant another download')
+})
+
 test('an explicit repair replaces a corrupt owned set with all eight fixed assets and survives restart', {
   skip: !process.env.ENGLISH_COACH_TEST_ASSETS && 'Requires explicit verified assets fixture'
 }, async t => {

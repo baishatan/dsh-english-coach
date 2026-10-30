@@ -488,6 +488,20 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
       job.done = run(job)
       return success(snapshot(owner))
     },
+    async delete(owner) {
+      try {
+        const sets = await replacements()
+        for (const entry of sets.directories) await removeOwned(entry)
+        state = { ...state, phase: 'unprepared', assetsReady: false, resourceGeneration: null, generation: null,
+          repairRequired: false, diskBytesKnown: true, diskBytes: 0, downloadedBytes: 0, validatedBytes: 0, currentFile: null, error: null }
+        verifiedFingerprint = null
+        return success(snapshot(owner))
+      } catch (cause) {
+        const described = describeError(cause)
+        state = { ...state, phase: 'error', error: described }
+        return failure(described.code, described.message)
+      }
+    },
     async cancel(owner) {
       if (!task) return success(snapshot(owner))
       if (task.owner !== owner) return failure('speech_not_owner', '只能取消本页面发起的准备。')

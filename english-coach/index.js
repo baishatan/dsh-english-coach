@@ -869,8 +869,8 @@ export function apply(ctx, config) {
               if (command === 'speech.assets.status' || command === 'speech.assets.check') {
                 return sendJson(res, 200, { ok: true, data: await speechAssetStatus(speechOwner), warnings: [] })
               }
-              if (command === 'speech.assets.prepare' || command === 'speech.assets.cancel' || command === 'speech.assets.repair') {
-                const result = command === 'speech.assets.prepare' ? await speechAssets.prepare(speechOwner) : command === 'speech.assets.repair' ? await speechAssets.repair(speechOwner) : await speechAssets.cancel(speechOwner)
+              if (command === 'speech.assets.prepare' || command === 'speech.assets.cancel' || command === 'speech.assets.repair' || command === 'speech.assets.delete') {
+                const result = command === 'speech.assets.prepare' ? await speechAssets.prepare(speechOwner) : command === 'speech.assets.repair' ? await speechAssets.repair(speechOwner) : command === 'speech.assets.delete' ? await speechAssets.delete(speechOwner) : await speechAssets.cancel(speechOwner)
                 if (result.ok) result.data = { ...result.data, runtimeAvailable: await runtimeAvailable() }
                 return sendJson(res, 200, result)
               }
