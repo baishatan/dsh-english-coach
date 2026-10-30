@@ -6,6 +6,7 @@ import { execute } from './core/index.js'
 import { dateOf } from './core/constants.js'
 import { readJson, writeJson } from './core/store.js'
 import { createSpeechAssets } from './speech/assets.js'
+import { createSpeechAudio } from './speech/audio.js'
 
 /**
  * Host half of 英语教练.
@@ -54,7 +55,18 @@ export function apply(ctx, config) {
     root: config?.speechRoot ?? join(DSH_HOME, 'english-coach', 'speech'),
     download: config?.speechDownload
   })
-  ctx.effect(() => () => speechAssets.dispose())
+  const speechAudio = createSpeechAudio({ assets: speechAssets, runtimeFactory: config?.speechRuntimeFactory })
+  let runtimeCapability
+  const runtimeAvailable = () => runtimeCapability ??= typeof config?.speechRuntimeFactory === 'function' ? Promise.resolve(true) : Promise.all([
+    'runtime.js', 'worker.js', 'vendor/SOURCE.json', 'vendor/frontend.mjs', 'vendor/word-g2p.mjs',
+    'vendor/exports/us/g2p.onnx', 'vendor/exports/gb/g2p.onnx',
+    'vendor/ort/dist/ort.node.min.mjs', 'vendor/ort/dist/ort-wasm-simd-threaded.mjs', 'vendor/ort/dist/ort-wasm-simd-threaded.wasm'
+  ].map(async path => {
+    const stat = await nodeFs.stat(new URL(`./speech/${path}`, import.meta.url))
+    if (!stat.isFile() || !stat.size) throw new Error('missing runtime file')
+  })).then(() => true, () => false)
+  const speechAssetStatus = async owner => ({ ...await speechAssets.status(owner), runtimeAvailable: await runtimeAvailable() })
+  ctx.effect(() => async () => { await speechAudio.dispose(); await speechAssets.dispose() })
   const jobsFile = () => join(root, 'jobs.json')
   const state = { promptLine: '' }
   let automationSynced = false
@@ -813,9 +825,10 @@ export function apply(ctx, config) {
               message: '只接受 POST'
             })
           }
+          const isSpeech = command.startsWith('speech.')
           const isSpeechAssets = command.startsWith('speech.assets.')
           let speechOwner = null
-          if (isSpeechAssets) {
+          if (isSpeech) {
             const connection = ctx.get('connection')
             if (!connection?.admit) return sendJson(res, 503, { ok: false, code: 'speech_access_unavailable', message: '宿主认证尚未就绪，请稍后重试。' })
             const admission = connection.admit(req)
@@ -830,7 +843,7 @@ export function apply(ctx, config) {
           try {
             for await (const chunk of req) {
               body += chunk
-              if (body.length > (isSpeechAssets ? 1024 : 4_000_000)) throw new Error('too large')
+              if (Buffer.byteLength(body) > (isSpeech ? 4096 : 4_000_000)) throw new Error('too large')
             }
           } catch {
             return sendJson(res, 413, { ok: false, code: 'body_too_large', message: '请求体过大' })
@@ -853,11 +866,29 @@ export function apply(ctx, config) {
                 return sendJson(res, 400, { ok: false, code: 'invalid_speech_request', message: '朗读资源操作不接受路径、地址或其他参数。' })
               }
               if (command === 'speech.assets.status') {
-                return sendJson(res, 200, { ok: true, data: await speechAssets.status(speechOwner), warnings: [] })
+                return sendJson(res, 200, { ok: true, data: await speechAssetStatus(speechOwner), warnings: [] })
               }
-              if (command === 'speech.assets.prepare') return sendJson(res, 200, await speechAssets.prepare(speechOwner))
-              if (command === 'speech.assets.cancel') return sendJson(res, 200, await speechAssets.cancel(speechOwner))
+              if (command === 'speech.assets.prepare' || command === 'speech.assets.cancel') {
+                const result = command === 'speech.assets.prepare' ? await speechAssets.prepare(speechOwner) : await speechAssets.cancel(speechOwner)
+                if (result.ok) result.data = { ...result.data, runtimeAvailable: await runtimeAvailable() }
+                return sendJson(res, 200, result)
+              }
               return sendJson(res, 400, { ok: false, code: 'unknown_speech_command', message: '不支持的朗读资源操作。' })
+            }
+            if (isSpeech) {
+              const result = command === 'speech.synthesize' ? speechAudio.request(speechOwner, payload)
+                : command === 'speech.status' ? speechAudio.status(speechOwner, payload)
+                  : command === 'speech.audio' ? speechAudio.audio(speechOwner, payload)
+                    : command === 'speech.cancel' ? speechAudio.cancel(speechOwner, payload)
+                      : { ok: false, code: 'unknown_speech_command', message: '不支持的朗读操作。' }
+              if (result.ok && result.audio) {
+                res.statusCode = 200
+                res.setHeader('content-type', 'audio/wav')
+                res.setHeader('cache-control', 'no-store')
+                res.setHeader('x-content-type-options', 'nosniff')
+                return res.end(result.audio)
+              }
+              return sendJson(res, result.ok ? 200 : result.code === 'speech_not_found' ? 404 : 400, result)
             }
             const result = await dispatch(command, payload)
             await refreshPromptLine()
