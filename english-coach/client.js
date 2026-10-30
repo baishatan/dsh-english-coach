@@ -453,11 +453,12 @@ window.__ModuleLoader__.load({
       }
       let active = null, token = 0, loaded = false, settingsWrites = Promise.resolve()
       const changedPreferences = new Set()
+      let readyKokoro = false
       const preferences = { provider: 'kokoro', kokoroVoice: 'af_heart', voiceURI: null, rate: 1, voices: [], notice: '', error: '', localStatus: '', manualPlay: false }
       const kokoroUnavailable = 'Kokoro 尚未准备。请先在朗读设置准备资源，再手动播放；不会自动下载或改用系统语音。'
       const playbackIssue = () => {
         if (!['kokoro', 'web-speech'].includes(preferences.provider)) return '已保存的音频来源当前不可用，请重新选择来源。'
-        if (preferences.provider === 'kokoro') return KOKORO_VOICES.some(voice => voice.id === preferences.kokoroVoice) ? kokoroUnavailable : '已保存的 Kokoro 音色当前不可用，请重新选择音色。'
+        if (preferences.provider === 'kokoro') return KOKORO_VOICES.some(voice => voice.id === preferences.kokoroVoice) ? readyKokoro ? '' : kokoroUnavailable : '已保存的 Kokoro 音色当前不可用，请重新选择音色。'
         if (!available()) return t('noSpeech')
         if (!preferences.voices.length) return '暂无可用英语音色：当前设备没有本地英语 Shelley、Reed、Sandy，或声库尚未就绪；请重试声源。'
         if (!selectedVoice()) return preferences.voiceURI ? '偏好音色当前不可用，请重新选择；不会自动换声。' : '请选择本地英语音色，再手动播放。'
@@ -552,7 +553,7 @@ window.__ModuleLoader__.load({
         emit()
       }
       function play(value) {
-        const issue = playbackIssue()
+        const issue = playbackIssue() || (preferences.provider === 'kokoro' ? 'Kokoro 文章播放尚未接入；可先试听或朗读短词，也可手动选择系统语音。文本位置已保留。' : '')
         if (issue) { value.status = 'error'; value.error = issue; emit(); return }
         if (!value.segments.length) return
         if (active?.article === value && value.status === 'paused') {
@@ -636,6 +637,7 @@ window.__ModuleLoader__.load({
           const assets = await call('speech.assets.status', {}, { signal: value.controller.signal })
           if (!current()) return
           if (!assets.ok) { fail(assets.message); return }
+          readyKokoro = assets.data.assetsReady && assets.data.runtimeAvailable
           if (!assets.data.assetsReady) { fail(kokoroUnavailable); return }
           if (!assets.data.runtimeAvailable) { fail('Kokoro 合成运行时尚不可用；请安装兼容插件后手动重试。'); return }
           preferences.notice = ''

@@ -190,6 +190,47 @@ test('global cache pressure, page capacity and task deadlines stay bounded throu
   assert.equal(disposeDone, true)
 })
 
+test('public Host uses the real packaged runtime and a restarted Host reuses prepared assets offline', { skip: realAssets, timeout: 120000 }, async t => {
+  const h = await prepared(t)
+  const status = await h.request('speech.assets.status')
+  assert.equal(status.data.runtimeAvailable, true)
+  const settings = await h.request('settings.get')
+  const records = []
+  async function generate(current, voice, rate) {
+    const startedAt = performance.now()
+    const job = await current.request('speech.synthesize', { text: 'Opportunity.', voice, rate })
+    assert.equal(job.data.phase, 'queued')
+    await waitFor(() => current.request('speech.status', { taskId: job.data.taskId }), value => value.data?.phase === 'ready', `real runtime ${voice} ${rate}`)
+    const audio = await current.request('speech.audio', { taskId: job.data.taskId })
+    assert.equal(audio.httpStatus, 200)
+    assert.equal(audio.bytes.toString('ascii', 0, 4), 'RIFF')
+    assert.equal(audio.bytes.readUInt16LE(20), 3)
+    assert.equal(audio.bytes.readUInt16LE(22), 1)
+    assert.equal(audio.bytes.readUInt32LE(24), 24000)
+    assert.equal(audio.bytes.readUInt32LE(40), audio.bytes.length - 44)
+    let peak = 0
+    for (let n = 44; n < audio.bytes.length; n += 4) {
+      const value = audio.bytes.readFloatLE(n)
+      assert.ok(Number.isFinite(value)); peak = Math.max(peak, Math.abs(value))
+    }
+    assert.ok(peak > 0.00001)
+    records.push({ voice, rate, bytes: audio.bytes.length, peak, elapsedMs: Math.round(performance.now() - startedAt) })
+    return job.data.taskId
+  }
+  const oldTask = await generate(h, 'af_heart', 1)
+  await generate(h, 'am_michael', 0.5)
+  await generate(h, 'bf_emma', 1.5)
+  await generate(h, 'bm_george', 2)
+  assert.deepEqual((await h.request('settings.get')).data, settings.data)
+  await h.dispose()
+  const reboot = await host(t, { directory: h.base, download() { assert.fail('restarted synthesis must not download') } })
+  assert.equal((await reboot.request('speech.status', { taskId: oldTask })).httpStatus, 404)
+  assert.equal((await reboot.request('speech.assets.status')).data.assetsReady, true)
+  await generate(reboot, 'bf_emma', 1)
+  assert.deepEqual((await reboot.request('settings.get')).data, settings.data)
+  t.diagnostic(JSON.stringify({ actualPublicHostWav: records }))
+})
+
 test('all speech operations fail closed and reject paths, invalid voices, oversized text and cross-page handles', async t => {
   const h = await host(t)
   const started = await h.request('speech.synthesize', sample)

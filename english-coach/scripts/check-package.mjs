@@ -40,7 +40,7 @@ assert.ok(sourceManifest.engines?.dsh, 'Declare engines.dsh')
 for (const file of ['index.js', 'client.js', 'package.json', 'cordis.patch.yml',
   'locale/en.json', 'locale/zh.json', 'icon.svg', 'README.md', 'NOTICE.md', 'LICENSE',
   'data/wordlists.json', 'data/manifest.json', 'data/ECDICT-LICENSE.txt', 'data/NOTICE.md',
-  'speech/assets.js', 'speech/asset-manifest.js']) {
+  'speech/assets.js', 'speech/asset-manifest.js', 'speech/audio.js']) {
   assert.ok(listed.has(file), `Published archive is missing ${file}`)
 }
 for (const file of await fs.readdir(join(root, 'core'))) {

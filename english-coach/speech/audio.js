@@ -54,10 +54,14 @@ export function createSpeechAudio({ assets, runtimeFactory } = {}) {
 
   async function run(task) {
     try {
-      const assetRoot = await assets.getReadyRoot()
+      // A synthesis click never waits for or subscribes to a preparation job.
+      // Completion remains silent; only a later explicit click can use it.
+      const status = await assets.status(task.owner)
+      const assetRoot = status.assetsReady ? await assets.getReadyRoot() : null
       if (!live(task)) return
       if (!assetRoot) {
         task.phase = 'error'
+        task.payload = null
         task.error = { code: 'ASSETS_NOT_READY', message: 'Kokoro 尚未准备；请先明确准备资源，再手动播放。' }
         return
       }
@@ -104,7 +108,7 @@ export function createSpeechAudio({ assets, runtimeFactory } = {}) {
     request(owner, payload) {
       if (!plain(payload) || Object.keys(payload).sort().join(',') !== 'rate,text,voice' ||
           typeof payload.text !== 'string' || !payload.text.trim() || payload.text.length > 400 ||
-          !/[A-Za-z0-9]/.test(payload.text) || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u3400-\u9fff]/.test(payload.text) ||
+          !/[A-Za-z0-9]/.test(payload.text) || !/^[\x20-\x7e\t\r\n\u00a0\u00a3\u2010-\u2015\u2018-\u201f\u2026]+$/.test(payload.text) ||
           !assetManifest.voices.includes(payload.voice) || ![0.5, 1, 1.5, 2].includes(payload.rate)) return invalid()
       if (disposed) return failure('RUNTIME_DISPOSED', '插件已停止，请重新打开后手动播放。')
       expire()
