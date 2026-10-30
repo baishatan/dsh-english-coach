@@ -1,17 +1,17 @@
 import assert from 'node:assert/strict'
 import { promises as fs } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { createReadStream } from 'node:fs'
 import test from 'node:test'
 
 import { apply } from '../index.js'
+import { tempFixture, disposeFixture } from './temp-fixture.js'
 
 // Exercise the registered Host route, including the actual request headers.
 // Only the external downloader and host services are controlled adapters.
 async function host(t, { directory, download } = {}) {
-  const base = await fs.realpath(directory ?? await fs.mkdtemp(join(tmpdir(), 'english-coach-speech-')))
+  const base = await tempFixture(t, 'english-coach-speech-', directory)
   const root = join(base, 'learning'), speechRoot = join(base, 'speech')
   await fs.mkdir(root, { recursive: true })
   const intervals = [], effects = [], events = new Map()
@@ -57,7 +57,7 @@ async function host(t, { directory, download } = {}) {
     for (const cleanup of effects.reverse()) await cleanup()
     await events.get('dispose')?.()
   }
-  t.after(dispose)
+  disposeFixture(t, dispose)
   return { base, root, speechRoot, request, dispose }
 }
 
@@ -100,6 +100,10 @@ test('speech resource routes reject foreign origins, simple requests and remote 
     assert.ok([400, 403].includes(denied.httpStatus), JSON.stringify(denied))
   }
   assert.equal((await h.request('speech.assets.status', {}, { headers: { origin: 'dsh-app://app' } })).httpStatus, 403, 'desktop main forwards without Origin after its own checks')
+  for (const [payload, options] of [
+    [{ path: '/tmp/not-owned' }, {}], [{ owner: 'other' }, {}], [{ id: 'model' }, {}],
+    [[], {}], [null, {}], [{}, { session: '' }], [{}, { headers: { 'content-type': 'text/plain' } }]
+  ]) assert.equal((await h.request('speech.assets.delete', payload, options)).ok, false)
   await assert.rejects(fs.access(h.speechRoot), { code: 'ENOENT' })
 })
 
@@ -116,7 +120,7 @@ test('resource mutations require an admitted owner Peer and page ownership is Pe
     signal.addEventListener('abort', () => stream.destroy(Object.assign(new Error('cancelled'), { name: 'AbortError' })), { once: true })
     return stream
   } })
-  for (const command of ['speech.assets.status', 'speech.assets.prepare', 'speech.assets.cancel']) {
+  for (const command of ['speech.assets.status', 'speech.assets.prepare', 'speech.assets.cancel', 'speech.assets.delete']) {
     const denied = await h.request(command, {}, { headers: { cookie: 'unauthenticated' } })
     assert.equal(denied.httpStatus, 401)
     assert.equal(denied.ok, false)
@@ -320,13 +324,13 @@ test('confirmed resource removal deletes the prepared physical assets without ch
 test('confirmed deletion waits for an aborted late download and excludes new prepare or repair until complete', async t => {
   let entered, release, downloads = 0, signal
   const started = new Promise(resolve => { entered = resolve })
-  const pending = new Promise(resolve => { release = resolve; setTimeout(resolve, 1000).unref() })
+  const pending = new Promise(resolve => { release = resolve })
   const h = await host(t, { download: async (_asset, options) => {
     downloads++; signal = options.signal; entered()
     await pending // External transport can finish its handshake after abort.
     return Readable.from([Buffer.from('{')])
   } })
-  t.after(release)
+  disposeFixture(t, release)
   await h.request('speech.assets.prepare')
   await started
   let completed = false

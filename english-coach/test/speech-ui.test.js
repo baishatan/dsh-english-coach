@@ -1,9 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mountClient, deferred } from './client-harness.js'
-import { mkdtemp } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { tempFixture, disposeFixture } from './temp-fixture.js'
 import { execute } from '../core/index.js'
 
 const local = { voiceURI: 'local-en', name: 'Shelley', lang: 'en-US', localService: true, default: true }
@@ -58,7 +56,7 @@ function fixture() {
 }
 async function open(t, api = fixture(), adapter = speechAdapter(), options = {}) {
   const ui = await mountClient({ request: api.request, setupWindow: adapter.setupWindow, ...options })
-  t.after(() => ui.close())
+  disposeFixture(t, () => ui.close())
   return { ui, api, ...adapter }
 }
 test('新学习者在独立来源菜单看到Kokoro四声和未准备状态，选择及朗读不会下载或代读', async t => {
@@ -435,7 +433,7 @@ test('课上卡片发音不翻卡，悬浮碎片卡发音不作答且收起停�
 })
 
 test('真实execute隔离课程下发音与书签只写音频位置，不改复习或课程完成', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'english-speech-ui-'))
+  const root = await tempFixture(t, 'english-speech-ui-')
   const now = new Date('2026-10-22T08:00:00+08:00')
   const run = (command, payload) => execute(root, command, payload, { now })
   const api = fixture()
@@ -459,6 +457,7 @@ test('真实execute隔离课程下发音与书签只写音频位置，不改复�
     return promise
   }
   const { ui, synth } = await open(t, { request })
+  disposeFixture(t, async () => { await ui.close(); await Promise.all([...pending]) })
   const settle = async () => { while (pending.size) await ui.flush(async () => { await Promise.all([...pending]) }) }
   await settle()
   assert.ok(ui.buttons('播放').length, ui.text())
@@ -631,7 +630,7 @@ test('晚到书签读取不得覆盖手动定位；换正文后的旧回调不�
 })
 
 test('三套真实内置目录的首条词库词条可发音且不产生个人复习项', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'english-speech-catalog-'))
+  const root = await tempFixture(t, 'english-speech-catalog-')
   const now = new Date('2026-10-22T08:00:00+08:00')
   const run = (command, payload) => execute(root, command, payload, { now })
   await run('profile.save', { goal: 'study', minutesPerDay: 20, interests: [] })
@@ -639,6 +638,7 @@ test('三套真实内置目录的首条词库词条可发音且不产生个人�
   const pending = new Set()
   const request = (command, payload) => { const promise = run(command, payload); pending.add(promise); promise.finally(() => pending.delete(promise)); return promise }
   const { ui, synth } = await open(t, { request })
+  disposeFixture(t, async () => { await ui.close(); await Promise.all([...pending]) })
   const settle = async () => { while (pending.size) await ui.flush(async () => { await Promise.all([...pending]) }) }
   await settle()
   await ui.click('单词'); await settle()

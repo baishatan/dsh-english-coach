@@ -1,12 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtemp, readdir, readFile } from 'node:fs/promises'
+import { readdir, readFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { createRequire, syncBuiltinESMExports } from 'node:module'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { tempFixture, disposeFixture } from './temp-fixture.js'
 
 const runtimeUrl = new URL('../speech/runtime.js', import.meta.url)
 const packageRoot = fileURLToPath(new URL('../', import.meta.url))
@@ -37,10 +37,11 @@ test('import and construction need no assets, model imports, network, or child p
   assert.match(output, /lazy runtime passed/)
 })
 
-test('missing assets reject without creating, downloading, or changing files', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'english-coach-runtime-'))
+test('missing assets reject without creating, downloading, or changing files', async t => {
+  const root = await tempFixture(t, 'english-coach-runtime-')
   const { createSpeechRuntime } = await import(runtimeUrl)
   const runtime = createSpeechRuntime({ assetRoot: join(root, 'missing') })
+  disposeFixture(t, () => runtime.dispose())
   try {
     await assert.rejects(runtime.synthesize({ text: 'Opportunity.', voice: 'af_heart', rate: 1 }),
       { code: 'ASSETS_NOT_READY' })

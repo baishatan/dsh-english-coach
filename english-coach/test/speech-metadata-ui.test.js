@@ -1,17 +1,17 @@
 import assert from 'node:assert/strict'
 import { promises as fs, createReadStream } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import test from 'node:test'
 import { apply } from '../index.js'
 import { execute } from '../core/index.js'
 import { mountClient } from './client-harness.js'
+import { tempFixture, disposeFixture } from './temp-fixture.js'
 
 // Actual registered Host route plus the actual visible Client. Only Host
 // admission/transport and the fixed-byte external download are Adapters.
 async function host(t) {
-  const base = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'coach-metadata-ui-')))
+  const base = await tempFixture(t, 'coach-metadata-ui-')
   const root = join(base, 'learning'), speechRoot = join(base, 'speech')
   await fs.mkdir(root)
   assert.equal((await execute(root, 'profile.save', { goal: 'work', minutesPerDay: 30, interests: [] })).ok, true)
@@ -33,7 +33,7 @@ async function host(t) {
     return createReadStream(join(process.env.ENGLISH_COACH_TEST_ASSETS, asset.path), { signal })
   } })
   for (const { callback } of intervals.filter(value => value.delay === 500)) callback()
-  t.after(async () => { for (const cleanup of effects.reverse()) await cleanup(); await events.get('dispose')?.() })
+  disposeFixture(t, async () => { for (const cleanup of effects.reverse()) await cleanup(); await events.get('dispose')?.() })
   async function request(command, payload = {}, options = {}) {
     calls.push(command)
     const req = Readable.from([JSON.stringify(payload)])
@@ -59,7 +59,7 @@ test('a missing active generation is visibly damaged and recovery requires confi
     window.speechSynthesis = { getVoices: () => [], addEventListener() {}, removeEventListener() {}, cancel() {}, speak() { assert.fail('resource recovery must stay silent') } }
     window.SpeechSynthesisUtterance = class {}
   } })
-  t.after(() => ui.close())
+  disposeFixture(t, () => ui.close())
   const deadline = performance.now() + 30000
   let section
   while (!(section = ui.container.querySelector('section[aria-label="Kokoro 资源准备"]')) || !section.textContent.includes('固定版本')) {

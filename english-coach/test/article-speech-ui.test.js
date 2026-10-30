@@ -1,10 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdtemp } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { execute } from '../core/index.js'
 import { mountClient, deferred } from './client-harness.js'
+import { tempFixture, disposeFixture } from './temp-fixture.js'
 
 const local = { voiceURI: 'article-local', name: 'Shelley', lang: 'en-US', localService: true }
 const british = { voiceURI: 'article-british', name: 'Reed', lang: 'en-GB', localService: true }
@@ -134,6 +132,7 @@ test('the same active heartbeat stops remote playing paused and queued Kokoro on
     heartbeat = mode === 'paused'
       ? { ...heartbeat, resourceGeneration: 'new-installation' } // Same-ready new generation is also invalid.
       : { ...heartbeat, assetsReady: false, resourceGeneration: null }
+    api.ready = heartbeat.assetsReady
     await ui.poll()
     assert.equal(current?.src ?? '', '')
     assert.equal(ui.field('文本进度').value, '1')
@@ -457,7 +456,7 @@ test('pausing before a pending browser play rejection prevents late revival and 
 })
 
 test('execute bookmarks restore silently by article and content version without changing learning records', async t => {
-  const api = fixture(), root = await mkdtemp(join(tmpdir(), 'english-article-bookmark-'))
+  const api = fixture(), root = await tempFixture(t, 'english-article-bookmark-')
   const now = new Date('2026-10-22T08:00:00+08:00'), run = (command, payload) => execute(root, command, payload, { now })
   assert.equal((await run('profile.save', api.state.profile)).ok, true)
   assert.equal((await run('settings.save', api.state.settings)).ok, true)
@@ -477,7 +476,7 @@ test('execute bookmarks restore silently by article and content version without 
     const promise = run(command, payload); pending.add(promise); promise.finally(() => pending.delete(promise)); return promise
   }
   let ui = await mountClient({ request, setupWindow: api.setupWindow }), closed = false
-  t.after(async () => { if (!closed) await ui.close() })
+  disposeFixture(t, async () => { if (!closed) await ui.close(); await Promise.all([...pending]) })
   const settle = async () => { while (pending.size) await ui.flush(async () => { await Promise.all([...pending]) }) }
   await settle()
   await ui.click('播放'); await ready(ui, api)

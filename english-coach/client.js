@@ -461,7 +461,7 @@ window.__ModuleLoader__.load({
       const reportShort = (owner, change) => { if (shortFeedback?.owner === owner) Object.assign(shortFeedback, change) }
       const changedPreferences = new Set()
       let kokoroResources = null, kokoroStatusUnconfirmed = false
-      const preferences = { provider: 'kokoro', kokoroVoice: 'af_heart', voiceURI: null, rate: 1, voices: [], notice: '', error: '', localStatus: '', manualPlay: false }
+      const preferences = { provider: 'kokoro', kokoroVoice: 'af_heart', voiceURI: null, rate: 1, voices: [], notice: '', error: '', localStatus: '', manualPlay: false, resourceEpoch: 0 }
       const kokoroUnavailable = 'Kokoro 尚未准备。请先在「Kokoro 资源准备」准备资源，再手动播放；不会自动下载或改用系统语音。'
       const playbackIssue = () => {
         if (!['kokoro', 'web-speech'].includes(preferences.provider)) return '已保存的音频来源当前不可用，请重新选择来源。'
@@ -487,6 +487,7 @@ window.__ModuleLoader__.load({
         const value = active
         const invalid = status.assetsReady === false || value?.kind === 'kokoro' && Object.hasOwn(status, 'resourceGeneration') && status.resourceGeneration !== value.resourceGeneration
         if (!invalid) return
+        preferences.resourceEpoch++
         // touch is not a full capability response. Preserve the known runtime
         // flag instead of treating its deliberately absent flag as false.
         resourceStatus({ ...kokoroResources, assetsReady: status.assetsReady === true, runtimeAvailable: kokoroResources?.runtimeAvailable === true })
@@ -1503,6 +1504,7 @@ window.__ModuleLoader__.load({
     // ----------------------------------------------------------- study items
 
     function SpeechAssetsPreparation() {
+      const audio = useSpeech(), resourceEpoch = audio.preferences.resourceEpoch
       const [assets, setAssets] = useState(null), [error, setError] = useState(null), [busy, setBusy] = useState(false), [confirmRepair, setConfirmRepair] = useState(false), [confirmDelete, setConfirmDelete] = useState(false)
       const mounted = useRef(false), order = useRef(0), pending = useRef(false)
       const active = assets && ['preparing', 'downloading', 'validating', 'activating'].includes(assets.phase)
@@ -1519,6 +1521,11 @@ window.__ModuleLoader__.load({
         void read()
         return () => { mounted.current = false; order.current++ }
       }, [read])
+      useEffect(() => {
+        // Resource invalidation wakes the existing status read once. The
+        // caller's in-flight confirmed action supplies its own final result.
+        if (resourceEpoch && !pending.current) void read()
+      }, [read, resourceEpoch])
       useEffect(() => {
         if (!active) return
         const timer = setInterval(read, 1000)
