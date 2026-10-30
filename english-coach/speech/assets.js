@@ -283,7 +283,7 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
   }
 
   async function checkExisting() {
-    if (deleting) return false
+    if (deleting || state.operation === 'delete' && state.phase === 'error') return false
     if (task) return state.assetsReady
     if (!checking) checking = verifyExisting().catch(cause => {
       verifiedFingerprint = null
@@ -459,8 +459,9 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
     async prepare(owner) {
       if (disposed) return failure('speech_disposed', '插件已停止，无法准备资源。')
       if (deleting) return failure('speech_assets_deleting', '正在删除共享 Kokoro 资源；完成后才能明确重新准备。')
-      if (await checkExisting()) return success(snapshot(owner))
+      const ready = await checkExisting()
       if (deleting) return failure('speech_assets_deleting', '正在删除共享 Kokoro 资源；完成后才能明确重新准备。')
+      if (ready) return success(snapshot(owner))
       if (task) return task.owner === owner ? success(snapshot(owner)) : failure('speech_busy', '另一页面正在准备共享朗读资源，请等待或由该页面取消。')
       try {
         if (state.repairRequired || await inspectPath(root) && (
@@ -507,6 +508,8 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
       // The gate closes before the first await, including preparation requests
       // that are currently checking the filesystem before allocating a job.
       deleting = true
+      state = { ...state, operation: 'delete', assetsReady: false }
+      verifiedFingerprint = null
       const job = task
       job?.controller.abort()
       // Invalidate synchronously, but never wait for a job from the audio side:
@@ -553,6 +556,7 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
       disposed = true
       if (task) { task.controller.abort(); await task.done }
       if (checking) await checking
+      if (deletion) await deletion
     }
   }
 }
