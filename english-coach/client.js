@@ -1509,6 +1509,7 @@ window.__ModuleLoader__.load({
       const mounted = useRef(false), order = useRef(0), pending = useRef(false)
       const active = assets && ['preparing', 'downloading', 'validating', 'activating'].includes(assets.phase)
       const read = useCallback(async () => {
+        if (pending.current) return
         const request = ++order.current
         const result = await call('speech.assets.status')
         if (!mounted.current || request !== order.current) return

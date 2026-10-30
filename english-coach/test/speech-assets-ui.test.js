@@ -127,6 +127,28 @@ test('resource repair discloses the fixed target and shared-host impact before e
   assert.equal(api.calls.filter(call => /settings.save|review.answer|lesson.complete|speech.synth/.test(call.command)).length, 0)
 })
 
+test('confirmed deletion during a download cannot lose its final result to the existing progress poll', async t => {
+  const api = fixture(), pending = deferred(), request = api.request
+  api.setAssets({ phase: 'downloading', canCancel: true, downloadedBytes: 1 })
+  api.request = (command, payload, options) => {
+    if (command === 'speech.assets.delete') { api.calls.push({ command, payload, options }); return pending.promise }
+    return request(command, payload, options)
+  }
+  const ui = await mountClient({ request: api.request, setupWindow: api.setupWindow })
+  t.after(() => ui.close())
+  await ui.click('删除 Kokoro 资源'); await ui.click('确认删除此主机 Kokoro 资源')
+  api.setAssets({ phase: 'deleting', assetsReady: false, canCancel: false })
+  await ui.poll()
+  api.setAssets({ phase: 'unprepared', assetsReady: false, resourceGeneration: null, downloadedBytes: 0, validatedBytes: 0, diskBytes: 0 })
+  await ui.flush(async () => pending.resolve(await request('speech.assets.status', {})))
+  const section = ui.container.querySelector('[aria-label="Kokoro 资源准备"]')
+  assert.match(section.textContent, /尚未准备/)
+  assert.doesNotMatch(section.textContent, /正在删除|下载中/)
+  assert.equal(ui.button('准备 Kokoro').disabled, false)
+  assert.equal(api.calls.filter(call => call.command === 'speech.assets.delete').length, 1)
+  assert.equal(api.calls.filter(call => call.command === 'speech.assets.prepare').length, 0)
+})
+
 test('visible preparation is independent of voice settings, explicit and silent through cancel and retry', async t => {
   const api = fixture()
   const ui = await mountClient({ request: api.request, setupWindow: api.setupWindow })
