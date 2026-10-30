@@ -1609,6 +1609,7 @@ window.__ModuleLoader__.load({
         active ? h('progress', { 'aria-label': 'Kokoro 下载字节', value: assets.downloadedBytes, max: assets.manifest.downloadBytes, style: { width: '100%' } }) : null,
         assets?.assetsReady && !assets.runtimeAvailable ? h('div', { role: 'status' }, '运行时尚不可用；请安装兼容插件后手动重试。') : null,
         assets?.operation === 'repair' && assets.assetsReady && assets.phase !== 'ready' ? h('div', { role: 'status' }, '兼容旧资源仍可用；失败或取消保留旧资源。') : null,
+        !active && assets?.cleanupRequired ? h('div', { role: 'status' }, '发现上次准备留下的资源，可选择修复；当前音色仍可用。') : null,
         assets?.error ? h(Notice, { tone: 'error' }, assets.error.message) : null,
         error ? h(Notice, { tone: 'error' }, error) : null,
         confirmRepair ? h('div', { role: 'dialog', 'aria-modal': 'true', 'aria-label': '确认修复 Kokoro 资源', className: 'ec-card', tabIndex: -1, onKeyDown: event => { if (event.key === 'Escape') setConfirmRepair(false) } },
@@ -1630,7 +1631,7 @@ window.__ModuleLoader__.load({
           active ? assets.canCancel ? h(Btn, { small: true, disabled: busy, onClick: () => act('cancel') }, '取消准备') : h('span', { className: 'ec-muted' }, '另一页面正在准备；仅该页面可取消。') :
           assets && !assets.assetsReady && !assets.repairRequired && assets.phase !== 'deleting' ? h(Btn, { primary: true, small: true, disabled: busy, onClick: () => act('prepare') }, '准备') : null,
           !active && assets && (assets.repairRequired || assets.phase === 'error') ? h(Btn, { small: true, disabled: busy, onClick: () => act('check') }, '检查资源版本') : null,
-          !active && (assets?.repairRequired || assets?.operation === 'repair' && ['error', 'cancelled', 'interrupted'].includes(assets.phase)) ? h(Btn, { small: true, disabled: busy, onClick: () => setConfirmRepair(true) }, '修复') : null,
+          !active && (assets?.repairRequired || assets?.cleanupRequired || assets?.operation === 'repair' && ['error', 'cancelled', 'interrupted'].includes(assets.phase)) ? h(Btn, { small: true, disabled: busy, onClick: () => setConfirmRepair(true) }, '修复') : null,
           !active && error ? h(Btn, { small: true, disabled: busy, onClick: () => { void read(true) } }, '重试资源状态') : null))
     }
 

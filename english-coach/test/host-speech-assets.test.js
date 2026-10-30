@@ -559,6 +559,7 @@ test('restarted resource status counts both owned installations and active metad
   const reboot = await host(t, { directory: h.base, download: () => assert.fail('diagnostics and compatible prepare must remain offline') })
   const status = (await reboot.request('speech.assets.status')).data
   assert.equal(status.assetsReady, true)
+  assert.equal(status.cleanupRequired, true, 'the inactive owned installation is recoverable')
   assert.equal(status.resourceGeneration, generation)
   assert.equal(status.diskBytes, expectedBytes, 'all owned installations and metadata count, not just the active model')
   assert.equal(status.diskBytesKnown, true)
@@ -577,6 +578,7 @@ test('resource disk totals include owned stages and pointer records and reflect 
   } })
   await h.request('speech.assets.prepare')
   const original = await settle(h, 'ready')
+  assert.equal(original.cleanupRequired, false, 'normal ready metadata is not an orphan')
   const generation = '12345678-1234-4234-9234-123456789abc'
   const stage = join(h.speechRoot, `.prepare-${generation}`)
   const owner = JSON.stringify({ id: original.manifest.id, generation })
@@ -588,6 +590,7 @@ test('resource disk totals include owned stages and pointer records and reflect 
   const expected = original.diskBytes + Buffer.byteLength(owner) + 1 + Buffer.byteLength(pendingPointer)
   const status = (await h.request('speech.assets.status')).data
   assert.equal(status.assetsReady, true)
+  assert.equal(status.cleanupRequired, true, 'bounded owned staging and pointer are recoverable')
   assert.equal(status.diskBytesKnown, true)
   assert.equal(status.diskBytes, expected)
   await fs.writeFile(join(stage, 'config.json'), '{}')
@@ -600,11 +603,13 @@ test('resource disk totals include owned stages and pointer records and reflect 
   assert.equal(downloads, 16)
   const activePointer = await fs.readFile(join(h.speechRoot, 'active.json'))
   assert.equal(repaired.diskBytes, original.diskBytes + activePointer.length)
+  assert.equal(repaired.cleanupRequired, false, 'successful repair clears the diagnostic')
   assert.equal(repaired.diskBytesKnown, true)
   assert.equal((await fs.readdir(h.speechRoot)).length, 2, 'only active generation and pointer remain after explicit repair')
   assert.equal((await h.request('speech.assets.delete')).ok, true)
   const deleted = (await h.request('speech.assets.status')).data
   assert.equal(deleted.diskBytes, 0)
+  assert.equal(deleted.cleanupRequired, false)
   assert.equal(deleted.diskBytesKnown, true)
   assert.deepEqual(await fs.readdir(h.speechRoot), [])
 })
@@ -628,6 +633,7 @@ test('untrusted leftover bytes make disk usage incomplete without disabling the 
     assert.equal(status.assetsReady, true)
     assert.equal(status.resourceGeneration, original.resourceGeneration)
     assert.equal(status.diskBytesKnown, false, kind)
+    assert.equal(status.cleanupRequired, false, 'untrusted remnants are not advertised as safely recoverable')
     assert.equal((await h.request('speech.assets.prepare')).data.diskBytesKnown, false)
     assert.ok(await fs.lstat(path), 'diagnostics never reclaim unknown or foreign contents')
     if (kind === 'foreign-marker') {

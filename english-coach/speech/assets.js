@@ -55,7 +55,7 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
   let state = {
     phase: 'unprepared', assetsReady: false, runtimeAvailable: false,
     manifest: assetManifest, downloadedBytes: 0, validatedBytes: 0, diskBytes: 0,
-    generation: null, resourceGeneration: null, repairRequired: false, diskBytesKnown: true, currentFile: null, error: null
+    generation: null, resourceGeneration: null, repairRequired: false, cleanupRequired: false, diskBytesKnown: true, currentFile: null, error: null
   }
   const snapshot = owner => ({ ...state, ...(deleting ? { phase: 'deleting', assetsReady: false } : {}), canCancel: !deleting && !!task && task.owner === owner, update: {
     available: false, networkChecked: false, targetId: assetManifest.id,
@@ -286,6 +286,8 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
   // owned set, partial and metadata file. An untrusted leftover makes the total
   // incomplete, but must not disable an independently verified active set.
   async function updateDiskUsage() {
+    // Diagnostic only: never authorize cleanup from a stale or incomplete scan.
+    state.cleanupRequired = false
     try {
       if (!await inspectPath(root)) { state.diskBytes = 0; state.diskBytesKnown = true; return }
       const names = await fs.readdir(root)
@@ -310,6 +312,9 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
       }
       state.diskBytes = bytes
       state.diskBytesKnown = names.length === ownedNames.size && names.every(name => ownedNames.has(name))
+      state.cleanupRequired = state.diskBytesKnown && state.assetsReady && (
+        stages.length > 0 || sets.pointers.length > 0 || sets.directories.some(entry => entry.path !== currentRoot)
+      )
     } catch { state.diskBytesKnown = false }
   }
 
@@ -528,7 +533,7 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
       if (deleting) return failure('speech_assets_deleting', '正在删除共享 Kokoro 资源；完成后才能明确重新准备。')
       const generation = randomUUID()
       const job = { generation, owner, repair: true, previous, activeIdentity: activeRecord.identity, controller: new AbortController(), staging: join(root, `.prepare-${generation}`), pointer: join(root, `.active-${generation}.json`) }
-      state = { ...state, phase: 'preparing', generation, operation: 'repair', downloadedBytes: 0, validatedBytes: 0, error: null }
+      state = { ...state, phase: 'preparing', generation, operation: 'repair', cleanupRequired: false, downloadedBytes: 0, validatedBytes: 0, error: null }
       task = job
       job.done = run(job)
       return success(snapshot(owner))
@@ -563,7 +568,7 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
           }
           currentRoot = finalRoot
           state = { ...state, phase: 'unprepared', assetsReady: false, resourceGeneration: null, generation: null,
-            repairRequired: false, diskBytesKnown: true, diskBytes: 0, downloadedBytes: 0, validatedBytes: 0, currentFile: null, error: null }
+            repairRequired: false, cleanupRequired: false, diskBytesKnown: true, diskBytes: 0, downloadedBytes: 0, validatedBytes: 0, currentFile: null, error: null }
           verifiedFingerprint = null
           deleting = false
           return success(snapshot(owner))
