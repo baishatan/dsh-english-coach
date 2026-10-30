@@ -461,7 +461,7 @@ window.__ModuleLoader__.load({
       const reportShort = (owner, change) => { if (shortFeedback?.owner === owner) Object.assign(shortFeedback, change) }
       const changedPreferences = new Set()
       let kokoroResources = null, kokoroStatusUnconfirmed = false
-      const preferences = { provider: 'kokoro', kokoroVoice: 'af_heart', voiceURI: null, rate: 1, voices: [], notice: '', error: '', localStatus: '', manualPlay: false }
+      const preferences = { provider: 'kokoro', kokoroVoice: 'af_heart', voiceURI: null, rate: 1, voices: [], notice: '', error: '', localStatus: '', manualPlay: false, resourceEpoch: 0 }
       const kokoroUnavailable = 'Kokoro 尚未准备。请先在「Kokoro 资源准备」准备资源，再手动播放；不会自动下载或改用系统语音。'
       const playbackIssue = () => {
         if (!['kokoro', 'web-speech'].includes(preferences.provider)) return '已保存的音频来源当前不可用，请重新选择来源。'
@@ -481,6 +481,27 @@ window.__ModuleLoader__.load({
         if (status) kokoroResources = { assetsReady: status.assetsReady === true, runtimeAvailable: status.runtimeAvailable === true }
         kokoroStatusUnconfirmed = !status
         preferences.notice = playbackIssue()
+        emit()
+      }
+      function resourceInvalidation(status) {
+        const value = active
+        const invalid = status.assetsReady === false || value?.kind === 'kokoro' && Object.hasOwn(status, 'resourceGeneration') && status.resourceGeneration !== value.resourceGeneration
+        if (!invalid) return
+        preferences.resourceEpoch++
+        // touch is not a full capability response. Preserve the known runtime
+        // flag instead of treating its deliberately absent flag as false.
+        resourceStatus({ ...kokoroResources, assetsReady: status.assetsReady === true, runtimeAvailable: kokoroResources?.runtimeAvailable === true })
+        if (value?.kind !== 'kokoro') return
+        const current = value.article
+        cancel({ keepShortFeedback: !current })
+        if (current) {
+          current.playRequested = false; current.status = 'paused'; current.error = ''; current.message = ''
+          current.notice = '共享 Kokoro 资源已失效或更换；已静默保留文本位置，请确认资源状态后手动播放。'
+          void save(current)
+        } else {
+          preferences.error = '共享 Kokoro 资源已失效或更换；请确认资源状态后手动播放。'
+          reportShort(value.owner, { error: preferences.error, status: '', manualPlay: false })
+        }
         emit()
       }
       function refreshVoices() {
@@ -752,7 +773,7 @@ window.__ModuleLoader__.load({
             if (!current() || !listeners.size || document.hidden || value.heartbeatChecking) return
             value.heartbeatChecking = true
             void call('speech.session.touch', {}, { signal: value.controller.signal })
-              .then(status => { if (current() && status.ok) value.sessionStatus = status.data })
+              .then(status => { if (current() && status.ok) { value.sessionStatus = status.data; resourceInvalidation(status.data) } })
               .finally(() => { value.heartbeatChecking = false })
           }, 5000)
           const poll = async initial => {
@@ -827,7 +848,7 @@ window.__ModuleLoader__.load({
       function suspend() { if (active?.article) pause(active.article); if (active || shortFeedback) { cancel(); emit() } }
       function releaseSession() { suspend(); void call('speech.session.release', {}, { keepalive: true }) }
       const hidden = () => { if (document.hidden) releaseSession() }
-      return { article, pause, play, restart, seek, save, restore, preferences, configure, selectedVoice, refreshVoices, resourceStatus, short, shortState, playLocal,
+      return { article, pause, play, restart, seek, save, restore, preferences, configure, selectedVoice, refreshVoices, resourceStatus, resourceInvalidation, short, shortState, playLocal,
         stop() { if (active) { suspend(); emit() } },
         releaseArticle(value) { pause(value); if (active?.article === value) { cancel(); emit() } },
         release(owner) { if (active?.owner === owner || shortFeedback?.owner === owner) { cancel(); emit() } },
@@ -1483,7 +1504,8 @@ window.__ModuleLoader__.load({
     // ----------------------------------------------------------- study items
 
     function SpeechAssetsPreparation() {
-      const [assets, setAssets] = useState(null), [error, setError] = useState(null), [busy, setBusy] = useState(false), [confirmRepair, setConfirmRepair] = useState(false)
+      const audio = useSpeech(), resourceEpoch = audio.preferences.resourceEpoch
+      const [assets, setAssets] = useState(null), [error, setError] = useState(null), [busy, setBusy] = useState(false), [confirmRepair, setConfirmRepair] = useState(false), [confirmDelete, setConfirmDelete] = useState(false)
       const mounted = useRef(false), order = useRef(0), pending = useRef(false)
       const active = assets && ['preparing', 'downloading', 'validating', 'activating'].includes(assets.phase)
       const read = useCallback(async () => {
@@ -1500,6 +1522,11 @@ window.__ModuleLoader__.load({
         return () => { mounted.current = false; order.current++ }
       }, [read])
       useEffect(() => {
+        // Resource invalidation wakes the existing status read once. The
+        // caller's in-flight confirmed action supplies its own final result.
+        if (resourceEpoch && !pending.current) void read()
+      }, [read, resourceEpoch])
+      useEffect(() => {
         if (!active) return
         const timer = setInterval(read, 1000)
         return () => clearInterval(timer)
@@ -1507,7 +1534,8 @@ window.__ModuleLoader__.load({
       async function act(action) {
         if (pending.current) return
         pending.current = true
-        setConfirmRepair(false)
+        setConfirmRepair(false); setConfirmDelete(false)
+        if (action === 'delete') speech.resourceInvalidation({ assetsReady: false, resourceGeneration: null })
         const request = ++order.current
         setBusy(true)
         setError(null)
@@ -1520,7 +1548,7 @@ window.__ModuleLoader__.load({
         } finally { pending.current = false; if (mounted.current) setBusy(false) }
       }
       const count = value => Number(value ?? 0).toLocaleString('en-US')
-      const phase = { unprepared: '尚未准备', preparing: '准备中', downloading: '下载中', validating: '校验中', activating: '资源切换中；旧音频将失效', cancelled: '已取消', interrupted: '上次准备中断；可明确重新准备', error: assets?.repairRequired ? '资源损坏或不兼容；需要明确修复' : '准备或修复失败', ready: '资源已校验' }[assets?.phase] ?? '读取资源状态中'
+      const phase = { deleting: '正在删除共享 Kokoro 资源；等待任务和工作进程结束', unprepared: '尚未准备', preparing: '准备中', downloading: '下载中', validating: '校验中', activating: '资源切换中；旧音频将失效', cancelled: '已取消', interrupted: '上次准备中断；可明确重新准备', error: assets?.repairRequired ? '资源损坏或不兼容；需要明确修复' : '准备或修复失败', ready: '资源已校验' }[assets?.phase] ?? '读取资源状态中'
       return h('section', { className: 'ec-card ec-speech-assets', 'aria-label': 'Kokoro 资源准备' },
         h('div', { className: 'ec-card-head' }, h('h2', null, 'Kokoro 资源准备')),
         h('p', { className: 'ec-muted' }, 'Kokoro 在 DSH 主机处理英文；远程页面会把文字交给该主机。只有点击准备才下载，完成后不会自动发声。'),
@@ -1543,7 +1571,16 @@ window.__ModuleLoader__.load({
           h('div', { className: 'ec-row' },
             h(Btn, { primary: true, small: true, disabled: busy, onClick: () => act('repair') }, '确认重新下载并修复'),
             h(Btn, { small: true, disabled: busy, onClick: () => setConfirmRepair(false) }, '暂不修复'))) : null,
+        confirmDelete ? h('div', { role: 'dialog', 'aria-modal': 'true', 'aria-label': '确认删除 Kokoro 资源', className: 'ec-card', tabIndex: -1, onKeyDown: event => { if (event.key === 'Escape') setConfirmDelete(false) } },
+          h('h3', null, '确认删除 Kokoro 资源'),
+          h('p', null, '这是共享 DSH 主机资源，不只影响当前页面。确认后取消此主机的 Kokoro 下载、合成与预取，结束工作进程并删除归属明确的模型、四声音色及临时音频。'),
+          h('p', null, '当前页面立即停止 Kokoro；其他在线可见页面在下一次心跳检查时停止（通常约 5 秒），并静默保留各自文本位置。已交付给断线页面的音频不能保证立即停止或远程撤回。'),
+          h('p', null, '系统语音不受影响。学习记录、书签和声音偏好保留；不会自动切源或重新下载，需要时请明确重新准备。归属或权限检查失败会报告实际错误，不会假装全部删除。'),
+          h('div', { className: 'ec-row' },
+            h(Btn, { small: true, disabled: busy, onClick: () => setConfirmDelete(false) }, '暂不删除'),
+            h(Btn, { small: true, disabled: busy, onClick: () => act('delete') }, '确认删除此主机 Kokoro 资源'))) : null,
         h('div', { className: 'ec-row', style: { marginTop: 10 } },
+          assets ? h(Btn, { small: true, disabled: busy || assets.phase === 'deleting', onClick: () => { setConfirmRepair(false); setConfirmDelete(true) } }, '删除 Kokoro 资源') : null,
           active ? assets.canCancel ? h(Btn, { small: true, disabled: busy, onClick: () => act('cancel') }, '取消准备') : h('span', { className: 'ec-muted' }, '另一页面正在准备；仅该页面可取消。') :
           assets && !assets.assetsReady && !assets.repairRequired ? h(Btn, { primary: true, small: true, disabled: busy, onClick: () => act('prepare') }, assets.phase === 'error' ? '重试准备 Kokoro' : ['cancelled', 'interrupted'].includes(assets.phase) ? '重新准备 Kokoro' : '准备 Kokoro') : null,
           !active && assets ? h(Btn, { small: true, disabled: busy, onClick: () => act('check') }, '检查资源版本') : null,

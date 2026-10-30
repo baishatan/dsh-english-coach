@@ -1,17 +1,17 @@
 import assert from 'node:assert/strict'
 import { promises as fs, createReadStream } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import test from 'node:test'
 import { createRequire, syncBuiltinESMExports } from 'node:module'
 import { apply } from '../index.js'
 import { execute } from '../core/index.js'
+import { tempFixture, disposeFixture } from './temp-fixture.js'
 
 // Public registered Host route. Only Host services, downloads and the external
 // runtime are adapters; readiness still requires all eight real fixed assets.
 async function host(t, { directory, runtimeFactory, download } = {}) {
-  const base = await fs.realpath(directory ?? await fs.mkdtemp(join(tmpdir(), 'english-coach-audio-')))
+  const base = await tempFixture(t, 'english-coach-audio-', directory)
   const root = join(base, 'learning'), speechRoot = join(base, 'speech')
   await fs.mkdir(root, { recursive: true })
   const effects = [], intervals = [], events = new Map()
@@ -46,7 +46,7 @@ async function host(t, { directory, runtimeFactory, download } = {}) {
   }
   let disposed = false
   async function dispose() { if (disposed) return; disposed = true; for (const cleanup of effects.reverse()) await cleanup(); await events.get('dispose')?.() }
-  t.after(dispose)
+  disposeFixture(t, dispose)
   return { base, root, speechRoot, request, dispose, services }
 }
 
@@ -79,6 +79,75 @@ function wav(bytes = 240) {
 }
 
 const sample = { text: 'Hello. Let us practise English together.', voice: 'af_heart', rate: 1 }
+
+test('confirmed global deletion invalidates both slots across pages and awaits actual runtime disposal', { skip: realAssets }, async t => {
+  let finishGeneration, finishDispose, entered = false, disposing = false, downloads = 0
+  const generating = new Promise(resolve => { finishGeneration = resolve })
+  const disposal = new Promise(resolve => { finishDispose = resolve })
+  const entries = []
+  const h = await prepared(t, { download: (asset, { signal }) => {
+    downloads++; return createReadStream(join(process.env.ENGLISH_COACH_TEST_ASSETS, asset.path), { signal })
+  }, runtimeFactory: () => ({
+    async synthesize(input, { signal }) { entries.push({ input, signal }); if (entries.length > 1) { entered = true; await generating }; return wav() },
+    async dispose() { disposing = true; finishGeneration(); await disposal }
+  }) })
+  disposeFixture(t, () => { finishGeneration(); finishDispose() })
+  const a = await h.request('speech.synthesize', sample)
+  await waitFor(() => h.request('speech.status', { taskId: a.data.taskId }), value => value.data?.phase === 'ready', 'delivered foreground')
+  assert.equal((await h.request('speech.audio', { taskId: a.data.taskId })).httpStatus, 200)
+  const prefetch = await h.request('speech.synthesize', { ...sample, text: 'Upcoming.', priority: 'prefetch' })
+  await waitFor(() => h.request('speech.status', { taskId: prefetch.data.taskId }), value => entered, 'active speculative work')
+  const pageB = { page: 'b'.repeat(48) }
+  const b = await h.request('speech.synthesize', { ...sample, text: 'Other page waiting.' }, pageB)
+  let completed = false
+  const removed = h.request('speech.assets.delete', {}, pageB).then(value => { completed = true; return value })
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(disposing, true, 'confirmed global deletion actually disposes the shared runtime')
+  assert.equal(completed, false, 'the response waits for actual disposal')
+  for (const [job, page] of [[a, {}], [prefetch, {}], [b, pageB]]) {
+    assert.equal((await h.request('speech.status', { taskId: job.data.taskId }, page)).httpStatus, 404)
+    assert.equal((await h.request('speech.audio', { taskId: job.data.taskId }, page)).httpStatus, 404)
+  }
+  assert.equal(entries.at(-1).signal.aborted, true)
+  assert.equal((await h.request('speech.synthesize', sample)).code, 'speech_assets_changing')
+  finishDispose()
+  assert.equal((await removed).data.phase, 'unprepared')
+  assert.deepEqual(await fs.readdir(h.speechRoot), [])
+  assert.deepEqual((await h.request('speech.session.touch')).data, { active: false, leaseMs: 15000, assetsReady: false, resourceGeneration: null })
+  const after = await h.request('speech.synthesize', sample)
+  await waitFor(() => h.request('speech.status', { taskId: after.data.taskId }), value => value.data?.phase === 'error', 'manual playback after deletion')
+  assert.equal((await h.request('speech.status', { taskId: after.data.taskId })).data.error.code, 'ASSETS_NOT_READY')
+  assert.equal(downloads, 8)
+  assert.equal(entries.length, 2, 'late work never launches the queued page')
+})
+
+test('deletion aborts active synthesis immediately while a repair transport is still finishing after abort', { skip: realAssets }, async t => {
+  let downloads = 0, releaseDownload, finishGeneration, disposeStarted = false
+  const pendingDownload = new Promise(resolve => { releaseDownload = resolve })
+  const pendingGeneration = new Promise(resolve => { finishGeneration = resolve })
+  const h = await prepared(t, { download: async (asset, { signal }) => {
+    downloads++
+    if (downloads === 9) await pendingDownload
+    return createReadStream(join(process.env.ENGLISH_COACH_TEST_ASSETS, asset.path), { signal })
+  }, runtimeFactory: () => ({
+    synthesize() { return pendingGeneration },
+    async dispose() { disposeStarted = true; finishGeneration(wav()) }
+  }) })
+  disposeFixture(t, () => { releaseDownload(); finishGeneration(wav()) })
+  const active = await h.request('speech.synthesize', sample)
+  await waitFor(() => h.request('speech.status', { taskId: active.data.taskId }), value => value.data?.phase === 'generating', 'active old-generation work')
+  await h.request('speech.assets.repair', {}, { page: 'b'.repeat(48) })
+  await waitFor(async () => ({ ok: true, data: { downloads } }), value => value.data.downloads === 9, 'slow repair transport')
+  const removing = h.request('speech.assets.delete')
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(disposeStarted, true, 'download abort handshake must not delay global synthesis cancellation')
+  assert.equal((await h.request('speech.status', { taskId: active.data.taskId })).httpStatus, 404)
+  assert.equal((await h.request('speech.synthesize', sample)).code, 'speech_assets_changing')
+  releaseDownload()
+  assert.equal((await removing).ok, true)
+  assert.deepEqual(await fs.readdir(h.speechRoot), [])
+  assert.equal(downloads, 9)
+})
 
 test('prepared manual speech returns an owned binary WAV rather than audio in JSON', { skip: realAssets }, async t => {
   let release, entered = false
@@ -471,11 +540,11 @@ test('two visible clients share the actual Host adapter but never share media, s
   const { mountClient } = await import('./client-harness.js')
   const entries = [], pending = [], requests = [], responses = [], inFlight = new Set()
   let disposals = 0, uiA, uiB
-  t.after(async () => { await uiB?.close(); await uiA?.close(); await Promise.all([...inFlight]) })
   const h = await prepared(t, { runtimeFactory: () => ({
     synthesize(input, { signal }) { entries.push({ ...input, signal }); return new Promise((resolve, reject) => pending.push({ resolve, reject })) },
     async dispose() { disposals++; for (const value of pending.splice(0)) value.resolve(wav()) }
   }) })
+  disposeFixture(t, async () => { await uiB?.close(); await uiA?.close(); await Promise.all([...inFlight]) })
   const now = new Date(), date = now.toLocaleDateString('en-CA')
   const run = (command, payload) => execute(h.root, command, payload, { now })
   assert.equal((await run('profile.save', { goal: 'work', minutesPerDay: 30, interests: [] })).ok, true)
@@ -559,6 +628,137 @@ test('two visible clients share the actual Host adapter but never share media, s
   assert.deepEqual(final.todayLesson, learningBefore.todayLesson)
   assert.deepEqual(final.review, learningBefore.review)
   assert.deepEqual((await run('settings.get')).data, settingsBefore)
+})
+
+test('two visible clients confirm global removal through the actual Host and the same heartbeat stops the other page', { skip: realAssets }, async t => {
+  const { mountClient } = await import('./client-harness.js')
+  const inFlight = new Set(), clients = []
+  const h = await prepared(t, { runtimeFactory: () => ({ async synthesize() { return wav() }, async dispose() {} }) })
+  disposeFixture(t, async () => { for (const ui of clients.reverse()) await ui.close(); await Promise.all([...inFlight]) })
+  const now = new Date(), date = now.toLocaleDateString('en-CA')
+  const run = (command, payload) => execute(h.root, command, payload, { now })
+  await run('profile.save', { goal: 'work', minutesPerDay: 30, interests: [] })
+  await run('settings.save', { audio: { provider: 'kokoro', kokoroVoice: 'af_heart', rate: 1 } })
+  await run('lesson.save', { date, title: '删除非个人材料', sources: [{ id: 'synthetic', url: 'https://example.com/delete-test', fetchedAt: now.toISOString(), license: 'Synthetic test text' }], items: [
+    { id: 'read', type: 'reading', sourceId: 'synthetic', body: 'A quiet bird landed. It rested by the river.' },
+    { id: 'listen', type: 'listening', sourceId: 'synthetic', transcript: 'B takes a train. It arrives at noon.' },
+    { id: 'express', type: 'expressions', expressions: [{ term: 'take a train', meaning: '乘火车' }] },
+    { id: 'quiz', type: 'quiz', questions: [{ prompt: 'Choose.', choices: ['甲', '乙', '丙', '丁'], answerIndex: 0 }] }
+  ] })
+  await run('lesson.start', { date })
+  const settingsBefore = (await run('settings.get')).data, lessonBefore = (await run('state.get')).data.todayLesson
+  function adapter() {
+    const media = []
+    return { media, setupWindow(window) {
+      window.URL.createObjectURL = () => 'blob:owned-test'; window.URL.revokeObjectURL = () => {}
+      window.Audio = class {
+        constructor() { this.src = ''; media.push(this) }
+        play() { return Promise.resolve() }
+        pause() {}
+        removeAttribute(name) { if (name === 'src') this.src = '' }
+        load() {}
+      }
+    }, request(command, payload, options) {
+      const task = h.request(command, payload, { page: options.headers['x-english-coach-speech-session'] }).then(value => value.bytes ? new Response(value.bytes, { status: value.httpStatus, headers: value.headers }) : value)
+      inFlight.add(task); task.finally(() => inFlight.delete(task)); return task
+    } }
+  }
+  const a = adapter(), b = adapter(), uiA = await mountClient(a), uiB = await mountClient(b)
+  clients.push(uiA, uiB)
+  const settle = ui => ui.flush(async () => { while (inFlight.size) await Promise.all([...inFlight]) })
+  await settle(uiA); await settle(uiB)
+  await uiB.click([...uiB.container.querySelectorAll('.ec-li')].find(row => row.textContent.includes('听力')))
+  for (const [ui, boundary] of [[uiA, a], [uiB, b]]) {
+    await ui.input('文本进度', 1); await ui.click('播放'); await settle(ui)
+    const deadline = Date.now() + 5000
+    while (!boundary.media.length) { assert.ok(Date.now() < deadline); await ui.poll(); await settle(ui) }
+    await ui.flush(() => boundary.media[0].onplaying())
+  }
+  await uiA.click('删除 Kokoro 资源'); await uiA.click('暂不删除'); await settle(uiA)
+  assert.equal((await h.request('speech.assets.status')).data.assetsReady, true)
+  assert.notEqual(a.media[0].src, ''); assert.notEqual(b.media[0].src, '')
+  await uiA.click('删除 Kokoro 资源'); await uiA.click('确认删除此主机 Kokoro 资源'); await settle(uiA)
+  assert.equal(a.media[0].src, '')
+  assert.notEqual(b.media[0].src, '', 'no instant push is claimed for the other HTTP page')
+  assert.deepEqual(await fs.readdir(h.speechRoot), [])
+  await uiB.poll(); await settle(uiB); await settle(uiB)
+  assert.equal(b.media[0].src, '')
+  for (const ui of [uiA, uiB]) {
+    assert.equal(ui.field('文本进度').value, '1')
+    assert.match(ui.container.querySelector('.ec-item-body').textContent, /已暂停/)
+    assert.match(ui.container.querySelector('[aria-label="朗读设置"]').textContent, /尚未准备/)
+    assert.match(ui.container.querySelector('[aria-label="Kokoro 资源准备"]').textContent, /尚未准备/, ui === uiA ? 'caller resource card' : 'remote resource card')
+  }
+  assert.deepEqual((await run('settings.get')).data, settingsBefore)
+  assert.deepEqual((await run('state.get')).data.todayLesson, lessonBefore)
+})
+
+test('confirmed deletion ends the actual default CPU worker after two page WAVs and clears resources and handles', { skip: realAssets, timeout: 120000 }, async t => {
+  const childProcess = createRequire(import.meta.url)('node:child_process')
+  const originalFork = childProcess.fork, children = []
+  childProcess.fork = (...args) => {
+    const child = originalFork(...args)
+    if (String(args[0]).endsWith('/speech/worker.js')) {
+      const row = { child, pid: child.pid }; children.push(row)
+      child.once('exit', () => { row.exited = true }); child.once('disconnect', () => { row.disconnected = true })
+    }
+    return child
+  }
+  syncBuiltinESMExports()
+  let h, downloads = 0
+  try {
+    // No runtimeFactory. Only the external download uses the fixed fixture.
+    h = await prepared(t, { download: (asset, { signal }) => {
+      downloads++; return createReadStream(join(process.env.ENGLISH_COACH_TEST_ASSETS, asset.path), { signal })
+    } })
+    for (const [command, payload] of [
+      ['settings.save', { audio: { provider: 'kokoro', kokoroVoice: 'af_heart', rate: 1.5 }, study: { wordsPerDay: 7 } }],
+      ['audio.bookmark.save', { materialId: 'synthetic-delete-article', contentFingerprint: 'fixture-v1', position: 2 }],
+      ['review.add', { items: [{ term: 'synthetic example', meaning: '合成示例', choices: ['合成示例', '另外一个', '从不', '每天'], answerIndex: 0 }] }]
+    ]) assert.equal((await execute(h.root, command, payload)).ok, true)
+    async function learningFiles(directory, prefix = '') {
+      const entries = {}
+      for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name), relative = prefix + entry.name
+        if (entry.isDirectory()) Object.assign(entries, await learningFiles(path, relative + '/'))
+        else entries[relative] = await fs.readFile(path, 'utf8')
+      }
+      return entries
+    }
+    const before = await learningFiles(h.root), records = [], pageB = { page: 'b'.repeat(48) }
+    const a = await h.request('speech.synthesize', { ...sample, text: 'A quiet bird.' })
+    const b = await h.request('speech.synthesize', { ...sample, text: 'B takes a train.' }, pageB)
+    for (const [job, page] of [[a, {}], [b, pageB]]) {
+      await waitFor(() => h.request('speech.status', { taskId: job.data.taskId }, page), value => value.data?.phase === 'ready', 'actual default worker WAV')
+      const audio = await h.request('speech.audio', { taskId: job.data.taskId }, page)
+      assert.equal(audio.httpStatus, 200); assert.equal(audio.bytes.readUInt32LE(24), 24000)
+      let peak = 0
+      for (let n = 44; n < audio.bytes.length; n += 4) { const value = audio.bytes.readFloatLE(n); assert.ok(Number.isFinite(value)); peak = Math.max(peak, Math.abs(value)) }
+      assert.ok(peak > 0.00001)
+      records.push({ bytes: audio.bytes.length, peak })
+    }
+    const active = await h.request('speech.synthesize', { ...sample, text: 'The active CPU worker must stop when resources are deleted.' }, pageB)
+    await waitFor(() => h.request('speech.status', { taskId: active.data.taskId }, pageB), value => value.data?.phase === 'generating', 'actual active CPU deletion')
+    assert.equal(children.length, 1)
+    assert.doesNotThrow(() => process.kill(children[0].pid, 0))
+    const removed = await h.request('speech.assets.delete')
+    assert.equal(removed.ok, true, JSON.stringify(removed))
+    assert.equal(removed.data.resourceGeneration, null)
+    assert.ok(children[0].exited && children[0].disconnected)
+    assert.throws(() => process.kill(children[0].pid, 0), { code: 'ESRCH' })
+    assert.deepEqual(await fs.readdir(h.speechRoot), [])
+    for (const [job, page] of [[a, {}], [b, pageB], [active, pageB]]) {
+      assert.equal((await h.request('speech.audio', { taskId: job.data.taskId }, page)).httpStatus, 404)
+      assert.equal((await h.request('speech.status', { taskId: job.data.taskId }, page)).httpStatus, 404)
+    }
+    const later = await h.request('speech.synthesize', sample)
+    const unavailable = await waitFor(() => h.request('speech.status', { taskId: later.data.taskId }), value => value.data?.phase === 'error', 'explicit new request remains unprepared')
+    assert.equal(unavailable.data.error.code, 'ASSETS_NOT_READY')
+    assert.equal(downloads, 8, 'no download after the confirmed deletion')
+    assert.equal(children.length, 1, 'no worker restart before a new explicit preparation')
+    assert.deepEqual(await learningFiles(h.root), before)
+    t.diagnostic(JSON.stringify({ actualConfirmedDeletion: { records, pid: children[0].pid, exited: true, ipcDisconnected: true, gone: true, downloadsAfterDeletion: 0, learningBytesUnchanged: true } }))
+  } finally { await h?.dispose(); childProcess.fork = originalFork; syncBuiltinESMExports() }
 })
 
 test('two actual Host pages use one CPU worker and closing one leaves the other ready before final process reclamation', { skip: realAssets, timeout: 120000 }, async t => {

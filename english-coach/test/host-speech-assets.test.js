@@ -1,17 +1,17 @@
 import assert from 'node:assert/strict'
 import { promises as fs } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { createReadStream } from 'node:fs'
 import test from 'node:test'
 
 import { apply } from '../index.js'
+import { tempFixture, disposeFixture } from './temp-fixture.js'
 
 // Exercise the registered Host route, including the actual request headers.
 // Only the external downloader and host services are controlled adapters.
 async function host(t, { directory, download } = {}) {
-  const base = await fs.realpath(directory ?? await fs.mkdtemp(join(tmpdir(), 'english-coach-speech-')))
+  const base = await tempFixture(t, 'english-coach-speech-', directory)
   const root = join(base, 'learning'), speechRoot = join(base, 'speech')
   await fs.mkdir(root, { recursive: true })
   const intervals = [], effects = [], events = new Map()
@@ -57,7 +57,7 @@ async function host(t, { directory, download } = {}) {
     for (const cleanup of effects.reverse()) await cleanup()
     await events.get('dispose')?.()
   }
-  t.after(dispose)
+  disposeFixture(t, dispose)
   return { base, root, speechRoot, request, dispose }
 }
 
@@ -100,6 +100,10 @@ test('speech resource routes reject foreign origins, simple requests and remote 
     assert.ok([400, 403].includes(denied.httpStatus), JSON.stringify(denied))
   }
   assert.equal((await h.request('speech.assets.status', {}, { headers: { origin: 'dsh-app://app' } })).httpStatus, 403, 'desktop main forwards without Origin after its own checks')
+  for (const [payload, options] of [
+    [{ path: '/tmp/not-owned' }, {}], [{ owner: 'other' }, {}], [{ id: 'model' }, {}],
+    [[], {}], [null, {}], [{}, { session: '' }], [{}, { headers: { 'content-type': 'text/plain' } }]
+  ]) assert.equal((await h.request('speech.assets.delete', payload, options)).ok, false)
   await assert.rejects(fs.access(h.speechRoot), { code: 'ENOENT' })
 })
 
@@ -116,7 +120,7 @@ test('resource mutations require an admitted owner Peer and page ownership is Pe
     signal.addEventListener('abort', () => stream.destroy(Object.assign(new Error('cancelled'), { name: 'AbortError' })), { once: true })
     return stream
   } })
-  for (const command of ['speech.assets.status', 'speech.assets.prepare', 'speech.assets.cancel']) {
+  for (const command of ['speech.assets.status', 'speech.assets.prepare', 'speech.assets.cancel', 'speech.assets.delete']) {
     const denied = await h.request(command, {}, { headers: { cookie: 'unauthenticated' } })
     assert.equal(denied.httpStatus, 401)
     assert.equal(denied.ok, false)
@@ -288,6 +292,210 @@ test('removing a ready directory invalidates cached readiness without downloadin
   const missing = (await h.request('speech.assets.status')).data
   assert.equal(missing.assetsReady, false)
   assert.equal(missing.phase, 'unprepared')
+})
+
+test('confirmed resource removal deletes the prepared physical assets without changing learning files', {
+  skip: !process.env.ENGLISH_COACH_TEST_ASSETS && 'Requires explicit verified assets fixture'
+}, async t => {
+  let downloads = 0
+  const h = await host(t, { download: (asset, { signal }) => {
+    downloads++
+    return createReadStream(join(process.env.ENGLISH_COACH_TEST_ASSETS, asset.path), { signal })
+  } })
+  await h.request('settings.save', { audio: { provider: 'kokoro', kokoroVoice: 'af_heart', rate: 1.5 } })
+  const learningBefore = await Promise.all((await fs.readdir(h.root)).sort().map(async name => [name, await fs.readFile(join(h.root, name))]))
+  await h.request('speech.assets.prepare')
+  const prepared = await settle(h, 'ready')
+  const owned = join(h.speechRoot, prepared.manifest.id)
+  assert.ok((await fs.stat(join(owned, 'onnx/model_quantized.onnx'))).size > 90_000_000)
+  const removed = await h.request('speech.assets.delete')
+  assert.equal(removed.ok, true, JSON.stringify(removed))
+  assert.equal(removed.data.phase, 'unprepared')
+  assert.equal(removed.data.assetsReady, false)
+  assert.equal(removed.data.resourceGeneration, null)
+  assert.equal(removed.data.diskBytes, 0)
+  await assert.rejects(fs.access(owned), { code: 'ENOENT' })
+  assert.deepEqual(await fs.readdir(h.speechRoot), [])
+  assert.deepEqual(await Promise.all((await fs.readdir(h.root)).sort().map(async name => [name, await fs.readFile(join(h.root, name))])), learningBefore)
+  assert.equal((await h.request('speech.assets.status')).data.assetsReady, false)
+  assert.equal(downloads, 8, 'delete and status never grant another download')
+})
+
+test('confirmed deletion waits for an aborted late download and excludes new prepare or repair until complete', async t => {
+  let entered, release, downloads = 0, signal
+  const started = new Promise(resolve => { entered = resolve })
+  const pending = new Promise(resolve => { release = resolve })
+  const h = await host(t, { download: async (_asset, options) => {
+    downloads++; signal = options.signal; entered()
+    await pending // External transport can finish its handshake after abort.
+    return Readable.from([Buffer.from('{')])
+  } })
+  disposeFixture(t, release)
+  await h.request('speech.assets.prepare')
+  await started
+  let completed = false
+  const removing = h.request('speech.assets.delete', {}, { session: 'b'.repeat(48) }).then(value => { completed = true; return value })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(signal.aborted, true, 'global deletion aborts another page transfer')
+  assert.equal(completed, false, 'actual transfer cleanup must finish before success')
+  assert.equal((await h.request('speech.assets.prepare')).code, 'speech_assets_deleting')
+  assert.equal((await h.request('speech.assets.repair')).code, 'speech_assets_deleting')
+  assert.equal((await h.request('speech.assets.status')).data.phase, 'deleting')
+  release()
+  const removed = await removing
+  assert.equal(removed.ok, true, JSON.stringify(removed))
+  assert.equal(removed.data.phase, 'unprepared')
+  assert.equal(removed.data.resourceGeneration, null)
+  assert.deepEqual(await fs.readdir(h.speechRoot), [])
+  assert.equal((await h.request('speech.assets.status')).data.phase, 'unprepared', 'late completion cannot restore readiness')
+  assert.equal(downloads, 1)
+})
+
+test('global removal reclaims owned generations, staging and active metadata idempotently, preserving foreign siblings', {
+  skip: !process.env.ENGLISH_COACH_TEST_ASSETS && 'Requires explicit verified assets fixture'
+}, async t => {
+  let downloads = 0
+  const h = await host(t, { download: (asset, { signal }) => {
+    downloads++; return createReadStream(join(process.env.ENGLISH_COACH_TEST_ASSETS, asset.path), { signal })
+  } })
+  await h.request('speech.assets.prepare'); await settle(h, 'ready')
+  await h.request('speech.assets.repair')
+  const repaired = await settle(h, 'ready')
+  const generation = '12345678-1234-4234-9234-123456789abc'
+  const staging = join(h.speechRoot, `.prepare-${generation}`)
+  await fs.mkdir(staging)
+  await fs.writeFile(join(staging, '_owner.json'), JSON.stringify({ id: repaired.manifest.id, generation }))
+  await fs.writeFile(join(staging, 'config.json'), '{')
+  await fs.writeFile(join(h.speechRoot, `.active-${generation}.json`), JSON.stringify({ id: repaired.manifest.id, revision: repaired.manifest.revision, generation }))
+  await fs.writeFile(join(h.speechRoot, 'foreign-notes.txt'), 'keep foreign sibling')
+  assert.equal((await h.request('speech.assets.delete')).ok, true)
+  assert.deepEqual(await fs.readdir(h.speechRoot), ['foreign-notes.txt'])
+  assert.equal(await fs.readFile(join(h.speechRoot, 'foreign-notes.txt'), 'utf8'), 'keep foreign sibling')
+  assert.equal((await h.request('speech.assets.status')).data.phase, 'unprepared')
+  const repeated = await h.request('speech.assets.delete')
+  assert.equal(repeated.ok, true)
+  assert.equal(repeated.data.resourceGeneration, null)
+  assert.equal(downloads, 16)
+  await h.request('speech.assets.prepare')
+  assert.equal((await settle(h, 'ready')).assetsReady, true)
+  assert.equal(downloads, 24, 'only a new explicit preparation rebuilds resources')
+})
+
+test('delete refuses linked or foreign active records and cannot report ready or deleted after refusal', async t => {
+  for (const kind of ['symbolic', 'hard', 'foreign']) {
+    const h = await host(t, { download: () => assert.fail('refused deletion cannot download') })
+    const manifest = (await h.request('speech.assets.status')).data.manifest
+    const generation = '12345678-1234-4234-9234-123456789abc'
+    const directory = join(h.speechRoot, manifest.id), pointer = join(h.speechRoot, 'active.json'), foreign = join(h.base, 'foreign.json')
+    await fs.mkdir(directory, { recursive: true })
+    const marker = JSON.stringify({ id: manifest.id, generation })
+    await fs.writeFile(join(directory, '_owner.json'), marker)
+    const content = JSON.stringify({ id: kind === 'foreign' ? 'foreign-model' : manifest.id, revision: manifest.revision, generation })
+    await fs.writeFile(foreign, content)
+    if (kind === 'symbolic') await fs.symlink(foreign, pointer)
+    else if (kind === 'hard') await fs.link(foreign, pointer)
+    else await fs.copyFile(foreign, pointer)
+    const removed = await h.request('speech.assets.delete')
+    assert.equal(removed.ok, false)
+    assert.equal(removed.code, kind === 'foreign' ? 'speech_invalid_manifest' : 'speech_unsafe_path')
+    assert.equal(await fs.readFile(foreign, 'utf8'), content)
+    assert.equal(await fs.readFile(pointer, 'utf8'), content)
+    assert.equal(await fs.readFile(join(directory, '_owner.json'), 'utf8'), marker, 'validate every target before deleting any directory')
+    const failed = (await h.request('speech.assets.status')).data
+    assert.equal(failed.phase, 'error')
+    assert.equal(failed.assetsReady, false)
+    assert.ok(failed.error)
+  }
+})
+
+test('delete refuses foreign or linked owned-tree files and keeps truthful failure until an explicit retry', {
+  skip: !process.env.ENGLISH_COACH_TEST_ASSETS && 'Requires explicit verified assets fixture'
+}, async t => {
+  for (const kind of ['foreign', 'symbolic', 'hard', 'owner']) {
+    const h = await host(t, { download: (asset, { signal }) => createReadStream(join(process.env.ENGLISH_COACH_TEST_ASSETS, asset.path), { signal }) })
+    await h.request('speech.assets.prepare')
+    const original = await settle(h, 'ready'), owned = join(h.speechRoot, original.manifest.id)
+    const external = join(h.base, 'foreign.txt')
+    await fs.writeFile(external, 'do not delete')
+    if (kind === 'foreign') await fs.copyFile(external, join(owned, 'foreign.txt'))
+    else if (kind === 'symbolic') await fs.symlink(external, join(owned, 'foreign.txt'))
+    else if (kind === 'hard') await fs.link(join(owned, 'voices/af_heart.bin'), join(h.base, 'linked-voice.bin'))
+    else await fs.writeFile(join(owned, '_owner.json'), '{bad owner')
+    const removed = await h.request('speech.assets.delete')
+    assert.equal(removed.ok, false, kind)
+    const failed = (await h.request('speech.assets.status')).data
+    assert.equal(failed.phase, 'error', 'a ready fingerprint cannot erase a refused deletion')
+    assert.equal(failed.assetsReady, false)
+    assert.equal(failed.diskBytesKnown, false)
+    assert.equal(failed.error.code, removed.code)
+    assert.equal(await fs.readFile(external, 'utf8'), 'do not delete')
+    assert.ok((await fs.stat(join(owned, 'onnx/model_quantized.onnx'))).size > 90_000_000)
+    assert.equal((await h.request('speech.assets.delete')).ok, false, 'repeat stays within the same refused scope')
+  }
+})
+
+test('a real permission failure during physical removal reports incomplete deletion without hidden retries', {
+  skip: !process.env.ENGLISH_COACH_TEST_ASSETS && 'Requires explicit verified assets fixture'
+}, async t => {
+  if (process.platform === 'win32' || process.getuid?.() === 0) return t.skip('Requires POSIX write permissions enforced for a non-root user')
+  let downloads = 0
+  const h = await host(t, { download: (asset, { signal }) => {
+    downloads++; return createReadStream(join(process.env.ENGLISH_COACH_TEST_ASSETS, asset.path), { signal })
+  } })
+  await h.request('speech.assets.prepare'); const ready = await settle(h, 'ready')
+  // A real isolated directory permission failure, not a private fs stub.
+  assert.equal(await fs.realpath(h.speechRoot), h.speechRoot)
+  await fs.chmod(h.speechRoot, 0o500)
+  try {
+    const removed = await h.request('speech.assets.delete')
+    assert.equal(removed.ok, false)
+    assert.equal(removed.code, 'speech_storage')
+    const failed = (await h.request('speech.assets.status')).data
+    assert.equal(failed.phase, 'error')
+    assert.equal(failed.assetsReady, false)
+    assert.equal(failed.diskBytesKnown, false)
+    assert.equal(failed.error.code, 'speech_storage')
+    assert.ok((await fs.readdir(h.speechRoot)).includes(ready.manifest.id), 'undeleted target is still present')
+    assert.equal(downloads, 8)
+  } finally { await fs.chmod(h.speechRoot, 0o700) }
+})
+
+test('Host unload waits for a confirmed deletion already draining a late transport', async t => {
+  let entered, release
+  const started = new Promise(resolve => { entered = resolve })
+  const pending = new Promise(resolve => { release = resolve; setTimeout(resolve, 1000).unref() })
+  const h = await host(t, { download: async () => { entered(); await pending; return Readable.from([Buffer.from('{')]) } })
+  await h.request('speech.assets.prepare'); await started
+  let removed = false
+  const removing = h.request('speech.assets.delete').then(result => { removed = true; return result })
+  await new Promise(resolve => setImmediate(resolve))
+  let unloaded = false
+  const unloading = h.dispose().then(() => { unloaded = true })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(unloaded, false)
+  release()
+  await unloading
+  assert.equal(removed, true, 'Host cleanup includes the physical deletion response')
+  assert.equal((await removing).ok, true)
+  assert.deepEqual(await fs.readdir(h.speechRoot), [])
+})
+
+test('a prepare already checking readiness cannot cross a concurrently confirmed deletion and start another download', {
+  skip: !process.env.ENGLISH_COACH_TEST_ASSETS && 'Requires explicit verified assets fixture'
+}, async t => {
+  let downloads = 0
+  const h = await host(t, { download: (asset, { signal }) => {
+    downloads++; return createReadStream(join(process.env.ENGLISH_COACH_TEST_ASSETS, asset.path), { signal })
+  } })
+  await h.request('speech.assets.prepare'); await settle(h, 'ready')
+  const checkingPrepare = h.request('speech.assets.prepare')
+  const removing = h.request('speech.assets.delete')
+  const [preparedAgain, removed] = await Promise.all([checkingPrepare, removing])
+  assert.equal(preparedAgain.ok, false, 'delete must exclude an in-flight readiness check, not just job allocation')
+  assert.equal(preparedAgain.code, 'speech_assets_deleting')
+  assert.equal(removed.data.phase, 'unprepared')
+  assert.equal(downloads, 8)
+  assert.deepEqual(await fs.readdir(h.speechRoot), [])
 })
 
 test('an explicit repair replaces a corrupt owned set with all eight fixed assets and survives restart', {
