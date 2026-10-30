@@ -27,7 +27,7 @@ export async function mountClient({ request, slot = 'main', setupWindow, layout 
   dom.window.__ModuleLoader__ = { load: ({ factory }) => { plugin = factory(require) } }
   const context = vm.createContext({
     window: dom.window, document: dom.window.document, console,
-    fetch: async (url, options) => ({ ok: true, json: async () => request(url.split('/').at(-1), JSON.parse(options.body)) }),
+    fetch: async (url, options) => ({ ok: true, json: async () => request(url.split('/').at(-1), JSON.parse(options.body), options) }),
     setTimeout, clearTimeout,
     setInterval: (callback, delay) => { intervals.set(++timerId, { callback, delay }); return timerId },
     clearInterval: (id) => intervals.delete(id)

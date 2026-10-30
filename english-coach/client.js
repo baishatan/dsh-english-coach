@@ -231,12 +231,24 @@ window.__ModuleLoader__.load({
       for (const listener of reviewListeners) listener()
     }
 
+    // One cryptographically random page owner shared by all speech operations.
+    // It supplements the Host's authenticated Peer; it is never filesystem input.
+    const speechSession = (() => {
+      try {
+        const bytes = new Uint8Array(24)
+        window.crypto.getRandomValues(bytes)
+        return Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('')
+      } catch { return null }
+    })()
+
     async function call(command, payload) {
+      const isSpeech = command.startsWith('speech.')
+      if (isSpeech && !speechSession) return { ok: false, code: 'speech_unavailable', message: '当前页面没有安全随机能力，无法操作朗读资源。' }
       let response
       try {
         response = await fetch(`${API}/${command}`, {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: { 'content-type': 'application/json', ...(isSpeech ? { 'x-english-coach-speech-session': speechSession } : {}) },
           body: JSON.stringify(payload ?? {})
         })
       } catch (error) {
@@ -1209,6 +1221,60 @@ window.__ModuleLoader__.load({
     }
 
     // ----------------------------------------------------------- study items
+
+    function SpeechAssetsPreparation() {
+      const [assets, setAssets] = useState(null), [error, setError] = useState(null), [busy, setBusy] = useState(false)
+      const mounted = useRef(false), order = useRef(0), pending = useRef(false)
+      const active = assets && ['preparing', 'downloading', 'validating'].includes(assets.phase)
+      const read = useCallback(async () => {
+        const request = ++order.current
+        const result = await call('speech.assets.status')
+        if (!mounted.current || request !== order.current) return
+        if (result.ok) { setAssets(result.data); setError(null) }
+        else setError(result.message)
+      }, [])
+      useEffect(() => {
+        mounted.current = true
+        void read()
+        return () => { mounted.current = false; order.current++ }
+      }, [read])
+      useEffect(() => {
+        if (!active) return
+        const timer = setInterval(read, 1000)
+        return () => clearInterval(timer)
+      }, [active, read])
+      async function act(action) {
+        if (pending.current) return
+        pending.current = true
+        const request = ++order.current
+        setBusy(true)
+        setError(null)
+        try {
+          const result = await call(`speech.assets.${action}`)
+          if (!mounted.current || request !== order.current) return
+          if (result.ok) setAssets(result.data)
+          else setError(result.message)
+        } finally { pending.current = false; if (mounted.current) setBusy(false) }
+      }
+      const count = value => Number(value ?? 0).toLocaleString('en-US')
+      const phase = { unprepared: '尚未准备', preparing: '准备中', downloading: '下载中', validating: '校验中', cancelled: '已取消', interrupted: '上次准备中断；可明确重新准备', error: '准备失败', ready: '资源已校验' }[assets?.phase] ?? '读取资源状态中'
+      return h('section', { className: 'ec-card ec-speech-assets', 'aria-label': 'Kokoro 资源准备' },
+        h('div', { className: 'ec-card-head' }, h('h2', null, 'Kokoro 资源准备')),
+        h('p', { className: 'ec-muted' }, 'Kokoro 在 DSH 主机处理英文；远程页面会把文字交给该主机。只有点击准备才下载，完成后不会自动发声。'),
+        assets ? h('p', { className: 'ec-muted', style: { overflowWrap: 'anywhere' } },
+          `固定版本 ${assets.manifest.revision} · 模型、词元配置与 Heart / Michael / Emma / George 四声一起下载 ${count(assets.manifest.downloadBytes)} 字节（约 94.5 MB）。这是下载资源，不含另行随插件安装的运行时代码。准备需相应临时空间；就绪后原目录保留，不重复复制。`) : null,
+        h('div', { role: 'status', 'aria-live': 'polite' }, phase),
+        assets ? h('p', { className: 'ec-muted' }, `已下载 ${count(assets.downloadedBytes)} / ${count(assets.manifest.downloadBytes)} 字节 · 已校验 ${count(assets.validatedBytes)} 字节 · 当前资源占用 ${count(assets.diskBytes)} 字节`) : null,
+        active ? h('progress', { 'aria-label': 'Kokoro 下载字节', value: assets.downloadedBytes, max: assets.manifest.downloadBytes, style: { width: '100%' } }) : null,
+        active && assets.currentFile ? h('div', { className: 'ec-muted', style: { overflowWrap: 'anywhere' } }, assets.currentFile) : null,
+        assets?.assetsReady ? h('p', { role: 'status' }, assets.runtimeAvailable ? '资源与运行时可用；请重新点击播放，不会自动发声。' : '资源已校验，合成运行时尚不可用；安装兼容运行时后需重新点击播放，不会自动发声。') : null,
+        assets?.error ? h(Notice, { tone: 'error' }, assets.error.message) : null,
+        error ? h(Notice, { tone: 'error' }, error) : null,
+        h('div', { className: 'ec-row', style: { marginTop: 10 } },
+          active ? assets.canCancel ? h(Btn, { small: true, disabled: busy, onClick: () => act('cancel') }, '取消准备') : h('span', { className: 'ec-muted' }, '另一页面正在准备；仅该页面可取消。') :
+          assets && !assets.assetsReady ? h(Btn, { primary: true, small: true, disabled: busy, onClick: () => act('prepare') }, assets.phase === 'error' ? '重试准备 Kokoro' : ['cancelled', 'interrupted'].includes(assets.phase) ? '重新准备 Kokoro' : '准备 Kokoro') : null,
+          !active && error ? h(Btn, { small: true, disabled: busy, onClick: read }, '重试资源状态') : null))
+    }
 
     function SpeechOptions() {
       const audio = useSpeech(), prefs = audio.preferences
@@ -2279,6 +2345,7 @@ window.__ModuleLoader__.load({
               onGoWords: onOpenVocabulary
             }),
             h(SpeechOptions),
+            h(SpeechAssetsPreparation),
             h(WeeklyCard, { data, reload })
           )
         )
