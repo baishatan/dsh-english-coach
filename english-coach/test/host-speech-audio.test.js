@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import test from 'node:test'
 import { apply } from '../index.js'
+import { execute } from '../core/index.js'
 
 // Public registered Host route. Only Host services, downloads and the external
 // runtime are adapters; readiness still requires all eight real fixed assets.
@@ -268,6 +269,23 @@ test('failed replacement keeps the compatible installation usable by the actual 
 
 test('confirmed same-revision replacement invalidates old audio and reloads the actual runtime from its new generation', { skip: realAssets, timeout: 120000 }, async t => {
   const h = await prepared(t)
+  // All learner fixtures are synthetic and created through the established
+  // execute Interface, never by editing a real Profile or learning file.
+  for (const [command, payload] of [
+    ['settings.save', { audio: { rate: 1.5, kokoroVoice: 'bf_emma' }, study: { wordsPerDay: 7 } }],
+    ['audio.bookmark.save', { materialId: 'synthetic-repair-article', contentFingerprint: 'fixture-v1', position: 2 }],
+    ['review.add', { items: [{ term: 'synthetic example', meaning: '合成示例', choices: ['合成示例', '另外一个', '从不', '每天'], answerIndex: 0 }] }]
+  ]) assert.equal((await execute(h.root, command, payload)).ok, true)
+  async function learningFiles(directory, prefix = '') {
+    const result = {}
+    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name), relative = prefix + entry.name
+      if (entry.isDirectory()) Object.assign(result, await learningFiles(path, relative + '/'))
+      else result[relative] = await fs.readFile(path, 'utf8')
+    }
+    return result
+  }
+  const learningBefore = await learningFiles(h.root)
   async function generate() {
     const job = await h.request('speech.synthesize', { text: 'Opportunity.', voice: 'af_heart', rate: 1 })
     await waitFor(() => h.request('speech.status', { taskId: job.data.taskId }), value => value.data?.phase === 'ready', 'real replacement WAV')
@@ -292,6 +310,7 @@ test('confirmed same-revision replacement invalidates old audio and reloads the 
   const entries = await fs.readdir(h.speechRoot)
   assert.equal(entries.filter(name => name.startsWith('.generation-')).length, 1)
   await assert.rejects(fs.access(join(h.speechRoot, before.manifest.id)), { code: 'ENOENT' })
+  assert.deepEqual(await learningFiles(h.root), learningBefore, 'repair and real synthesis preserve every synthetic learning, settings and bookmark byte')
   t.diagnostic(JSON.stringify({ realBeforeAndAfterGeneration: [old, current] }))
 })
 
