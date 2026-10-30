@@ -206,10 +206,11 @@ test('独立窄悬浮入口可用数字键纠正，Enter继续，Esc收起不丢
 
 test('纠正后焦点回到当前题，发音只朗读且保留错误反馈和零格', async t => {
   const api = await fixture(t)
+  assert.equal((await api.run('settings.save', { audio: { provider: 'web-speech', voiceURI: 'test-en' } })).ok, true)
   const spoken = []
   const ui = await open(t, api, { setupWindow(window) {
     const synth = new window.EventTarget()
-    Object.assign(synth, { getVoices: () => [{ voiceURI: 'test-en', name: 'Test English', lang: 'en-US', localService: true }], cancel() {}, speak(utterance) { spoken.push(utterance.text) } })
+    Object.assign(synth, { getVoices: () => [{ voiceURI: 'test-en', name: 'Reed', lang: 'en-US', localService: true }], cancel() {}, speak(utterance) { spoken.push(utterance.text) } })
     window.speechSynthesis = synth
     window.SpeechSynthesisUtterance = class { constructor(text) { this.text = text } }
   } })
