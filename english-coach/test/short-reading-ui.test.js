@@ -358,7 +358,7 @@ test('a pill pronunciation exposes its own waiting state and manual media retry 
   api.rejectPlay = false
   retry.focus(); await ui.key(retry, '1'); await ui.click(retry)
   assert.equal(api.media[0].plays, 2)
-  assert.equal(api.calls.filter(({ command }) => command === 'speech.synthesize').length, 1)
+  assert.deepEqual(api.calls.filter(({ command }) => command === 'speech.synthesize').map(({ payload }) => payload), [{ text: 'orchard', voice: 'bf_emma', rate: 1.5 }])
   assert.equal(api.calls.filter(({ command }) => command === 'speech.audio').length, 1)
   await ui.flush(() => api.media[0].onplaying())
   assert.match(feedback(button).textContent, /正在播放本地朗读/)
