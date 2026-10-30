@@ -177,6 +177,20 @@ test('bounded article prefetch retains delivered foreground audio and yields to 
   for (const priority of ['background', true, null, 1]) assert.equal((await h.request('speech.synthesize', { ...sample, priority })).httpStatus, 400)
 })
 
+test('cancelling a repeated-text prefetch cannot evict the delivered foreground audio', { skip: realAssets }, async t => {
+  let generations = 0
+  const h = await prepared(t, { runtimeFactory: () => ({ async synthesize() { generations++; return wav() }, async dispose() {} }) })
+  const foreground = await h.request('speech.synthesize', sample)
+  await waitFor(() => h.request('speech.status', { taskId: foreground.data.taskId }), value => value.data?.phase === 'ready', 'repeated foreground ready')
+  assert.equal((await h.request('speech.audio', { taskId: foreground.data.taskId })).httpStatus, 200)
+  const prefetch = await h.request('speech.synthesize', { ...sample, priority: 'prefetch' })
+  await waitFor(() => h.request('speech.status', { taskId: prefetch.data.taskId }), value => value.data?.phase === 'ready', 'repeated prefetch ready')
+  assert.equal(generations, 1, 'a repeated next sentence reuses the one private cache entry')
+  assert.equal((await h.request('speech.cancel', { taskId: prefetch.data.taskId })).ok, true)
+  assert.equal((await h.request('speech.audio', { taskId: foreground.data.taskId })).httpStatus, 200, 'canceling speculation leaves the real foreground handle usable')
+  assert.equal((await h.request('speech.status', { taskId: prefetch.data.taskId })).httpStatus, 404)
+})
+
 test('audio reuse is page-private and byte-bounded and oversized WAV output is rejected', { skip: realAssets }, async t => {
   let generations = 0, size = 240
   const h = await prepared(t, { runtimeFactory: () => ({ async synthesize() { generations++; return wav(size) }, async dispose() {} }) })

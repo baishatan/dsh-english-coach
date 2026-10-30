@@ -150,7 +150,7 @@ export function createSpeechAudio({ assets, runtimeFactory } = {}) {
       const task = tasks.get(payload.taskId)
       if (task?.owner !== owner) return notFound()
       remove(task)
-      evict(task.cacheKey)
+      if (![...tasks.values()].some(value => value.cacheKey === task.cacheKey && value.phase === 'ready')) evict(task.cacheKey)
       return success({ taskId: task.id, phase: 'cancelled', error: null })
     },
     audio(owner, payload) {
