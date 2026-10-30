@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mountClient } from './client-harness.js'
+import { mountClient, deferred } from './client-harness.js'
 
 function fixture() {
   const calls = [], spoken = []
@@ -35,6 +35,65 @@ function fixture() {
   }
   return api
 }
+
+test('fresh prepared resources silently agree with the shared reading settings before any audition', async t => {
+  const api = fixture()
+  api.setAssets({ phase: 'ready', assetsReady: true, runtimeAvailable: true })
+  const ui = await mountClient({ request: api.request, setupWindow: api.setupWindow })
+  t.after(() => ui.close())
+  const resources = ui.container.querySelector('[aria-label="Kokoro 资源准备"]')
+  const settings = ui.container.querySelector('[aria-label="朗读设置"]')
+  assert.match(resources.textContent, /资源与运行时可用/)
+  assert.doesNotMatch(settings.textContent, /尚未准备/)
+  assert.equal(api.calls.some(call => /speech\.(?:synthesize|audio)|speech\.assets\.(?:prepare|repair)/.test(call.command)), false)
+  assert.equal(api.spoken.length, 0)
+})
+
+test('unknown resource status says checking until preparation completes silently and survives provider changes', async t => {
+  const api = fixture(), pending = deferred(), request = api.request
+  api.request = (command, payload, options) => command === 'speech.assets.status' && !api.firstStatusReturned
+    ? pending.promise : request(command, payload, options)
+  const ui = await mountClient({ request: api.request, setupWindow: api.setupWindow })
+  t.after(() => ui.close())
+  const settings = ui.container.querySelector('[aria-label="朗读设置"]')
+  assert.match(settings.textContent, /正在检查.*资源/)
+  assert.doesNotMatch(settings.textContent, /尚未准备/)
+  api.firstStatusReturned = true
+  await ui.flush(() => pending.resolve({ ok: true, data: { phase: 'unprepared', assetsReady: false, runtimeAvailable: true, manifest: { revision: 'fixed', downloadBytes: 94453730 } } }))
+  assert.match(settings.textContent, /尚未准备.*「Kokoro 资源准备」/)
+  await ui.click('准备 Kokoro')
+  api.setAssets({ phase: 'ready', assetsReady: true, runtimeAvailable: true, canCancel: false })
+  await ui.poll()
+  assert.doesNotMatch(settings.textContent, /尚未准备|正在检查/)
+  assert.match(ui.container.querySelector('[aria-label="Kokoro 资源准备"]').textContent, /资源与运行时可用/)
+  await ui.input('音频来源', 'web-speech')
+  await ui.input('音频来源', 'kokoro')
+  assert.doesNotMatch(settings.textContent, /尚未准备|正在检查/)
+  assert.equal(api.calls.some(call => /speech\.(?:synthesize|audio)/.test(call.command)), false)
+  assert.equal(api.spoken.length, 0)
+})
+
+test('a failed resource recheck reports uncertainty without replacing confirmed resources or implying preparation', async t => {
+  const api = fixture(), request = api.request
+  api.setAssets({ phase: 'ready', assetsReady: true, runtimeAvailable: true })
+  api.request = (command, payload, options) => command === 'speech.assets.check'
+    ? Promise.resolve({ ok: false, message: '状态读取暂时失败' }) : request(command, payload, options)
+  const ui = await mountClient({ request: api.request, setupWindow: api.setupWindow })
+  t.after(() => ui.close())
+  const settings = ui.container.querySelector('[aria-label="朗读设置"]')
+  const resources = ui.container.querySelector('[aria-label="Kokoro 资源准备"]')
+  await ui.click('检查资源版本')
+  assert.match(settings.textContent, /资源状态暂未确认/)
+  assert.doesNotMatch(settings.textContent, /尚未准备/)
+  assert.match(resources.textContent, /资源与运行时可用/)
+  assert.match(resources.textContent, /状态读取暂时失败/)
+  await ui.input('音频来源', 'web-speech'); await ui.input('音频来源', 'kokoro')
+  assert.match(settings.textContent, /资源状态暂未确认/)
+  await ui.click('重试资源状态')
+  assert.doesNotMatch(settings.textContent, /尚未准备|暂未确认/)
+  assert.equal(api.calls.some(call => /speech\.(?:synthesize|audio)|speech\.assets\.(?:prepare|repair)/.test(call.command)), false)
+  assert.equal(api.spoken.length, 0)
+})
 
 test('resource repair discloses the fixed target and shared-host impact before explicit confirmation', async t => {
   const api = fixture()
@@ -106,6 +165,9 @@ test('visible preparation is independent of voice settings, explicit and silent 
   api.setAssets({ phase: 'ready', assetsReady: true, canCancel: false, downloadedBytes: 94453730, diskBytes: 94453930, error: null })
   await ui.poll()
   assert.match(section.textContent, /资源已校验/)
+  const settings = ui.container.querySelector('[aria-label="朗读设置"]')
+  assert.match(settings.textContent, /运行时尚不可用/)
+  assert.doesNotMatch(settings.textContent, /尚未准备/)
   assert.match(section.textContent, /运行时尚不可用/)
   assert.match(section.textContent, /不会自动发声/)
   assert.equal(api.spoken.length, 0)
