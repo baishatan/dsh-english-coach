@@ -68,16 +68,38 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
   const uuid = value => typeof value === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value)
   let currentRoot = finalRoot, verifiedFingerprint = null, checking = null
 
-  async function readActive() {
-    if (!await inspectPath(root)) return finalRoot
+  const sameFile = (left, right) => left?.dev === right?.dev && left?.ino === right?.ino && left?.size === right?.size && left?.mtimeMs === right?.mtimeMs && left?.ctimeMs === right?.ctimeMs
+  async function pointerIdentity() {
     const stat = await fs.lstat(pointerPath).catch(cause => { if (cause.code !== 'ENOENT') throw cause })
-    if (!stat) return finalRoot // Compatible with 03's fixed installation directory.
+    if (!stat) return null
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 1024) throw error('speech_unsafe_path', '活动资源记录无效或包含链接；未加载或清理资源。')
+    return stat
+  }
+
+  async function readActive({ repair = false } = {}) {
+    if (!await inspectPath(root)) return { path: finalRoot, identity: null }
+    const stat = await pointerIdentity()
+    if (!stat) return { path: finalRoot, identity: null } // 03's fixed installation directory.
+    // Even before JSON parsing, the fixed active record means this is a damaged
+    // installation, not a fresh one. Diagnostics still never grant a download.
+    state.repairRequired = true
+    state.diskBytesKnown = false
     const handle = await fs.open(pointerPath, constants.O_RDONLY | constants.O_NOFOLLOW)
+    let text
+    try {
+      if (!sameFile(await handle.stat(), stat)) throw error('speech_assets_changed', '活动记录在检查时改变；请重新检查。')
+      text = await handle.readFile('utf8')
+      if (!sameFile(await handle.stat(), stat)) throw error('speech_assets_changed', '活动记录在检查时改变；请重新检查。')
+    } finally { await handle.close() }
     let pointer
-    try { pointer = JSON.parse(await handle.readFile('utf8')) } finally { await handle.close() }
-    if (pointer.id !== assetManifest.id || pointer.revision !== assetManifest.revision || !uuid(pointer.generation)) throw error('speech_invalid_manifest', '活动资源版本不符合固定清单；请明确修复。')
-    return join(root, `.generation-${pointer.generation}`)
+    try { pointer = JSON.parse(text) } catch (cause) {
+      // A regular, bounded fixed-name metadata file can be replaced only by an
+      // explicit repair. Do not infer a root or ownership from damaged bytes.
+      if (repair && cause instanceof SyntaxError) return { path: null, identity: stat }
+      throw cause
+    }
+    if (!pointer || pointer.id !== assetManifest.id || pointer.revision !== assetManifest.revision || !uuid(pointer.generation)) throw error('speech_invalid_manifest', '活动资源版本不符合固定清单；请明确修复。')
+    return { path: join(root, `.generation-${pointer.generation}`), identity: stat }
   }
 
   // Only this finite tree can be reclaimed. Missing/truncated known files are
@@ -193,8 +215,12 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
 
   async function inventory() {
     if (!await inspectPath(root)) return null
-    currentRoot = await readActive()
-    if (!await inspectPath(currentRoot)) return null
+    const active = await readActive()
+    currentRoot = active.path
+    if (!await inspectPath(currentRoot)) {
+      if (active.identity) throw error('speech_invalid_manifest', '活动资源集合缺失；请明确确认修复，状态检查不会下载。')
+      return null
+    }
     state.repairRequired = true
     state.diskBytesKnown = false
     const paths = ['ready.json', '_owner.json', ...assetManifest.files.map(asset => asset.path)]
@@ -374,6 +400,8 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
         check()
         // A single rename is the publication point. No reader sees a partial
         // generation, and failures before it leave the old pointer untouched.
+        const activeIdentity = await pointerIdentity()
+        if (job.activeIdentity ? !activeIdentity || !sameFile(activeIdentity, job.activeIdentity) : activeIdentity) throw error('speech_assets_changed', '活动记录在修复时改变；未覆盖，请重新检查。')
         await fs.rename(job.pointer, pointerPath)
         job.activated = true
         currentRoot = replacement
@@ -445,15 +473,16 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
       if (disposed) return failure('speech_disposed', '插件已停止，无法修复资源。')
       if (task) return task.owner === owner ? success(snapshot(owner)) : failure('speech_busy', '另一页面正在准备共享朗读资源，请等待或由该页面取消。')
       await checkExisting()
-      let previous
+      let previous, activeRecord
       try {
-        const active = await readActive()
-        if (await inspectPath(active)) previous = await ownedDirectory(active, active === finalRoot ? undefined : active.slice(active.lastIndexOf('.generation-') + 12))
+        activeRecord = await readActive({ repair: true })
+        const active = activeRecord.path
+        if (active && await inspectPath(active)) previous = await ownedDirectory(active, active === finalRoot ? undefined : active.slice(active.lastIndexOf('.generation-') + 12))
         await replacements()
       } catch (cause) { const described = describeError(cause); return failure(described.code, described.message) }
       if (task) return task.owner === owner ? success(snapshot(owner)) : failure('speech_busy', '另一页面正在准备共享朗读资源，请等待或由该页面取消。')
       const generation = randomUUID()
-      const job = { generation, owner, repair: true, previous, controller: new AbortController(), staging: join(root, `.prepare-${generation}`), pointer: join(root, `.active-${generation}.json`) }
+      const job = { generation, owner, repair: true, previous, activeIdentity: activeRecord.identity, controller: new AbortController(), staging: join(root, `.prepare-${generation}`), pointer: join(root, `.active-${generation}.json`) }
       state = { ...state, phase: 'preparing', generation, operation: 'repair', downloadedBytes: 0, validatedBytes: 0, error: null }
       task = job
       job.done = run(job)
