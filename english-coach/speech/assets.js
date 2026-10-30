@@ -282,6 +282,37 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
     return true
   }
 
+  // Readiness belongs to the active set; storage usage covers every bounded,
+  // owned set, partial and metadata file. An untrusted leftover makes the total
+  // incomplete, but must not disable an independently verified active set.
+  async function updateDiskUsage() {
+    try {
+      if (!await inspectPath(root)) { state.diskBytes = 0; state.diskBytesKnown = true; return }
+      const names = await fs.readdir(root)
+      const sets = await replacements(), stages = await partials()
+      const ownedNames = new Set([
+        ...sets.directories.map(entry => entry.path.slice(root.length + 1)),
+        ...sets.pointers.map(entry => entry.path.slice(root.length + 1)),
+        ...stages.map(entry => entry.staging.slice(root.length + 1))
+      ])
+      let bytes = sets.directories.reduce((total, entry) => total + entry.bytes, 0) +
+        sets.pointers.reduce((total, entry) => total + entry.identity.size, 0) +
+        stages.reduce((total, entry) => total + entry.bytes, 0)
+      const active = await pointerIdentity()
+      if (active) {
+        const file = await fs.open(pointerPath, constants.O_RDONLY | constants.O_NOFOLLOW)
+        try {
+          const pointer = JSON.parse(await file.readFile('utf8'))
+          if (!sameFile(await file.stat(), active) || pointer.id !== assetManifest.id || pointer.revision !== assetManifest.revision || !uuid(pointer.generation)) throw error('speech_invalid_manifest', '活动资源记录无效，无法完整统计占用。')
+        } finally { await file.close() }
+        ownedNames.add('active.json')
+        bytes += active.size
+      }
+      state.diskBytes = bytes
+      state.diskBytesKnown = names.length === ownedNames.size && names.every(name => ownedNames.has(name))
+    } catch { state.diskBytesKnown = false }
+  }
+
   async function checkExisting() {
     if (deleting || state.operation === 'delete' && state.phase === 'error') return false
     if (task) return state.assetsReady
@@ -289,7 +320,7 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
       verifiedFingerprint = null
       state = { ...state, phase: 'error', assetsReady: false, error: describeError(cause) }
       return false
-    }).finally(() => { checking = null })
+    }).finally(async () => { await updateDiskUsage(); checking = null })
     return checking
   }
 
