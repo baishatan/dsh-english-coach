@@ -37,6 +37,17 @@ test('a failed test runner still removes its own root and cannot claim a borrowe
   })
 })
 
+test('short article test runners finish delayed shutdown writes before removing their fixtures on success and failure', async () => {
+  for (const failing of [false, true]) await isolatedRunner(async directory => {
+    const child = spawnSync(process.execPath, ['--test', '--test-name-pattern=article shutdown drains a delayed bookmark', fileURLToPath(new URL('./short-reading-ui.test.js', import.meta.url))], {
+      env: { ...process.env, NODE_TEST_CONTEXT: undefined, TMPDIR: directory, TMP: directory, TEMP: directory, COACH_SHORT_CLEANUP_FAILURE: failing ? '1' : '0' }, encoding: 'utf8', timeout: 10000
+    })
+    assert.equal(child.status, failing ? 1 : 0, child.stdout + child.stderr)
+    assert.match(child.stdout, failing ? /intentional short article shutdown failure/ : /article shutdown drains a delayed bookmark/)
+    assert.deepEqual(await fs.readdir(directory), [], 'unmount must not recreate a fixture after early rm')
+  })
+})
+
 test('public Host test runners remove their owned temporary roots after completion and reboot reuse', async () => {
   await isolatedRunner(async directory => {
     const pattern = process.env.ENGLISH_COACH_TEST_ASSETS
