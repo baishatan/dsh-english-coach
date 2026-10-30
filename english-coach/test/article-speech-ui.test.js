@@ -69,6 +69,110 @@ async function open(t, api = fixture()) {
 }
 async function ready(ui, api) { api.phase = 'ready'; await ui.poll() }
 
+test('visible resource removal requires a second confirmation before stopping the caller and silently preserves its article', async t => {
+  const api = fixture(), request = api.request
+  api.request = async (command, payload, options) => {
+    if (command === 'speech.assets.delete') { api.ready = false; api.calls.push({ command, payload, options }); return request('speech.assets.status', {}, options) }
+    return request(command, payload, options)
+  }
+  const { ui } = await open(t, api)
+  await ui.click('播放'); await ready(ui, api)
+  await ui.flush(() => { api.media[0].onplaying(); api.media[0].onended() })
+  await ready(ui, api)
+  const current = api.media.at(-1)
+  await ui.flush(() => current.onplaying())
+  const ended = current.onended, playing = current.onplaying
+  const before = requests(api).length, writes = api.calls.filter(value => value.command === 'settings.save').length
+  await ui.click('删除 Kokoro 资源')
+  const dialog = ui.container.querySelector('[role="dialog"][aria-label="确认删除 Kokoro 资源"]')
+  assert.ok(dialog)
+  assert.match(dialog.textContent, /共享.*DSH.*主机|DSH.*主机.*共享/)
+  assert.match(dialog.textContent, /其他.*页面/)
+  assert.match(dialog.textContent, /断线.*(?:无法|不能).*立即|断线.*不能.*瞬间/)
+  assert.notEqual(current.src, '', 'opening confirmation must not pause or stop audio')
+  assert.match(body(ui).textContent, /播放中/)
+  assert.equal(api.calls.some(value => value.command === 'speech.assets.delete'), false)
+  await ui.click('暂不删除')
+  assert.notEqual(current.src, '')
+  assert.match(body(ui).textContent, /播放中/)
+  await ui.click('删除 Kokoro 资源'); await ui.click('确认删除此主机 Kokoro 资源')
+  assert.equal(api.calls.filter(value => value.command === 'speech.assets.delete').length, 1)
+  assert.equal(current.src, '')
+  assert.equal(ui.field('文本进度').value, '1')
+  assert.match(body(ui).textContent, /已暂停/)
+  assert.match(ui.container.querySelector('[aria-label="朗读设置"]').textContent, /尚未准备/)
+  assert.match(ui.container.querySelector('[aria-label="Kokoro 资源准备"]').textContent, /尚未准备/)
+  await ui.flush(() => { ended(); playing() }); await ui.poll()
+  assert.equal(requests(api).length, before)
+  assert.equal(ui.field('文本进度').value, '1')
+  assert.equal(api.bookmarks.values().next().value.position, 1)
+  assert.equal(api.calls.filter(value => value.command === 'settings.save').length, writes)
+  assert.equal(api.calls.some(value => /speech.assets.prepare|review.answer|lesson.complete/.test(value.command)), false)
+})
+
+test('the same active heartbeat stops remote playing paused and queued Kokoro on resource invalidation, not task TTL', async t => {
+  for (const mode of ['playing', 'paused', 'queued']) {
+    const api = fixture(), request = api.request
+    let heartbeat = { active: false, leaseMs: 15000, assetsReady: true, resourceGeneration: 'original' }
+    api.request = async (command, payload, options) => {
+      if (command === 'speech.session.touch') { api.calls.push({ command, payload, options }); return { ok: true, data: { ...heartbeat } } }
+      const response = await request(command, payload, options)
+      if (command === 'speech.assets.status') response.data.resourceGeneration = 'original'
+      return response
+    }
+    const { ui } = await open(t, api)
+    await ui.input('文本进度', 1)
+    await ui.click('播放')
+    if (mode !== 'queued') { await ready(ui, api); await ui.flush(() => api.media.at(-1).onplaying()) }
+    if (mode === 'paused') await ui.click('暂停')
+    const current = api.media.at(-1), ended = current?.onended, playing = current?.onplaying
+    const before = requests(api).length
+    await ui.poll()
+    assert.equal(ui.field('文本进度').value, '1')
+    assert.equal(current?.src === '', false, 'absolute task TTL alone does not invalidate delivered media')
+    if (mode === 'playing') assert.match(body(ui).textContent, /播放中/)
+    heartbeat = mode === 'paused'
+      ? { ...heartbeat, resourceGeneration: 'new-installation' } // Same-ready new generation is also invalid.
+      : { ...heartbeat, assetsReady: false, resourceGeneration: null }
+    await ui.poll()
+    assert.equal(current?.src ?? '', '')
+    assert.equal(ui.field('文本进度').value, '1')
+    assert.match(body(ui).textContent, /已暂停/)
+    assert.match(body(ui).textContent, /资源已失效/)
+    if (mode === 'paused') assert.doesNotMatch(ui.container.querySelector('[aria-label="朗读设置"]').textContent, /运行时尚不可用/, 'partial touch must not invent runtimeAvailable=false')
+    else assert.match(ui.container.querySelector('[aria-label="朗读设置"]').textContent, /尚未准备/)
+    await ui.flush(() => { ended?.(); playing?.() }); api.phase = 'ready'; await ui.poll()
+    assert.equal(requests(api).length, before, 'no stale continuation or automatic retry')
+    assert.equal(api.bookmarks.values().next().value.position, 1)
+    assert.equal(api.calls.some(value => /speech.assets.prepare|settings.save|review.answer|lesson.complete/.test(value.command)), false)
+    await ui.close()
+  }
+})
+
+test('confirmed resource deletion leaves active system speech and its position untouched even on a storage failure', async t => {
+  const api = fixture(), request = api.request
+  let completed = false
+  api.state.settings.audio.provider = 'web-speech'
+  api.request = async (command, payload, options) => {
+    if (command === 'speech.assets.delete') { api.calls.push({ command, payload, options }); completed = true; return { ok: false, code: 'speech_storage', message: '删除未完成；无法清理归属资源，请检查主机权限后明确重试。' } }
+    return request(command, payload, options)
+  }
+  const { ui } = await open(t, api)
+  await ui.input('文本进度', 1); await ui.click('播放')
+  const utterance = api.synth.spoken.at(-1)
+  const before = api.synth.spoken.length
+  assert.equal(api.synth.speaking, true)
+  await ui.click('删除 Kokoro 资源'); await ui.click('确认删除此主机 Kokoro 资源')
+  assert.equal(completed, true)
+  assert.equal(api.synth.speaking, true, 'Kokoro global removal must not call system cancel')
+  assert.equal(api.synth.spoken.length, before)
+  assert.equal(ui.field('文本进度').value, '1')
+  assert.equal(ui.field('音频来源').value, 'web-speech')
+  assert.match(ui.container.querySelector('[aria-label="Kokoro 资源准备"]').textContent, /删除未完成/)
+  await ui.flush(() => utterance.onend())
+  assert.equal(ui.field('文本进度').value, '2', 'system reading continues normally')
+})
+
 test('Kokoro articles request only English segments and advance only after audible media ends', async t => {
   const { ui, api } = await open(t)
   assert.equal(requests(api).length, 0, 'opening the article is silent')

@@ -373,6 +373,10 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
           await handle.sync()
           state.validatedBytes += bytes
         } finally {
+          // An aborted download handshake can still return a Node stream that
+          // emits its abort error before an iterator was attached. Cleanup owns
+          // that late error; it cannot publish bytes or escape as uncaught I/O.
+          source?.on?.('error', () => {})
           source?.destroy?.()
           await handle.close()
         }
@@ -437,6 +441,7 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
   }
 
   return {
+    get deleting() { return deleting },
     async status(owner) {
       if (deleting) return snapshot(owner)
       if (task && ['ready', 'error', 'cancelled'].includes(state.phase)) await task.done
@@ -504,11 +509,12 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
       deleting = true
       const job = task
       job?.controller.abort()
+      // Invalidate synchronously, but never wait for a job from the audio side:
+      // an activating repair can itself already be awaiting this same drain.
+      const retiring = onDelete()
       deletion = (async () => {
         try {
-          await job?.done
-          await checking
-          await onDelete()
+          await Promise.all([job?.done, checking, retiring])
           const active = await readActive({ repair: true })
           const sets = await replacements()
           const stages = await partials()

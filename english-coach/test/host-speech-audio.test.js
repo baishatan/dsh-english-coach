@@ -124,6 +124,33 @@ test('confirmed global deletion invalidates both slots across pages and awaits a
   assert.equal(entries.length, 2, 'late work never launches the queued page')
 })
 
+test('deletion aborts active synthesis immediately while a repair transport is still finishing after abort', { skip: realAssets }, async t => {
+  let downloads = 0, releaseDownload, finishGeneration, disposeStarted = false
+  const pendingDownload = new Promise(resolve => { releaseDownload = resolve; setTimeout(resolve, 1000).unref() })
+  const pendingGeneration = new Promise(resolve => { finishGeneration = resolve })
+  const h = await prepared(t, { download: async (asset, { signal }) => {
+    downloads++
+    if (downloads === 9) await pendingDownload
+    return createReadStream(join(process.env.ENGLISH_COACH_TEST_ASSETS, asset.path), { signal })
+  }, runtimeFactory: () => ({
+    synthesize() { return pendingGeneration },
+    async dispose() { disposeStarted = true; finishGeneration(wav()) }
+  }) })
+  const active = await h.request('speech.synthesize', sample)
+  await waitFor(() => h.request('speech.status', { taskId: active.data.taskId }), value => value.data?.phase === 'generating', 'active old-generation work')
+  await h.request('speech.assets.repair', {}, { page: 'b'.repeat(48) })
+  await waitFor(async () => ({ ok: true, data: { downloads } }), value => value.data.downloads === 9, 'slow repair transport')
+  const removing = h.request('speech.assets.delete')
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(disposeStarted, true, 'download abort handshake must not delay global synthesis cancellation')
+  assert.equal((await h.request('speech.status', { taskId: active.data.taskId })).httpStatus, 404)
+  assert.equal((await h.request('speech.synthesize', sample)).code, 'speech_assets_changing')
+  releaseDownload()
+  assert.equal((await removing).ok, true)
+  assert.deepEqual(await fs.readdir(h.speechRoot), [])
+  assert.equal(downloads, 9)
+})
+
 test('prepared manual speech returns an owned binary WAV rather than audio in JSON', { skip: realAssets }, async t => {
   let release, entered = false
   const pending = new Promise(resolve => { release = resolve })
