@@ -1,0 +1,18 @@
+// assume any discovered prefixes
+const autoFill = function () {
+  const docs = this.docs
+  if (docs.length === 0) {
+    return this
+  }
+  const term = docs.at(-1)?.at(-1)
+  if (term?.typeahead === true && term.machine) {
+    term.text = term.machine
+    term.normal = term.machine
+  }
+  return this
+}
+
+const api = function (View) {
+  View.prototype.autoFill = autoFill
+}
+export default api

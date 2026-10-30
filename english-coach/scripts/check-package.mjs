@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -12,8 +13,11 @@ const scratch = resolve(root, '../.scratch/package-check')
 await fs.mkdir(scratch, { recursive: true })
 const work = await fs.mkdtemp(join(scratch, 'run-'))
 console.log(`Artifacts: ${work}`)
+await fs.mkdir(join(work, 'empty-home'))
 const env = {
   ...process.env,
+  HOME: join(work, 'empty-home'),
+  DSH_HOME: join(work, 'empty-home', 'dsh'),
   npm_config_cache: join(work, 'npm-cache'),
   npm_config_update_notifier: 'false'
 }
@@ -50,6 +54,25 @@ assert.ok(![...listed].some((file) => /^(test|scripts|prototypes|node_modules|\.
   'Development files and throwaway prototypes must not enter the archive')
 assert.ok(![...listed].some((file) => /(^|\/)(AGENTS\.md|.*\.prototype\.html)$/.test(file)),
   'Local instructions and prototype HTML must not enter the archive')
+assert.ok(![...listed].some(file => file.split('/').includes('node_modules') || file.endsWith('.node')),
+  'Portable vendors must not depend on nested node_modules or native addons')
+for (const file of ['speech/runtime.js', 'speech/worker.js', 'speech/vendor/SOURCE.json',
+  'speech/vendor/frontend.mjs', 'speech/vendor/word-g2p.mjs', 'speech/vendor/exports/DERIVATIONS.json',
+  'speech/vendor/exports/us/g2p.onnx', 'speech/vendor/exports/gb/g2p.onnx',
+  'speech/vendor/deps/suffix-thumb/src/test/index.js',
+  'speech/vendor/notices/onnxruntime-1.31.1-ThirdPartyNotices.txt']) {
+  assert.ok(listed.has(file), `Published speech runtime is missing ${file}`)
+}
+const vendorSource = JSON.parse(await fs.readFile(join(root, 'speech/vendor/SOURCE.json'), 'utf8'))
+const vendorExpected = new Set(['speech/vendor/SOURCE.json', ...vendorSource.inventory.map(item => `speech/vendor/${item.path}`)])
+assert.deepEqual(new Set([...listed].filter(file => file.startsWith('speech/vendor/'))), vendorExpected,
+  'The archive must contain the exact verified portable vendor inventory')
+assert.ok(['pending', 'verified'].includes(vendorSource.runtimeBinarySourceMapping.status),
+  'Record the ORT corresponding-source boundary explicitly; do not erase it')
+for (const item of vendorSource.downloadedAssets) {
+  assert.ok(!listed.has(`speech/vendor/${item.path}`) && !listed.has(`speech/${item.path}`),
+    'Large model and voices must be prepared explicitly, not bundled')
+}
 
 const archive = resolve(work, pack.filename)
 assert.equal(dirname(archive), work, 'Archive must stay in the audit directory')
@@ -67,6 +90,17 @@ assert.equal(await fs.readFile(join(unpacked, 'LICENSE'), 'utf8'),
 for (const file of listed) {
   assert.deepEqual(await fs.readFile(join(unpacked, file)), await fs.readFile(join(root, file)),
     `Archive bytes differ from source: ${file}`)
+}
+for (const item of vendorSource.inventory) {
+  const bytes = await fs.readFile(join(unpacked, 'speech/vendor', item.path))
+  assert.equal(bytes.length, item.bytes, `Vendor byte size differs: ${item.path}`)
+  assert.equal(createHash('sha256').update(bytes).digest('hex'), item.sha256, `Vendor checksum differs: ${item.path}`)
+}
+for (const file of listed) {
+  if (!file.startsWith('speech/') || !/\.(?:js|mjs|json|md|txt|map)$/.test(file)) continue
+  const text = await fs.readFile(join(unpacked, file), 'utf8')
+  assert.ok(!/(?:\/Users\/|[A-Z]:\\\\Users\\\\|(?:^|[\s'"/])\.scratch\/)/m.test(text),
+    `Personal/development path must not enter the portable speech package: ${file}`)
 }
 for (const target of Object.values(manifest.exports)) {
   assert.equal(typeof target, 'string', 'Update audit for conditional exports')
@@ -104,6 +138,26 @@ for (const name of await fs.readdir(join(root, 'test'))) {
   await fs.copyFile(join(root, 'test', name), join(unpacked, 'test', name))
   if (name.endsWith('.test.js')) tests.push(`test/${name}`)
 }
+// Independent import observer in the extracted artifact: only package-owned
+// files and Node builtins are allowed; no bare external npm dependency/native
+// addon can escape into a developer installation. fork observes its own vendor
+// closure in the production worker; this hook covers the packed parent/frontend.
+const closureObserver = join(unpacked, 'test', 'packed-import-closure.mjs')
+await fs.writeFile(closureObserver, `
+import assert from 'node:assert/strict'
+import { isBuiltin, registerHooks } from 'node:module'
+import { isAbsolute } from 'node:path'
+const boundary = new URL('../', import.meta.url).href
+registerHooks({ resolve(specifier, context, next) {
+  assert.ok(isBuiltin(specifier) || specifier.startsWith('./') || specifier.startsWith('../') || specifier.startsWith('file:') || isAbsolute(specifier), 'No external bare dependency: ' + specifier)
+  const result = next(specifier, context)
+  assert.ok(result.url.startsWith('node:') || (result.url.startsWith(boundary) && !result.url.endsWith('.node')), 'Import escaped unpacked package: ' + result.url)
+  return result
+} })
+`)
+const speechOutput = run(process.execPath, ['--import', pathToFileURL(closureObserver).href, '--test', 'test/speech-runtime.test.js'], unpacked)
+await fs.writeFile(join(work, 'speech-runtime-tests.log'), speechOutput)
+console.log(speechOutput)
 const testOutput = run(process.execPath, ['--test', ...tests], unpacked)
 await fs.writeFile(join(work, 'core-tests.log'), testOutput)
 console.log(testOutput)
@@ -116,10 +170,16 @@ const summary = {
   files: listed.size,
   compressedBytes: pack.size,
   unpackedBytes: pack.unpackedSize,
+  speechVendor: { files: vendorExpected.size,
+    bytes: vendorSource.inventory.reduce((sum, item) => sum + item.bytes, 0) + (await fs.stat(join(unpacked, 'speech/vendor/SOURCE.json'))).size,
+    downloadedAssetsBundled: false, actualSynthesisRequested: Boolean(process.env.ENGLISH_COACH_TEST_ASSETS),
+    ortCorrespondingSource: vendorSource.runtimeBinarySourceMapping.status },
   catalog: (await import(pathToFileURL(join(unpacked, 'core/catalog.js')).href)).getWordCatalog().lists.map(({ id, total, playableCount }) => ({ id, total, playableCount })),
   checks: ['archive file coverage', 'source byte equality', 'license', 'exports and bundle',
     'host/core imports without activation', 'client module registration', 'locale JSON',
-    'all domain, Host adapter and React DOM tests against extracted package', 'catalog checksum and complete contracts'],
+    'all domain, Host adapter and React DOM tests against extracted package', 'catalog checksum and complete contracts',
+    'exact speech vendor inventory and hashes', 'no personal paths/native addons/nested node_modules',
+    'packed speech import closure and runtime tests in empty HOME/DSH_HOME'],
   notVerified: ['DSH install/start/uninstall', 'actual host rendering and speech quality', 'Store policy approval']
 }
 await fs.writeFile(join(work, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`)

@@ -28,6 +28,7 @@
     "client.js",
     "core/*.js",
     "speech/*.js",
+    "speech/vendor/**",
     "data/*",
     "cordis.patch.yml",
     "locale/*.json",
