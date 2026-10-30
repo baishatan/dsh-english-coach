@@ -5,12 +5,12 @@ import { Readable } from 'node:stream'
 import test from 'node:test'
 import { apply } from '../index.js'
 import { execute } from '../core/index.js'
-import { mountClient } from './client-harness.js'
+import { mountClient, deferred } from './client-harness.js'
 import { tempFixture, disposeFixture } from './temp-fixture.js'
 
 // Actual registered Host route plus the actual visible Client. Only Host
 // admission/transport and the fixed-byte external download are Adapters.
-async function host(t, { directory, online = false } = {}) {
+async function host(t, { directory, online = false, runtimeDispose = async () => {} } = {}) {
   const base = await tempFixture(t, 'coach-metadata-ui-', directory)
   const root = join(base, 'learning'), speechRoot = join(base, 'speech')
   await fs.mkdir(root, { recursive: true })
@@ -34,7 +34,7 @@ async function host(t, { directory, online = false } = {}) {
     return createReadStream(join(process.env.ENGLISH_COACH_TEST_ASSETS, asset.path), { signal })
   }, speechRuntimeFactory({ assetRoot }) {
     runtimeRoots.push(assetRoot)
-    return { async synthesize() { const wav = Buffer.alloc(44); wav.write('RIFF', 0); wav.write('WAVE', 8); return wav }, async dispose() {} }
+    return { async synthesize() { const wav = Buffer.alloc(44); wav.write('RIFF', 0); wav.write('WAVE', 8); return wav }, dispose: runtimeDispose }
   } })
   for (const { callback } of intervals.filter(value => value.delay === 500)) callback()
   let disposed = false
@@ -61,6 +61,70 @@ async function host(t, { directory, online = false } = {}) {
   async function settle(ui) { while (pending.size) await ui.flush(async () => { await Promise.all([...pending]) }) }
   return { base, root, speechRoot, request, settle, dispose, calls, runtimeRoots, downloads: () => downloads, online() { offline = false } }
 }
+
+test('删除共享资源中及归属改变导致删除失败时，公开状态和界面不再误称可用', {
+  skip: !process.env.ENGLISH_COACH_TEST_ASSETS && 'Requires explicit verified eight-asset fixture'
+}, async t => {
+  const runtimeGate = deferred(), h = await host(t, { online: true, runtimeDispose: () => runtimeGate.promise })
+  // Release the external runtime even if an assertion fails, before Host cleanup.
+  disposeFixture(t, () => runtimeGate.resolve())
+  const deadline = performance.now() + 30000
+  await h.request('speech.assets.prepare')
+  let original
+  do {
+    assert.ok(performance.now() < deadline)
+    original = (await h.request('speech.assets.status')).data
+    if (original.phase !== 'ready') await new Promise(resolve => setTimeout(resolve, 10))
+  } while (original.phase !== 'ready')
+  const generation = '12345678-1234-4234-9234-123456789abc'
+  const stage = join(h.speechRoot, `.prepare-${generation}`)
+  await fs.mkdir(stage)
+  await fs.writeFile(join(stage, '_owner.json'), JSON.stringify({ id: original.manifest.id, generation }))
+  await fs.writeFile(join(stage, 'config.json'), '{')
+  assert.equal((await h.request('speech.assets.status')).data.cleanupRequired, true)
+  const ui = await mountClient({ request: h.request, setupWindow(window) {
+    window.speechSynthesis = { getVoices: () => [], addEventListener() {}, removeEventListener() {}, cancel() {}, speak() { assert.fail('must not use system speech') } }
+    window.SpeechSynthesisUtterance = class {}
+    window.URL.createObjectURL = () => 'blob:isolated-delete'
+    window.URL.revokeObjectURL = () => {}
+    window.Audio = class { play() { return Promise.resolve() } pause() {} removeAttribute() {} load() {} }
+  } })
+  disposeFixture(t, async () => { runtimeGate.resolve(); await ui.close(); await h.settle(ui) })
+  await h.settle(ui)
+  assert.equal(ui.buttons('修复').length, 1)
+  await ui.click('试听音色')
+  for (let i = 0; i < 100 && h.runtimeRoots.length === 0; i++) { await ui.poll(); await h.settle(ui); await ui.flush(() => new Promise(resolve => setTimeout(resolve, 10))) }
+  assert.equal(h.runtimeRoots.length, 1)
+  // Ownership changes after the previous valid status, before global deletion.
+  const ownerPath = join(stage, '_owner.json')
+  await fs.writeFile(ownerPath, JSON.stringify({ id: 'foreign-model', generation }))
+  const deletion = h.request('speech.assets.delete')
+  const deleting = (await h.request('speech.assets.status')).data
+  assert.equal(deleting.phase, 'deleting')
+  assert.equal(deleting.assetsReady, false)
+  assert.equal(deleting.cleanupRequired, false, 'in-flight deletion cannot claim a usable generation')
+  await ui.flush(() => ui.window.dispatchEvent(new ui.window.Event('focus')))
+  while (!ui.container.querySelector('[aria-label="Kokoro 资源准备"]').textContent.includes('正在删除')) {
+    assert.ok(performance.now() < deadline, 'in-flight Host status reaches the visible client')
+    await ui.flush(() => new Promise(resolve => setTimeout(resolve, 10)))
+  }
+  assert.equal(ui.buttons('修复').length, 0)
+  assert.doesNotMatch(ui.container.querySelector('[aria-label="Kokoro 资源准备"]').textContent, /当前音色仍可用/)
+  runtimeGate.resolve()
+  const refused = await deletion
+  assert.equal(refused.ok, false)
+  const failed = (await h.request('speech.assets.status')).data
+  assert.equal(failed.phase, 'error')
+  assert.equal(failed.assetsReady, false)
+  assert.equal(failed.diskBytesKnown, false)
+  assert.equal(failed.cleanupRequired, false, 'a refused deletion must not retain an earlier trusted inventory')
+  assert.match(await fs.readFile(ownerPath, 'utf8'), /foreign-model/)
+  await ui.poll(); await h.settle(ui)
+  const section = ui.container.querySelector('[aria-label="Kokoro 资源准备"]')
+  assert.doesNotMatch(section.textContent, /当前音色仍可用/)
+  assert.equal(ui.buttons('修复').length, 0)
+  assert.equal(ui.buttons('删除资源').length, 1)
+})
 
 test('重启后保留可用旧代并提示确认修复已识别残留，正常已准备保持简洁', {
   skip: !process.env.ENGLISH_COACH_TEST_ASSETS && 'Requires explicit verified eight-asset fixture'

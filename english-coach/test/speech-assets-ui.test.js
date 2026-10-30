@@ -136,6 +136,42 @@ test('另一页面刚开始准备且无取消权时可确认删除共享资源�
   assert.equal(api.calls.some(call => /speech\.assets\.prepare|speech\.synthesize/.test(call.command)), false)
 })
 
+test('悬挂的旧状态读取不阻塞取消后重新准备，新读不被旧回调覆盖或解锁', async t => {
+  const api = fixture(), request = api.request, old = deferred(), current = deferred()
+  api.setAssets({ phase: 'downloading', assetsReady: false, canCancel: true, downloadedBytes: 100 })
+  let mode = 'normal', oldOptions, newOptions, newReads = 0
+  api.request = (command, payload, options) => {
+    if (command === 'speech.assets.status' && mode === 'old') { oldOptions = options; return old.promise }
+    if (command === 'speech.assets.status' && mode === 'new') { newReads++; newOptions = options; return current.promise }
+    return request(command, payload, options)
+  }
+  const ui = await mountClient({ request: api.request, setupWindow: api.setupWindow })
+  t.after(async () => { await ui.close(); old.resolve({ ok: false }); current.resolve({ ok: false }) })
+  const section = ui.container.querySelector('[aria-label="Kokoro 资源准备"]')
+  mode = 'old'; await ui.poll()
+  mode = 'normal'; await ui.click('取消准备'); await ui.click('准备')
+  assert.match(section.textContent, /准备中/)
+  mode = 'new'; await ui.poll()
+  assert.equal(newReads, 1, 'a superseded hanging read cannot block the new preparation')
+  assert.equal(oldOptions.signal.aborted, true)
+  await ui.flush(() => old.resolve({ ok: true, data: {
+    phase: 'cancelled', assetsReady: false, canCancel: false,
+    manifest: { revision: 'fixture', downloadBytes: 94453730 }
+  } }))
+  await ui.poll()
+  assert.equal(newReads, 1, 'the old finally must not release the current single-flight slot')
+  await ui.flush(() => ui.window.dispatchEvent(new ui.window.Event('focus')))
+  api.setAssets({ phase: 'ready', assetsReady: true, runtimeAvailable: true, canCancel: false })
+  mode = 'normal'
+  await ui.flush(() => current.resolve({ ok: true, data: {
+    phase: 'downloading', assetsReady: false, canCancel: true, downloadedBytes: 200,
+    manifest: { revision: 'fixture', downloadBytes: 94453730 }
+  } }))
+  assert.equal(newOptions.signal.aborted, false)
+  assert.match(section.textContent, /资源已校验/, 'coalesced explicit refresh sees newer state')
+  assert.doesNotMatch(section.textContent, /已取消/)
+})
+
 test('跨页删除遇到慢状态响应时轮询不会饿死，最终恢复准备入口', async t => {
   const api = fixture(), request = api.request, slow = []
   api.setAssets({ phase: 'deleting', assetsReady: false, canCancel: false, diskBytes: 100 })

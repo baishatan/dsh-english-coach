@@ -1519,33 +1519,36 @@ window.__ModuleLoader__.load({
     function SpeechAssetsPreparation() {
       const audio = useSpeech(), resourceEpoch = audio.preferences.resourceEpoch
       const [assets, setAssets] = useState(null), [error, setError] = useState(null), [busy, setBusy] = useState(false), [confirmRepair, setConfirmRepair] = useState(false), [confirmDelete, setConfirmDelete] = useState(false)
-      const mounted = useRef(false), order = useRef(0), pending = useRef(false), reading = useRef(false), refreshAfterRead = useRef(false), section = useRef(null), previousProvider = useRef(audio.preferences.provider)
+      const mounted = useRef(false), order = useRef(0), pending = useRef(false), reading = useRef(null), section = useRef(null), previousProvider = useRef(audio.preferences.provider)
       const active = assets && ['preparing', 'downloading', 'validating', 'activating'].includes(assets.phase)
       const read = useCallback(async (refresh = false) => {
         if (pending.current) return
         if (reading.current) {
-          if (refresh) refreshAfterRead.current = true
+          if (refresh) reading.current.refresh = true
           return
         }
-        reading.current = true
-        const request = ++order.current
+        const token = { controller: new window.AbortController(), refresh: false, request: ++order.current }
+        reading.current = token
         try {
-          const result = await call('speech.assets.status')
-          if (!mounted.current || request !== order.current) return
+          const result = await call('speech.assets.status', {}, { signal: token.controller.signal })
+          if (!mounted.current || token.request !== order.current) return
           speech.resourceStatus(result.ok ? result.data : null)
           if (result.ok) { setAssets(result.data); setError(null) }
           else setError(result.message)
         } finally {
-          reading.current = false
-          const again = refreshAfterRead.current
-          refreshAfterRead.current = false
-          if (again && mounted.current && !pending.current) void read()
+          if (reading.current === token) {
+            reading.current = null
+            if (token.refresh && mounted.current && !pending.current) void read()
+          }
         }
       }, [])
       useEffect(() => {
         mounted.current = true
         void read()
-        return () => { mounted.current = false; order.current++ }
+        return () => {
+          mounted.current = false; order.current++
+          const old = reading.current; reading.current = null; old?.controller.abort()
+        }
       }, [read])
       useEffect(() => {
         const previous = previousProvider.current
@@ -1576,10 +1579,10 @@ window.__ModuleLoader__.load({
       async function act(action) {
         if (pending.current) return
         pending.current = true
-        refreshAfterRead.current = false
+        const request = ++order.current
+        const old = reading.current; reading.current = null; old?.controller.abort()
         setConfirmRepair(false); setConfirmDelete(false)
         if (action === 'delete') speech.resourceInvalidation({ assetsReady: false, resourceGeneration: null })
-        const request = ++order.current
         setBusy(true)
         setError(null)
         try {
@@ -1602,6 +1605,7 @@ window.__ModuleLoader__.load({
       }
       const count = value => Number(value ?? 0).toLocaleString('en-US')
       const phase = { deleting: '正在删除共享 Kokoro 资源；等待任务和工作进程结束', unprepared: '尚未准备', preparing: '准备中', downloading: '下载中', validating: '校验中', activating: '资源切换中；旧音频将失效', cancelled: '已取消', interrupted: '上次准备中断；可明确重新准备', error: assets?.repairRequired ? '资源损坏或不兼容；需要明确修复' : '准备或修复失败', ready: '资源已校验' }[assets?.phase] ?? '读取资源状态中'
+      const cleanup = assets?.cleanupRequired && assets.assetsReady && assets.phase !== 'deleting'
       return h('section', { ref: section, className: 'ec-speech-assets', 'aria-label': 'Kokoro 资源准备', hidden: audio.preferences.provider !== 'kokoro' },
         h('div', { role: 'status', 'aria-live': 'polite' }, phase),
         assets && !assets.assetsReady ? h('div', { className: 'ec-muted' }, '固定资源约 94.5 MB；仅手动准备时下载。') : null,
@@ -1609,7 +1613,7 @@ window.__ModuleLoader__.load({
         active ? h('progress', { 'aria-label': 'Kokoro 下载字节', value: assets.downloadedBytes, max: assets.manifest.downloadBytes, style: { width: '100%' } }) : null,
         assets?.assetsReady && !assets.runtimeAvailable ? h('div', { role: 'status' }, '运行时尚不可用；请安装兼容插件后手动重试。') : null,
         assets?.operation === 'repair' && assets.assetsReady && assets.phase !== 'ready' ? h('div', { role: 'status' }, '兼容旧资源仍可用；失败或取消保留旧资源。') : null,
-        !active && assets?.cleanupRequired ? h('div', { role: 'status' }, '发现上次准备留下的资源，可选择修复；当前音色仍可用。') : null,
+        !active && cleanup ? h('div', { role: 'status' }, '发现上次准备留下的资源，可选择修复；当前音色仍可用。') : null,
         assets?.error ? h(Notice, { tone: 'error' }, assets.error.message) : null,
         error ? h(Notice, { tone: 'error' }, error) : null,
         confirmRepair ? h('div', { role: 'dialog', 'aria-modal': 'true', 'aria-label': '确认修复 Kokoro 资源', className: 'ec-card', tabIndex: -1, onKeyDown: event => { if (event.key === 'Escape') setConfirmRepair(false) } },
@@ -1631,7 +1635,7 @@ window.__ModuleLoader__.load({
           active ? assets.canCancel ? h(Btn, { small: true, disabled: busy, onClick: () => act('cancel') }, '取消准备') : h('span', { className: 'ec-muted' }, '另一页面正在准备；仅该页面可取消。') :
           assets && !assets.assetsReady && !assets.repairRequired && assets.phase !== 'deleting' ? h(Btn, { primary: true, small: true, disabled: busy, onClick: () => act('prepare') }, '准备') : null,
           !active && assets && (assets.repairRequired || assets.phase === 'error') ? h(Btn, { small: true, disabled: busy, onClick: () => act('check') }, '检查资源版本') : null,
-          !active && (assets?.repairRequired || assets?.cleanupRequired || assets?.operation === 'repair' && ['error', 'cancelled', 'interrupted'].includes(assets.phase)) ? h(Btn, { small: true, disabled: busy, onClick: () => setConfirmRepair(true) }, '修复') : null,
+          !active && assets?.phase !== 'deleting' && (assets?.repairRequired || cleanup || assets?.operation === 'repair' && ['error', 'cancelled', 'interrupted'].includes(assets.phase)) ? h(Btn, { small: true, disabled: busy, onClick: () => setConfirmRepair(true) }, '修复') : null,
           !active && error ? h(Btn, { small: true, disabled: busy, onClick: () => { void read(true) } }, '重试资源状态') : null))
     }
 

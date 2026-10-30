@@ -544,7 +544,7 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
       // The gate closes before the first await, including preparation requests
       // that are currently checking the filesystem before allocating a job.
       deleting = true
-      state = { ...state, operation: 'delete', assetsReady: false }
+      state = { ...state, operation: 'delete', assetsReady: false, cleanupRequired: false }
       verifiedFingerprint = null
       const job = task
       job?.controller.abort()
@@ -574,7 +574,7 @@ export function createSpeechAssets({ root, download = downloadAsset, onActivate 
           return success(snapshot(owner))
         } catch (cause) {
           const described = describeError(cause)
-          state = { ...state, phase: 'error', assetsReady: false, diskBytesKnown: false, error: described }
+          state = { ...state, phase: 'error', assetsReady: false, cleanupRequired: false, diskBytesKnown: false, error: described }
           return failure(described.code, described.message)
         } finally { deleting = false; deletion = null }
       })()
