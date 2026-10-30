@@ -21,8 +21,8 @@ function fixture() {
       if (command === 'state.get') return { ok: true, data: { onboarded: true, profile: { goal: 'work', minutesPerDay: 30, interests: [] }, settings: { audio: {} }, review: { dueCount: 0 } } }
       if (command === 'settings.get') return { ok: true, data: { audio: {} } }
       if (command === 'study.batch' || command === 'review.list') return { ok: true, data: { items: [], dueCount: 0 } }
-      if (command === 'speech.assets.status') return { ok: true, data: structuredClone(assetState) }
-      if (command === 'speech.assets.prepare') {
+      if (command === 'speech.assets.status' || command === 'speech.assets.check') return { ok: true, data: structuredClone(assetState) }
+      if (command === 'speech.assets.prepare' || command === 'speech.assets.repair') {
         assetState = { ...assetState, phase: 'preparing', canCancel: true, error: null }
         return { ok: true, data: structuredClone(assetState) }
       }
@@ -35,6 +35,38 @@ function fixture() {
   }
   return api
 }
+
+test('resource repair discloses the fixed target and shared-host impact before explicit confirmation', async t => {
+  const api = fixture()
+  api.setAssets({ phase: 'error', assetsReady: false, repairRequired: true,
+    error: { message: '资源校验失败；请明确修复。' },
+    manifest: { id: 'kokoro-82m-v1.0-q8-1939ad2a8e416c0acfeecc08a694d14ef25f2231', revision: '1939ad2a8e416c0acfeecc08a694d14ef25f2231', downloadBytes: 94453730 },
+    update: { additionalDiskBytes: 94519266, maximumAssetBytes: 189038532, message: '没有已知更新；未联网检查。' }
+  })
+  const ui = await mountClient({ request: api.request, setupWindow: api.setupWindow })
+  t.after(() => ui.close())
+  await ui.click('检查资源版本')
+  assert.equal(api.calls.filter(call => call.command === 'speech.assets.check').length, 1)
+  assert.equal(api.calls.filter(call => call.command === 'speech.assets.repair').length, 0)
+  await ui.click('修复 Kokoro 资源')
+  const dialog = ui.container.querySelector('[role="dialog"][aria-label="确认修复 Kokoro 资源"]')
+  assert.ok(dialog, 'a real visible confirmation is required')
+  assert.match(dialog.textContent, /kokoro-82m-v1\.0-q8-1939ad2a8e416c0acfeecc08a694d14ef25f2231/)
+  assert.match(dialog.textContent, /94,453,730/)
+  assert.match(dialog.textContent, /94,519,266/)
+  assert.match(dialog.textContent, /189,038,532/)
+  assert.match(dialog.textContent, /共享.*主机|主机.*共享/)
+  assert.match(dialog.textContent, /旧.*可用.*保留|保留.*可用.*旧/)
+  assert.match(dialog.textContent, /其他页面.*失效|其他页面.*停止/)
+  assert.equal(api.calls.filter(call => call.command === 'speech.assets.repair').length, 0)
+  await ui.click('暂不修复')
+  assert.equal(ui.container.querySelector('[role="dialog"]'), null)
+  await ui.click('修复 Kokoro 资源')
+  await ui.click('确认重新下载并修复')
+  assert.equal(api.calls.filter(call => call.command === 'speech.assets.repair').length, 1)
+  assert.equal(api.spoken.length, 0)
+  assert.equal(api.calls.filter(call => /settings.save|review.answer|lesson.complete|speech.synth/.test(call.command)).length, 0)
+})
 
 test('visible preparation is independent of voice settings, explicit and silent through cancel and retry', async t => {
   const api = fixture()

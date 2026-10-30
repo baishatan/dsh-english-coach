@@ -50,16 +50,106 @@ function describeError(cause) {
 
 // One Host owns the resource lifecycle. All paths stay inside this Module.
 // The download adapter is an external boundary for isolated fault injection.
-export function createSpeechAssets({ root, download = downloadAsset } = {}) {
+export function createSpeechAssets({ root, download = downloadAsset, onActivate = async () => {} } = {}) {
   let disposed = false, task = null
   let state = {
     phase: 'unprepared', assetsReady: false, runtimeAvailable: false,
     manifest: assetManifest, downloadedBytes: 0, validatedBytes: 0, diskBytes: 0,
-    generation: null, currentFile: null, error: null
+    generation: null, resourceGeneration: null, repairRequired: false, diskBytesKnown: true, currentFile: null, error: null
   }
-  const snapshot = owner => ({ ...state, canCancel: !!task && task.owner === owner })
-  const finalRoot = join(root, assetManifest.id)
-  let verifiedFingerprint = null, checking = null
+  const snapshot = owner => ({ ...state, canCancel: !!task && task.owner === owner, update: {
+    available: false, networkChecked: false, targetId: assetManifest.id,
+    downloadBytes: assetManifest.downloadBytes,
+    additionalDiskBytes: assetManifest.downloadBytes + 65536,
+    maximumAssetBytes: 2 * (assetManifest.downloadBytes + 65536),
+    message: '本插件仅提供当前固定版本，没有已知更新；未联网检查。可明确修复并重新下载同一固定版本。'
+  } })
+  const finalRoot = join(root, assetManifest.id), pointerPath = join(root, 'active.json')
+  const uuid = value => typeof value === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value)
+  let currentRoot = finalRoot, verifiedFingerprint = null, checking = null
+
+  async function readActive() {
+    if (!await inspectPath(root)) return finalRoot
+    const stat = await fs.lstat(pointerPath).catch(cause => { if (cause.code !== 'ENOENT') throw cause })
+    if (!stat) return finalRoot // Compatible with 03's fixed installation directory.
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 1024) throw error('speech_unsafe_path', '活动资源记录无效或包含链接；未加载或清理资源。')
+    const handle = await fs.open(pointerPath, constants.O_RDONLY | constants.O_NOFOLLOW)
+    let pointer
+    try { pointer = JSON.parse(await handle.readFile('utf8')) } finally { await handle.close() }
+    if (pointer.id !== assetManifest.id || pointer.revision !== assetManifest.revision || !uuid(pointer.generation)) throw error('speech_invalid_manifest', '活动资源版本不符合固定清单；请明确修复。')
+    return join(root, `.generation-${pointer.generation}`)
+  }
+
+  // Only this finite tree can be reclaimed. Missing/truncated known files are
+  // repairable; foreign names, links, hard links and unknown ownership are not.
+  async function ownedDirectory(path, expectedGeneration) {
+    await inspectPath(path)
+    const identity = await fs.lstat(path)
+    const allowed = new Map(assetManifest.files.map(asset => [asset.path, asset.bytes]))
+    allowed.set('_owner.json', 1024); allowed.set('ready.json', 1024)
+    let bytes = 0
+    async function scan(directory, prefix = '') {
+      for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+        const relative = prefix + entry.name, full = join(directory, entry.name)
+        const stat = await fs.lstat(full)
+        if (stat.isSymbolicLink()) throw error('speech_unowned_partial', '资源包含链接；未清理归属不明的位置。')
+        if (stat.isDirectory() && ['onnx', 'voices'].includes(relative)) await scan(full, relative + '/')
+        else if (stat.isFile() && stat.nlink === 1 && allowed.has(relative) && stat.size <= allowed.get(relative)) bytes += stat.size
+        else throw error('speech_unowned_partial', '资源包含非清单文件或超限文件；未清理归属不明的位置。')
+      }
+    }
+    await scan(path)
+    let owner
+    try {
+      const file = await fs.open(join(path, '_owner.json'), constants.O_RDONLY | constants.O_NOFOLLOW)
+      try { owner = JSON.parse(await file.readFile('utf8')) } finally { await file.close() }
+    } catch { throw error('speech_unowned_partial', '资源缺少有效归属记录；未清理或新增文件。') }
+    if (owner.id !== assetManifest.id || !uuid(owner.generation) || (expectedGeneration && owner.generation !== expectedGeneration)) throw error('speech_unowned_partial', '资源归属记录不符；未清理或新增文件。')
+    return { path, identity, bytes, generation: owner.generation }
+  }
+
+  async function removeOwned(entry) {
+    if (entry.path !== finalRoot && entry.path !== join(root, `.generation-${entry.generation}`)) throw error('speech_unsafe_path', '无法安全清理旧资源。')
+    await inspectPath(root)
+    const current = await ownedDirectory(entry.path, entry.generation)
+    if (current.identity.ino !== entry.identity.ino || current.identity.dev !== entry.identity.dev) throw error('speech_unsafe_path', '资源目录已改变；未清理。')
+    await fs.rm(entry.path, { recursive: true })
+  }
+
+  async function replacements() {
+    if (!await inspectPath(root)) return { directories: [], pointers: [] }
+    const names = await fs.readdir(root)
+    const generations = names.filter(name => name.startsWith('.generation-') || name === assetManifest.id)
+    const pointerNames = names.filter(name => name.startsWith('.active-'))
+    if (generations.length > 2 || pointerNames.length > 2) throw error('speech_unowned_partial', '资源代际或切换残留超过安全限额；未清理或新增文件。')
+    const directories = []
+    for (const name of generations) {
+      const generation = name === assetManifest.id ? undefined : name.slice('.generation-'.length)
+      if (generation !== undefined && !uuid(generation)) throw error('speech_unowned_partial', '存在归属不明的资源代际；未清理或新增文件。')
+      directories.push(await ownedDirectory(join(root, name), generation))
+    }
+    const pointers = []
+    for (const name of pointerNames) {
+      const generation = name.slice('.active-'.length, -'.json'.length)
+      if (!name.endsWith('.json') || !uuid(generation)) throw error('speech_unowned_partial', '切换残留归属不明；未清理。')
+      const path = join(root, name), identity = await fs.lstat(path)
+      if (!identity.isFile() || identity.isSymbolicLink() || identity.nlink !== 1 || identity.size > 1024) throw error('speech_unowned_partial', '切换残留包含链接或超限文件；未清理。')
+      let pointer
+      try { pointer = JSON.parse(await fs.readFile(path, 'utf8')) } catch { throw error('speech_unowned_partial', '切换残留记录不完整；未清理。') }
+      if (pointer.id !== assetManifest.id || pointer.revision !== assetManifest.revision || pointer.generation !== generation) throw error('speech_unowned_partial', '切换残留身份不符；未清理。')
+      pointers.push({ path, identity, generation })
+    }
+    return { directories, pointers }
+  }
+
+  async function removePointer(entry) {
+    if (entry.path !== join(root, `.active-${entry.generation}.json`)) throw error('speech_unsafe_path', '切换残留路径无效；未清理。')
+    await inspectPath(root)
+    const stat = await fs.lstat(entry.path).catch(cause => { if (cause.code !== 'ENOENT') throw cause })
+    if (!stat) return
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.ino !== entry.identity.ino || stat.dev !== entry.identity.dev) throw error('speech_unsafe_path', '切换残留文件已改变；未清理。')
+    await fs.unlink(entry.path)
+  }
 
   async function partials() {
     if (!await inspectPath(root)) return []
@@ -103,11 +193,14 @@ export function createSpeechAssets({ root, download = downloadAsset } = {}) {
 
   async function inventory() {
     if (!await inspectPath(root)) return null
-    if (!await inspectPath(finalRoot)) return null
+    currentRoot = await readActive()
+    if (!await inspectPath(currentRoot)) return null
+    state.repairRequired = true
+    state.diskBytesKnown = false
     const paths = ['ready.json', '_owner.json', ...assetManifest.files.map(asset => asset.path)]
     const rows = []
     for (const path of paths) {
-      const full = join(finalRoot, path)
+      const full = join(currentRoot, path)
       await inspectPath(full.slice(0, full.lastIndexOf(sep)))
       const stat = await fs.lstat(full)
       if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw error('speech_unsafe_path', '朗读资源包含非普通文件或链接；未加载资源。')
@@ -122,20 +215,22 @@ export function createSpeechAssets({ root, download = downloadAsset } = {}) {
     if (!rows) {
       verifiedFingerprint = null
       const leftovers = await partials()
-      if (state.assetsReady) state = { ...state, phase: 'unprepared', assetsReady: false, validatedBytes: 0, diskBytes: 0 }
+      if (state.assetsReady) state = { ...state, phase: 'unprepared', assetsReady: false, repairRequired: false, resourceGeneration: null, validatedBytes: 0, diskBytes: 0 }
       if (leftovers.length) state = { ...state, phase: 'interrupted', assetsReady: false, diskBytes: leftovers.reduce((total, stage) => total + stage.bytes, 0), error: null }
       return false
     }
+    state.diskBytes = rows.reduce((total, row) => total + row.stat.size, 0)
+    state.diskBytesKnown = true
     const fingerprint = rows.map(({ path, stat }) => `${path}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`).join('|')
     if (fingerprint !== verifiedFingerprint) {
-      const ready = JSON.parse(await fs.readFile(join(finalRoot, 'ready.json'), 'utf8'))
+      const ready = JSON.parse(await fs.readFile(join(currentRoot, 'ready.json'), 'utf8'))
       if (ready.id !== assetManifest.id || ready.revision !== assetManifest.revision || ready.downloadBytes !== assetManifest.downloadBytes) {
         throw error('speech_invalid_manifest', '资源版本与固定清单不符；未加载资源。')
       }
       for (const asset of assetManifest.files) {
         const row = rows.find(row => row.path === asset.path)
         if (row.stat.size !== asset.bytes) throw error('speech_size_mismatch', '已保存资源大小不符；未加载资源，请明确修复。')
-        const file = await fs.open(join(finalRoot, asset.path), constants.O_RDONLY | constants.O_NOFOLLOW)
+        const file = await fs.open(join(currentRoot, asset.path), constants.O_RDONLY | constants.O_NOFOLLOW)
         const hash = createHash('sha256')
         try {
           const buffer = Buffer.alloc(64 * 1024)
@@ -154,7 +249,10 @@ export function createSpeechAssets({ root, download = downloadAsset } = {}) {
       if (next !== fingerprint) throw error('speech_assets_changed', '校验时资源发生改变；请重新检查。')
       verifiedFingerprint = fingerprint
     }
-    state = { ...state, phase: 'ready', assetsReady: true, validatedBytes: assetManifest.downloadBytes, diskBytes: rows.reduce((total, row) => total + row.stat.size, 0), error: null }
+    const owner = JSON.parse(await fs.readFile(join(currentRoot, '_owner.json'), 'utf8'))
+    if (owner.id !== assetManifest.id || !uuid(owner.generation) || (currentRoot !== finalRoot && currentRoot !== join(root, `.generation-${owner.generation}`))) throw error('speech_invalid_manifest', '资源安装归属无效；未加载资源。')
+    const failedReplacement = state.operation === 'repair' && ['error', 'cancelled'].includes(state.phase)
+    state = { ...state, phase: failedReplacement ? state.phase : 'ready', assetsReady: true, repairRequired: false, resourceGeneration: owner.generation, validatedBytes: assetManifest.downloadBytes, diskBytes: rows.reduce((total, row) => total + row.stat.size, 0), error: failedReplacement ? state.error : null }
     return true
   }
 
@@ -178,10 +276,12 @@ export function createSpeechAssets({ root, download = downloadAsset } = {}) {
     if (!stat.isDirectory() || stat.isSymbolicLink() || stat.ino !== job.stagingIdentity.ino || stat.dev !== job.stagingIdentity.dev) {
       throw error('speech_unsafe_path', '准备目录已改变；未清理归属不明的位置。')
     }
-    // rm does not follow nested symlinks. The top-level directory identity and
-    // its plugin-owned parent have both been checked before recursive cleanup.
+    // Recheck the finite allowlist and marker immediately before cleanup, not
+    // only when the directory was created or first observed after a restart.
+    const owned = await ownedDirectory(expected, job.generation)
+    if (owned.identity.ino !== stat.ino || owned.identity.dev !== stat.dev) throw error('speech_unsafe_path', '准备目录已改变；未清理。')
     await fs.rm(expected, { recursive: true, force: true })
-    state.diskBytes = 0
+    state.diskBytes = job.previous?.bytes ?? 0
   }
 
   async function run(job) {
@@ -191,8 +291,16 @@ export function createSpeechAssets({ root, download = downloadAsset } = {}) {
       check()
       await inspectPath(root, { create: true })
       const final = await fs.lstat(finalRoot).catch(cause => { if (cause.code !== 'ENOENT') throw cause })
-      if (final) throw error('speech_repair_required', '已有资源损坏或版本不符，未重新下载；需要明确修复，当前版本尚未提供该操作。')
-      for (const stale of await partials()) { check(); await removeStaging(stale) }
+      if (final && !job.repair) throw error('speech_repair_required', '已有资源损坏或版本不符；请明确确认修复后重新下载。')
+      const staleSets = await replacements()
+      const staleStages = await partials()
+      for (const stale of staleStages) { check(); await removeStaging(stale) }
+      for (const stale of staleSets.directories) {
+        if (stale.path === job.previous?.path) continue
+        check(); await removeOwned(stale)
+      }
+      for (const stale of staleSets.pointers) { check(); await removePointer(stale) }
+      state.diskBytes = job.previous?.bytes ?? 0
       const disk = await fs.statfs(root)
       if (disk.bavail * disk.bsize < assetManifest.downloadBytes + 65536) throw error('speech_disk_full', '磁盘空间不足；需要约 94.5 MB 资源空间和少量校验元数据。')
       check()
@@ -254,14 +362,43 @@ export function createSpeechAssets({ root, download = downloadAsset } = {}) {
       // Only this completely verified directory acquires the fixed ready name.
       // Failed or cancelled generations can never publish their partial files.
       await inspectPath(root)
-      await fs.rename(job.staging, finalRoot)
+      if (job.repair) {
+        const replacement = join(root, `.generation-${job.generation}`)
+        await fs.rename(job.staging, replacement)
+        const pointer = await fs.open(job.pointer, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600)
+        try {
+          job.pointerIdentity = await pointer.stat()
+          await pointer.writeFile(JSON.stringify({ id: assetManifest.id, revision: assetManifest.revision, generation: job.generation }))
+          await pointer.sync()
+        } finally { await pointer.close() }
+        check()
+        // A single rename is the publication point. No reader sees a partial
+        // generation, and failures before it leave the old pointer untouched.
+        await fs.rename(job.pointer, pointerPath)
+        job.activated = true
+        currentRoot = replacement
+        verifiedFingerprint = null
+        state.phase = 'activating'
+        state.assetsReady = false
+        state.resourceGeneration = job.generation
+        await onActivate({ resourceGeneration: job.generation })
+        if (job.previous) await removeOwned(job.previous)
+      } else await fs.rename(job.staging, finalRoot)
       state.phase = 'ready'
+      state.resourceGeneration = job.generation
       state.assetsReady = true
     } catch (cause) {
       state.phase = job.controller.signal.aborted || disposed ? 'cancelled' : 'error'
       state.error = state.phase === 'error' ? describeError(cause) : null
     } finally {
-      try { await removeStaging(job) } catch (cause) {
+      try {
+        await removeStaging(job)
+        if (job.repair && !job.activated) {
+          const replacement = join(root, `.generation-${job.generation}`)
+          if (await inspectPath(replacement)) await removeOwned(await ownedDirectory(replacement, job.generation))
+          if (job.pointerIdentity) await removePointer({ path: job.pointer, identity: job.pointerIdentity, generation: job.generation })
+        }
+      } catch (cause) {
         state.phase = 'error'
         state.error = describeError(cause)
       }
@@ -277,16 +414,21 @@ export function createSpeechAssets({ root, download = downloadAsset } = {}) {
       return snapshot(owner)
     },
     async getReadyRoot() {
-      if (task) await task.done
-      return await checkExisting() && state.assetsReady ? finalRoot : null
+      // A compatible current set remains usable throughout the download. Do
+      // not subscribe a playback request to its eventual replacement (or make
+      // activation's runtime disposal wait on its own preparation promise).
+      if (task) return state.assetsReady && task.previous ? task.previous.path : null
+      return await checkExisting() && state.assetsReady ? currentRoot : null
     },
     async prepare(owner) {
       if (disposed) return failure('speech_disposed', '插件已停止，无法准备资源。')
       if (await checkExisting()) return success(snapshot(owner))
       if (task) return task.owner === owner ? success(snapshot(owner)) : failure('speech_busy', '另一页面正在准备共享朗读资源，请等待或由该页面取消。')
       try {
-        if (await inspectPath(root) && await fs.lstat(finalRoot).catch(cause => { if (cause.code !== 'ENOENT') throw cause })) {
-          return failure('speech_repair_required', '已有资源损坏或版本不符，未重新下载；需要明确修复，当前版本尚未提供该操作。')
+        if (state.repairRequired || await inspectPath(root) && (
+          await fs.lstat(pointerPath).catch(cause => { if (cause.code !== 'ENOENT') throw cause }) ||
+          await fs.lstat(finalRoot).catch(cause => { if (cause.code !== 'ENOENT') throw cause }))) {
+          return failure('speech_repair_required', '已有资源损坏或版本不符，未重新下载；请明确确认修复。')
         }
       } catch (cause) { return failure(describeError(cause).code, describeError(cause).message) }
       // Filesystem validation above awaits. Recheck the public operation owner
@@ -295,6 +437,24 @@ export function createSpeechAssets({ root, download = downloadAsset } = {}) {
       const generation = randomUUID()
       const job = { generation, owner, controller: new AbortController(), staging: join(root, `.prepare-${generation}`) }
       state = { ...state, phase: 'preparing', generation, downloadedBytes: 0, validatedBytes: 0, diskBytes: 0, error: null }
+      task = job
+      job.done = run(job)
+      return success(snapshot(owner))
+    },
+    async repair(owner) {
+      if (disposed) return failure('speech_disposed', '插件已停止，无法修复资源。')
+      if (task) return task.owner === owner ? success(snapshot(owner)) : failure('speech_busy', '另一页面正在准备共享朗读资源，请等待或由该页面取消。')
+      await checkExisting()
+      let previous
+      try {
+        const active = await readActive()
+        if (await inspectPath(active)) previous = await ownedDirectory(active, active === finalRoot ? undefined : active.slice(active.lastIndexOf('.generation-') + 12))
+        await replacements()
+      } catch (cause) { const described = describeError(cause); return failure(described.code, described.message) }
+      if (task) return task.owner === owner ? success(snapshot(owner)) : failure('speech_busy', '另一页面正在准备共享朗读资源，请等待或由该页面取消。')
+      const generation = randomUUID()
+      const job = { generation, owner, repair: true, previous, controller: new AbortController(), staging: join(root, `.prepare-${generation}`), pointer: join(root, `.active-${generation}.json`) }
+      state = { ...state, phase: 'preparing', generation, operation: 'repair', downloadedBytes: 0, validatedBytes: 0, error: null }
       task = job
       job.done = run(job)
       return success(snapshot(owner))

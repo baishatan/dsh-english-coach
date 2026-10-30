@@ -290,6 +290,87 @@ test('removing a ready directory invalidates cached readiness without downloadin
   assert.equal(missing.phase, 'unprepared')
 })
 
+test('an explicit repair replaces a corrupt owned set with all eight fixed assets and survives restart', {
+  skip: !process.env.ENGLISH_COACH_TEST_ASSETS && 'Requires explicit verified assets fixture'
+}, async t => {
+  let downloads = 0
+  const h = await host(t, { download: (asset, { signal }) => {
+    downloads++
+    return createReadStream(join(process.env.ENGLISH_COACH_TEST_ASSETS, asset.path), { signal })
+  } })
+  await h.request('speech.assets.prepare')
+  const original = await settle(h, 'ready')
+  const voice = join(h.speechRoot, original.manifest.id, 'voices/af_heart.bin')
+  const changed = await fs.open(voice, 'r+')
+  try { await changed.write(Buffer.from('x'), 0, 1, 0) } finally { await changed.close() }
+  const damaged = (await h.request('speech.assets.status')).data
+  assert.equal(damaged.assetsReady, false)
+  assert.equal(damaged.repairRequired, true, 'the visible UI can distinguish damaged resources from absent ones')
+  assert.equal(damaged.resourceGeneration, original.resourceGeneration, 'damage does not invent a new installation identity')
+  assert.ok(damaged.diskBytes >= 94_453_730, 'damaged files still occupy disk')
+  assert.equal(downloads, 8, 'damage detection has no download permission')
+  assert.equal((await h.request('speech.assets.prepare')).code, 'speech_repair_required')
+  const repaired = await h.request('speech.assets.repair')
+  assert.equal(repaired.ok, true, JSON.stringify(repaired))
+  const ready = await settle(h, 'ready')
+  assert.equal(ready.assetsReady, true)
+  assert.notEqual(ready.resourceGeneration, original.resourceGeneration, 'installation generation changes, not the upstream model')
+  assert.equal(ready.manifest.revision, '1939ad2a8e416c0acfeecc08a694d14ef25f2231')
+  assert.equal(downloads, 16, 'repair explicitly redownloads the entire fixed set')
+  await h.dispose()
+  const reboot = await host(t, { directory: h.base, download: () => assert.fail('repaired restart must be offline') })
+  const reused = (await reboot.request('speech.assets.status')).data
+  assert.equal(reused.assetsReady, true)
+  assert.equal(reused.resourceGeneration, ready.resourceGeneration)
+})
+
+test('checking the only pinned resource version is offline and discloses replacement disk cost', async t => {
+  const h = await host(t, { download: () => assert.fail('checking a pinned version never contacts the network') })
+  const checked = await h.request('speech.assets.check')
+  assert.equal(checked.ok, true)
+  assert.equal(checked.data.update.available, false)
+  assert.equal(checked.data.update.networkChecked, false)
+  assert.equal(checked.data.update.targetId, 'kokoro-82m-v1.0-q8-1939ad2a8e416c0acfeecc08a694d14ef25f2231')
+  assert.equal(checked.data.update.downloadBytes, 94_453_730)
+  assert.equal(checked.data.update.additionalDiskBytes, 94_519_266)
+  assert.equal(checked.data.update.maximumAssetBytes, 189_038_532)
+  assert.match(checked.data.update.message, /没有已知更新/)
+  await assert.rejects(fs.access(h.speechRoot), { code: 'ENOENT' })
+})
+
+test('repair rejects foreign contents and bounded orphan generations without deleting them or downloading', async t => {
+  let downloads = 0
+  const h = await host(t, { download: () => { downloads++; throw new Error('must remain offline') } })
+  const manifest = (await h.request('speech.assets.status')).data.manifest
+  const final = join(h.speechRoot, manifest.id)
+  await fs.mkdir(final, { recursive: true })
+  await fs.writeFile(join(final, '_owner.json'), JSON.stringify({ id: manifest.id, generation: '12345678-1234-4234-9234-123456789abc' }))
+  await fs.writeFile(join(final, 'foreign.txt'), 'do not delete')
+  assert.equal((await h.request('speech.assets.repair')).code, 'speech_unowned_partial')
+  assert.equal(await fs.readFile(join(final, 'foreign.txt'), 'utf8'), 'do not delete')
+  assert.equal(downloads, 0)
+  for (let n = 0; n < 3; n++) {
+    const generation = `12345678-1234-4234-9234-123456789ab${n}`
+    const path = join(h.speechRoot, `.generation-${generation}`)
+    await fs.mkdir(path)
+    await fs.writeFile(join(path, '_owner.json'), JSON.stringify({ id: manifest.id, generation }))
+  }
+  // Use an independent resource root so the orphan bound is the reason for
+  // refusal, not the already-rejected foreign final installation.
+  const other = await host(t, { download: () => { downloads++; throw new Error('must remain offline') } })
+  await fs.mkdir(other.speechRoot)
+  for (let n = 0; n < 3; n++) {
+    const generation = `12345678-1234-4234-9234-123456789ab${n}`
+    const path = join(other.speechRoot, `.generation-${generation}`)
+    await fs.mkdir(path)
+    await fs.writeFile(join(path, '_owner.json'), JSON.stringify({ id: manifest.id, generation }))
+  }
+  const denied = await other.request('speech.assets.repair')
+  assert.equal(denied.code, 'speech_unowned_partial')
+  assert.equal((await fs.readdir(other.speechRoot)).length, 3, 'unknown/excess orphan generations never grow or get silently removed')
+  assert.equal(downloads, 0)
+})
+
 test('network, full disk, truncated, oversized and checksum failures stay unavailable with bounded errors', async t => {
   const failures = [
     [async () => { throw new Error('/private/secret ' + 'x'.repeat(4000)) }, 'speech_network'],
