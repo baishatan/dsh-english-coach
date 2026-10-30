@@ -465,7 +465,7 @@ window.__ModuleLoader__.load({
       const changedPreferences = new Set()
       let kokoroResources = null, kokoroStatusUnconfirmed = false
       const preferences = { provider: 'kokoro', kokoroVoice: 'af_heart', voiceURI: null, rate: 1, voices: [], notice: '', error: '', localStatus: '', manualPlay: false, resourceEpoch: 0 }
-      const kokoroUnavailable = 'Kokoro 尚未准备。请先在「Kokoro 资源准备」准备资源，再手动播放；不会自动下载或改用系统语音。'
+      const kokoroUnavailable = 'Kokoro 尚未准备。请在朗读设置点击「准备」，完成后再手动播放；不会自动下载或改用系统语音。'
       const playbackIssue = () => {
         if (!['kokoro', 'web-speech'].includes(preferences.provider)) return '已保存的音频来源当前不可用，请重新选择来源。'
         if (preferences.provider === 'kokoro') {
@@ -509,12 +509,14 @@ window.__ModuleLoader__.load({
       }
       function refreshVoices() {
         try {
+          const seen = new Set()
           preferences.voices = (synth()?.getVoices() ?? []).filter(voice =>
-            voice.localService === true && /^en(?:[-_][a-z0-9]+)*$/i.test(voice.lang) &&
+            typeof voice.voiceURI === 'string' && voice.localService === true && /^en(?:[-_][a-z0-9]+)*$/i.test(voice.lang) &&
             // Exact family, optionally followed by known system quality or
             // English-locale qualifiers. Never infer a family from a URI or
             // accept an arbitrary suffix such as "Shelley (Clone)".
-            /^(?:Shelley|Reed|Sandy)(?: \((?:Enhanced|Premium|English(?: \([A-Za-z]+(?:[ -][A-Za-z]+)*\))?)\))*$/i.test(voice.name))
+            /^(?:Shelley|Reed|Sandy)(?: \((?:Enhanced|Premium|English(?: \([A-Za-z]+(?:[ -][A-Za-z]+)*\))?)\))*$/i.test(voice.name) &&
+            !seen.has(voice.voiceURI) && (seen.add(voice.voiceURI), true))
         } catch { preferences.voices = [] }
         if (active?.kind === 'system' && !preferences.voices.some(voice => voice.voiceURI === active.utterance.voice?.voiceURI)) {
           const current = active.article, owner = active.owner
@@ -758,6 +760,10 @@ window.__ModuleLoader__.load({
         try {
           const assets = await call('speech.assets.status', {}, { signal: value.controller.signal })
           if (!current()) return
+          // Playback's fresh status can reveal a change since the idle card's
+          // last read (including damage with the same assetsReady value).
+          // Wake its ordered status read without starting a download.
+          preferences.resourceEpoch++
           resourceStatus(assets.ok ? assets.data : null)
           if (!assets.ok) { fail(assets.message); return }
           if (!assets.data.assetsReady) { fail(kokoroUnavailable); return }
@@ -1051,6 +1057,8 @@ window.__ModuleLoader__.load({
   font-size: 12px; color: var(--dsw-alias-label-secondary); }
 .ec-speech-options select { width: 100%; min-width: 0; max-width: 100%; }
 .ec-speech-options > [role=status], .ec-speech-options > .ec-notice { margin-top: 10px; }
+.ec-speech-assets:not([hidden]) { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--dsw-alias-border-l1); }
+.ec-speech-assets [role=dialog] { margin-top: 10px; }
 .ec-pronounce button:focus-visible, .ec-speech-options select:focus-visible,
 .ec-speech-options button:focus-visible, .ec-root input[type=range]:focus-visible,
 .ec-item-body .ec-btn:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
@@ -1511,7 +1519,7 @@ window.__ModuleLoader__.load({
     function SpeechAssetsPreparation() {
       const audio = useSpeech(), resourceEpoch = audio.preferences.resourceEpoch
       const [assets, setAssets] = useState(null), [error, setError] = useState(null), [busy, setBusy] = useState(false), [confirmRepair, setConfirmRepair] = useState(false), [confirmDelete, setConfirmDelete] = useState(false)
-      const mounted = useRef(false), order = useRef(0), pending = useRef(false)
+      const mounted = useRef(false), order = useRef(0), pending = useRef(false), section = useRef(null), previousProvider = useRef(audio.preferences.provider)
       const active = assets && ['preparing', 'downloading', 'validating', 'activating'].includes(assets.phase)
       const read = useCallback(async () => {
         if (pending.current) return
@@ -1528,15 +1536,31 @@ window.__ModuleLoader__.load({
         return () => { mounted.current = false; order.current++ }
       }, [read])
       useEffect(() => {
+        const previous = previousProvider.current
+        previousProvider.current = audio.preferences.provider
+        // Other pages may prepare or remove shared resources while this view
+        // is hidden. A pending confirmed action supplies its own final status.
+        if (previous !== 'kokoro' && audio.preferences.provider === 'kokoro' && !pending.current) void read()
+      }, [audio.preferences.provider, read])
+      useEffect(() => {
+        const refresh = () => { if (audio.preferences.provider === 'kokoro' && !document.hidden) void read() }
+        const settings = section.current?.closest('section[aria-label="朗读设置"]')
+        const focusVoice = event => { if (event.target.matches('select[aria-label="英语音色"]')) refresh() }
+        window.addEventListener('focus', refresh)
+        document.addEventListener('visibilitychange', refresh)
+        settings?.addEventListener('focusin', focusVoice)
+        return () => { window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', refresh); settings?.removeEventListener('focusin', focusVoice) }
+      }, [audio.preferences.provider, read])
+      useEffect(() => {
         // Resource invalidation wakes the existing status read once. The
         // caller's in-flight confirmed action supplies its own final result.
         if (resourceEpoch && !pending.current) void read()
       }, [read, resourceEpoch])
       useEffect(() => {
-        if (!active) return
+        if (!active && assets?.phase !== 'deleting') return
         const timer = setInterval(read, 1000)
         return () => clearInterval(timer)
-      }, [active, read])
+      }, [active, assets?.phase, read])
       async function act(action) {
         if (pending.current) return
         pending.current = true
@@ -1550,78 +1574,88 @@ window.__ModuleLoader__.load({
           if (!mounted.current || request !== order.current) return
           speech.resourceStatus(result.ok ? result.data : null)
           if (result.ok) setAssets(result.data)
-          else setError(result.message)
+          else {
+            setError(result.message)
+            // A competing page may have changed the state before this action.
+            // Refresh it without hiding the failed action or retrying it.
+            if (action === 'prepare' || action === 'repair') {
+              const status = await call('speech.assets.status')
+              if (!mounted.current || request !== order.current) return
+              speech.resourceStatus(status.ok ? status.data : null)
+              if (status.ok) setAssets(status.data)
+            }
+          }
         } finally { pending.current = false; if (mounted.current) setBusy(false) }
       }
       const count = value => Number(value ?? 0).toLocaleString('en-US')
       const phase = { deleting: '正在删除共享 Kokoro 资源；等待任务和工作进程结束', unprepared: '尚未准备', preparing: '准备中', downloading: '下载中', validating: '校验中', activating: '资源切换中；旧音频将失效', cancelled: '已取消', interrupted: '上次准备中断；可明确重新准备', error: assets?.repairRequired ? '资源损坏或不兼容；需要明确修复' : '准备或修复失败', ready: '资源已校验' }[assets?.phase] ?? '读取资源状态中'
-      return h('section', { className: 'ec-card ec-speech-assets', 'aria-label': 'Kokoro 资源准备' },
-        h('div', { className: 'ec-card-head' }, h('h2', null, 'Kokoro 资源准备')),
-        h('p', { className: 'ec-muted' }, 'Kokoro 在 DSH 主机处理英文；远程页面会把文字交给该主机。只有点击准备才下载，完成后不会自动发声。'),
-        assets ? h('p', { className: 'ec-muted', style: { overflowWrap: 'anywhere' } },
-          `固定版本 ${assets.manifest.revision} · 模型、词元配置与 Heart / Michael / Emma / George 四声一起下载 ${count(assets.manifest.downloadBytes)} 字节（约 94.5 MB）。这是下载资源，不含另行随插件安装的运行时代码。准备需相应临时空间；就绪后原目录保留，不重复复制。`) : null,
+      return h('section', { ref: section, className: 'ec-speech-assets', 'aria-label': 'Kokoro 资源准备', hidden: audio.preferences.provider !== 'kokoro' },
         h('div', { role: 'status', 'aria-live': 'polite' }, phase),
-        assets ? h('p', { className: 'ec-muted' }, `已下载 ${count(assets.downloadedBytes)} / ${count(assets.manifest.downloadBytes)} 字节 · 已校验 ${count(assets.validatedBytes)} 字节 · 当前资源占用 ${count(assets.diskBytes)} 字节${assets.diskBytesKnown === false ? '（有归属不明或缺件，无法完整统计；未清理）' : ''}`) : null,
+        assets && !assets.assetsReady ? h('div', { className: 'ec-muted' }, '固定资源约 94.5 MB；仅手动准备时下载。') : null,
+        active ? h('div', { className: 'ec-muted' }, `已下载 ${count(assets.downloadedBytes)} / ${count(assets.manifest.downloadBytes)} 字节`) : null,
         active ? h('progress', { 'aria-label': 'Kokoro 下载字节', value: assets.downloadedBytes, max: assets.manifest.downloadBytes, style: { width: '100%' } }) : null,
-        active && assets.currentFile ? h('div', { className: 'ec-muted', style: { overflowWrap: 'anywhere' } }, assets.currentFile) : null,
-        assets?.assetsReady ? h('p', { role: 'status' }, assets.runtimeAvailable ? '资源与运行时可用；请重新点击播放，不会自动发声。' : '资源已校验，合成运行时尚不可用；安装兼容运行时后需重新点击播放，不会自动发声。') : null,
-        assets?.operation === 'repair' && assets.assetsReady && assets.phase !== 'ready' ? h('p', { role: 'status' }, '兼容旧资源仍可用；新集合全部校验前保留旧集合，失败或取消不会自动重试。') : null,
-        assets?.update ? h('p', { className: 'ec-muted' }, assets.update.message) : null,
+        assets?.assetsReady && !assets.runtimeAvailable ? h('div', { role: 'status' }, '运行时尚不可用；请安装兼容插件后手动重试。') : null,
+        assets?.operation === 'repair' && assets.assetsReady && assets.phase !== 'ready' ? h('div', { role: 'status' }, '兼容旧资源仍可用；失败或取消保留旧资源。') : null,
         assets?.error ? h(Notice, { tone: 'error' }, assets.error.message) : null,
         error ? h(Notice, { tone: 'error' }, error) : null,
         confirmRepair ? h('div', { role: 'dialog', 'aria-modal': 'true', 'aria-label': '确认修复 Kokoro 资源', className: 'ec-card', tabIndex: -1, onKeyDown: event => { if (event.key === 'Escape') setConfirmRepair(false) } },
           h('h3', null, '确认修复 Kokoro 资源'),
-          h('p', { style: { overflowWrap: 'anywhere' } }, `目标固定身份 ${assets.manifest.id ?? assets.manifest.revision}。这会完整重新下载同一版本 ${count(assets.manifest.downloadBytes)} 字节，不是新的上游模型。`),
-          h('p', null, `保留可用兼容旧集合直到新集合完整校验。至少需要额外 ${count(assets.update?.additionalDiskBytes ?? assets.manifest.downloadBytes + 65536)} 字节可用磁盘；双代资源预算上限 ${count(assets.update?.maximumAssetBytes ?? 2 * (assets.manifest.downloadBytes + 65536))} 字节（约 189 MB），不含插件运行时代码和生成音频。`),
-          h('p', null, '这是共享 DSH 主机资源：成功切换会使其他页面的旧 Kokoro 任务与音频句柄失效，正在生成的任务将停止，需要重新手动播放；不会自动发声。已交付给断线页面的音频不能保证立即停止。失败或取消保留原有可用资源；学习记录、设置和书签不变。'),
+          h('p', null, '修复会重新下载固定版本约 94.5 MB，并需额外约 94.5 MB 空间。可用的旧资源保留至校验完成；失败或取消不会删除旧资源。'),
+          h('p', null, '这是同一 DSH 主机共享的资源：切换会停止其他页面的 Kokoro 任务；已交付给断线页面的音频不能远程撤回。学习记录、书签和偏好不变。'),
           h('div', { className: 'ec-row' },
             h(Btn, { primary: true, small: true, disabled: busy, onClick: () => act('repair') }, '确认重新下载并修复'),
             h(Btn, { small: true, disabled: busy, onClick: () => setConfirmRepair(false) }, '暂不修复'))) : null,
         confirmDelete ? h('div', { role: 'dialog', 'aria-modal': 'true', 'aria-label': '确认删除 Kokoro 资源', className: 'ec-card', tabIndex: -1, onKeyDown: event => { if (event.key === 'Escape') setConfirmDelete(false) } },
           h('h3', null, '确认删除 Kokoro 资源'),
-          h('p', null, '这是共享 DSH 主机资源，不只影响当前页面。确认后取消此主机的 Kokoro 下载、合成与预取，结束工作进程并删除归属明确的模型、四声音色及临时音频。'),
-          h('p', null, '当前页面立即停止 Kokoro；其他在线可见页面在下一次心跳检查时停止（通常约 5 秒），并静默保留各自文本位置。已交付给断线页面的音频不能保证立即停止或远程撤回。'),
-          h('p', null, '系统语音不受影响。学习记录、书签和声音偏好保留；不会自动切源或重新下载，需要时请明确重新准备。归属或权限检查失败会报告实际错误，不会假装全部删除。'),
+          h('p', null, '这是同一 DSH 主机共享的资源。将停止下载、合成与预取，等待工作进程退出，再删除模型、音色和临时音频；其他在线页面会在心跳检查时停止。'),
+          h('p', null, '已交付给断线页面的音频不能保证立即停止或远程撤回。系统语音、学习记录、书签和偏好不受影响；不会自动切换或重新下载。'),
           h('div', { className: 'ec-row' },
             h(Btn, { small: true, disabled: busy, onClick: () => setConfirmDelete(false) }, '暂不删除'),
             h(Btn, { small: true, disabled: busy, onClick: () => act('delete') }, '确认删除此主机 Kokoro 资源'))) : null,
         h('div', { className: 'ec-row', style: { marginTop: 10 } },
-          assets ? h(Btn, { small: true, disabled: busy || assets.phase === 'deleting', onClick: () => { setConfirmRepair(false); setConfirmDelete(true) } }, '删除 Kokoro 资源') : null,
+          assets && (assets.assetsReady || assets.repairRequired || assets.downloadedBytes > 0 || assets.diskBytes > 0 || assets.phase === 'error' || assets.phase === 'deleting') ? h(Btn, { small: true, disabled: busy || assets.phase === 'deleting', onClick: () => { setConfirmRepair(false); setConfirmDelete(true) } }, '删除资源') : null,
           active ? assets.canCancel ? h(Btn, { small: true, disabled: busy, onClick: () => act('cancel') }, '取消准备') : h('span', { className: 'ec-muted' }, '另一页面正在准备；仅该页面可取消。') :
-          assets && !assets.assetsReady && !assets.repairRequired ? h(Btn, { primary: true, small: true, disabled: busy, onClick: () => act('prepare') }, assets.phase === 'error' ? '重试准备 Kokoro' : ['cancelled', 'interrupted'].includes(assets.phase) ? '重新准备 Kokoro' : '准备 Kokoro') : null,
-          !active && assets ? h(Btn, { small: true, disabled: busy, onClick: () => act('check') }, '检查资源版本') : null,
-          !active && assets && (assets.assetsReady || assets.repairRequired) ? h(Btn, { small: true, disabled: busy, onClick: () => setConfirmRepair(true) }, '修复 Kokoro 资源') : null,
+          assets && !assets.assetsReady && !assets.repairRequired && assets.phase !== 'deleting' ? h(Btn, { primary: true, small: true, disabled: busy, onClick: () => act('prepare') }, '准备') : null,
+          !active && assets && (assets.repairRequired || assets.phase === 'error') ? h(Btn, { small: true, disabled: busy, onClick: () => act('check') }, '检查资源版本') : null,
+          !active && (assets?.repairRequired || assets?.operation === 'repair' && ['error', 'cancelled', 'interrupted'].includes(assets.phase)) ? h(Btn, { small: true, disabled: busy, onClick: () => setConfirmRepair(true) }, '修复') : null,
           !active && error ? h(Btn, { small: true, disabled: busy, onClick: read }, '重试资源状态') : null))
     }
 
     function SpeechOptions() {
       const audio = useSpeech(), prefs = audio.preferences, kokoro = prefs.provider === 'kokoro', owner = useRef({})
       useEffect(() => () => audio.release(owner.current), [])
-      const voice = kokoro ? prefs.kokoroVoice : audio.selectedVoice()?.voiceURI ?? ''
+      const systemVoice = audio.selectedVoice()
+      const voice = kokoro ? `kokoro:${prefs.kokoroVoice}` : prefs.provider === 'web-speech' && systemVoice ? `system:${systemVoice.voiceURI}` : 'unavailable'
+      const missing = voice === 'unavailable' || kokoro && !KOKORO_VOICES.some(item => item.id === prefs.kokoroVoice)
       return h('section', { className: 'ec-card ec-speech-options', 'aria-label': t('speechSettings') },
         h('div', { className: 'ec-card-head' }, h('h2', null, t('speechSettings'))),
         h('div', { className: 'ec-row' },
-          h('label', null, '音频来源', h('select', { className: 'ec-select', 'aria-label': '音频来源', value: prefs.provider, onChange: event => audio.configure({ provider: event.target.value }) },
-            !['kokoro', 'web-speech'].includes(prefs.provider) ? h('option', { value: prefs.provider, disabled: true }, '已保存的来源不可用，请重新选择') : null,
-            h('option', { value: 'kokoro' }, 'Kokoro 本地朗读（推荐）'),
-            h('option', { value: 'web-speech' }, '系统语音'))),
-          h('label', null, '英语音色', h('select', { className: 'ec-select', 'aria-label': '英语音色', value: voice, onChange: event => audio.configure(kokoro ? { kokoroVoice: event.target.value } : { voiceURI: event.target.value }) },
-            kokoro ? [
-              !KOKORO_VOICES.some(item => item.id === voice) ? h('option', { key: 'unavailable', value: voice, disabled: true }, '已保存的音色不可用，请重新选择') : null,
-              ...KOKORO_VOICES.map(item => h('option', { key: item.id, value: item.id }, item.label))] : [
-              !voice ? h('option', { key: 'unavailable', value: '' }, prefs.voiceURI ? '偏好音色不可用，请重新选择' : '请选择本地英语音色') : null,
-              ...prefs.voices.map(item => h('option', { key: item.voiceURI, value: item.voiceURI }, `${item.name} · ${item.lang} · 本地`))])),
+          h('label', null, '英语音色', h('select', { className: 'ec-select', 'aria-label': '英语音色', value: voice, onChange: event => {
+            const value = event.target.value
+            const local = KOKORO_VOICES.find(item => `kokoro:${item.id}` === value)
+            const system = prefs.voices.find(item => `system:${item.voiceURI}` === value)
+            if (local) audio.configure({ provider: 'kokoro', kokoroVoice: local.id })
+            else if (system) audio.configure({ provider: 'web-speech', voiceURI: system.voiceURI })
+          } },
+            missing ? h('option', { key: 'unavailable', value: voice, disabled: true }, prefs.provider === 'web-speech' && !prefs.voiceURI ? '请选择英语音色' : '已保存的音色或来源不可用，请重新选择') : null,
+            ...KOKORO_VOICES.map(item => h('option', { key: `kokoro:${item.id}`, value: `kokoro:${item.id}` }, `${item.label}（本地）`)),
+            ...prefs.voices.map((item, index) => {
+              const alike = prefs.voices.filter(other => other.name === item.name && other.lang === item.lang)
+              const suffix = alike.length > 1 ? ` ${alike.indexOf(item) + 1}` : ''
+              return h('option', { key: `system:${item.voiceURI}:${index}`, value: `system:${item.voiceURI}` }, `${item.name} · ${item.lang}（系统${suffix}）`)
+            }))),
           h('label', null, '朗读语速', h('select', { className: 'ec-select', 'aria-label': '朗读语速', value: prefs.rate, onChange: event => audio.configure({ rate: Number(event.target.value) }) },
             READING_RATES.map(rate => h('option', { key: rate, value: rate }, `${rate.toFixed(1)} 倍`)))),
           h(Btn, { small: true, onClick: () => audio.short('Hello. Let us practise English together.', owner.current) }, '试听音色'),
           prefs.manualPlay ? h(Btn, { small: true, primary: true, onClick: () => { void audio.playLocal() } }, '播放生成音频') : null,
           prefs.localStatus && prefs.localStatus !== '试听结束' ? h(Btn, { small: true, onClick: () => audio.release(owner.current) }, '停止试听') : null,
           !kokoro ? h(Btn, { small: true, onClick: audio.refreshVoices }, '重试声源') : null),
-        h('div', { className: 'ec-muted', style: { marginTop: 10 } }, kokoro ? 'Kokoro 在 DSH 主机处理文本；远程网页会把朗读文本交给该主机。' : '系统语音来自当前网页设备，只使用本地英语 Shelley、Reed、Sandy 家族。'),
+        h('div', { className: 'ec-muted', style: { marginTop: 10 } }, kokoro ? '本地音色在 DSH 主机处理文本；远程页面会把文本交给该主机。' : '系统音色来自当前网页设备。'),
         h('div', { className: 'ec-sub' }, '语速为相对档位，不同音色的实际词速可能不同。'),
         prefs.localStatus ? h('div', { role: 'status', 'aria-live': 'polite' }, prefs.localStatus) : null,
         prefs.notice ? h('div', { role: 'status', className: 'ec-muted' }, prefs.notice) : null,
-        prefs.error ? h(Notice, { tone: 'error' }, prefs.error) : null)
+        prefs.error ? h(Notice, { tone: 'error' }, prefs.error) : null,
+        h(SpeechAssetsPreparation))
     }
 
     function PronounceButton({ text, label }) {
@@ -2689,7 +2723,6 @@ window.__ModuleLoader__.load({
               onGoWords: onOpenVocabulary
             }),
             h(SpeechOptions),
-            h(SpeechAssetsPreparation),
             h(WeeklyCard, { data, reload })
           )
         )
@@ -3635,7 +3668,7 @@ window.__ModuleLoader__.load({
         ),
 
         h('div', { className: 'ec-section-title' }, t('speechSettings')),
-        h('div', { className: 'ec-muted' }, '在「今日」页单词学习下方的「朗读设置」统一选择来源、音色与语速。'),
+        h('div', { className: 'ec-muted' }, '在「今日」页单词学习下方的「朗读设置」统一选择音色与语速。'),
 
         h('div', { className: 'ec-section-title' }, t('dataRoot')),
         h('div', { className: 'ec-muted', style: { marginBottom: 8, wordBreak: 'break-all' } },

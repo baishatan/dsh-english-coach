@@ -77,7 +77,7 @@ test('replacement, hidden pages and unmount cancel only their own task and ignor
   await ui.flush(() => pendingAudio.resolve(new Response(Buffer.from('RIFF0000WAVE'), { headers: { 'content-type': 'audio/wav' } })))
   assert.equal(api.media.length, 1, 'late old bytes do not allocate media or objectURL')
   const oldPlaying = api.media[0].onplaying, oldEnded = api.media[0].onended, oldError = api.media[0].onerror
-  await ui.input('英语音色', 'bm_george')
+  await ui.input('英语音色', 'kokoro:bm_george')
   await ui.flush(() => { oldPlaying(); oldEnded(); oldError() })
   assert.doesNotMatch(ui.text(), /正在播放本地朗读|试听结束|播放失败/)
   assert.equal(api.media[0].src, '')
@@ -96,6 +96,8 @@ test('replacement, hidden pages and unmount cancel only their own task and ignor
 test('resource checks update readiness without clearing an actual audition media error', async t => {
   const api = fixture(), request = api.request
   api.setPhase('ready')
+  api.assets.phase = 'error' // compatible old generation is still playable while recovery is needed
+  api.assets.repairRequired = true
   api.request = (command, payload, options) => command === 'speech.assets.check'
     ? Promise.resolve({ ok: true, data: structuredClone(api.assets) }) : request(command, payload, options)
   const ui = await mountClient({ request: api.request, setupWindow: api.setupWindow })
@@ -120,7 +122,7 @@ test('manual Kokoro audition shows real waiting and only media events can mark p
   const section = ui.container.querySelector('[aria-label="朗读设置"]')
   assert.equal(api.media.length, 0)
   assert.equal(api.calls.some(value => value.command === 'speech.synthesize'), false)
-  await ui.input('英语音色', 'bf_emma'); await ui.input('朗读语速', 0.5)
+  await ui.input('英语音色', 'kokoro:bf_emma'); await ui.input('朗读语速', 0.5)
   assert.equal(api.calls.some(value => value.command === 'speech.synthesize'), false)
   await ui.click('试听音色')
   const request = api.calls.find(value => value.command === 'speech.synthesize')

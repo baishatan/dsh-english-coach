@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { execute } from '../core/index.js'
-import { mountClient, deferred } from './client-harness.js'
+import { mountClient, deferred, clientEnvironment } from './client-harness.js'
 import { tempFixture, disposeFixture } from './temp-fixture.js'
 
 const local = { voiceURI: 'article-local', name: 'Shelley', lang: 'en-US', localService: true }
@@ -81,7 +81,7 @@ test('visible resource removal requires a second confirmation before stopping th
   await ui.flush(() => current.onplaying())
   const ended = current.onended, playing = current.onplaying
   const before = requests(api).length, writes = api.calls.filter(value => value.command === 'settings.save').length
-  await ui.click('删除 Kokoro 资源')
+  await ui.click('删除资源')
   const dialog = ui.container.querySelector('[role="dialog"][aria-label="确认删除 Kokoro 资源"]')
   assert.ok(dialog)
   assert.match(dialog.textContent, /共享.*DSH.*主机|DSH.*主机.*共享/)
@@ -93,7 +93,7 @@ test('visible resource removal requires a second confirmation before stopping th
   await ui.click('暂不删除')
   assert.notEqual(current.src, '')
   assert.match(body(ui).textContent, /播放中/)
-  await ui.click('删除 Kokoro 资源'); await ui.click('确认删除此主机 Kokoro 资源')
+  await ui.click('删除资源'); await ui.click('确认删除此主机 Kokoro 资源')
   assert.equal(api.calls.filter(value => value.command === 'speech.assets.delete').length, 1)
   assert.equal(current.src, '')
   assert.equal(ui.field('文本进度').value, '1')
@@ -149,25 +149,32 @@ test('the same active heartbeat stops remote playing paused and queued Kokoro on
 })
 
 test('confirmed resource deletion leaves active system speech and its position untouched even on a storage failure', async t => {
-  const api = fixture(), request = api.request
+  const api = fixture(), other = fixture(), request = api.request
   let completed = false
   api.state.settings.audio.provider = 'web-speech'
   api.request = async (command, payload, options) => {
     if (command === 'speech.assets.delete') { api.calls.push({ command, payload, options }); completed = true; return { ok: false, code: 'speech_storage', message: '删除未完成；无法清理归属资源，请检查主机权限后明确重试。' } }
     return request(command, payload, options)
   }
-  const { ui } = await open(t, api)
+  // Two independent clients use the same Host but have isolated browser audio.
+  const ui = await mountClient({ request: api.request, setupWindow: api.setupWindow, environment: clientEnvironment() })
+  const secondRequest = (command, payload, options) => command === 'settings.get'
+    ? Promise.resolve({ ok: true, data: structuredClone(other.state.settings) })
+    : command === 'state.get' ? Promise.resolve({ ok: true, data: structuredClone(other.state) }) : api.request(command, payload, options)
+  const otherUI = await mountClient({ request: secondRequest, setupWindow: other.setupWindow, environment: clientEnvironment() })
+  t.after(async () => { await otherUI.close(); await ui.close() })
   await ui.input('文本进度', 1); await ui.click('播放')
   const utterance = api.synth.spoken.at(-1)
   const before = api.synth.spoken.length
   assert.equal(api.synth.speaking, true)
-  await ui.click('删除 Kokoro 资源'); await ui.click('确认删除此主机 Kokoro 资源')
+  assert.equal(ui.buttons('删除资源').length, 0)
+  await otherUI.click('删除资源'); await otherUI.click('确认删除此主机 Kokoro 资源')
   assert.equal(completed, true)
-  assert.equal(api.synth.speaking, true, 'Kokoro global removal must not call system cancel')
+  assert.equal(api.synth.speaking, true, 'other-page Kokoro removal must not cancel system speech')
   assert.equal(api.synth.spoken.length, before)
   assert.equal(ui.field('文本进度').value, '1')
-  assert.equal(ui.field('音频来源').value, 'web-speech')
-  assert.match(ui.container.querySelector('[aria-label="Kokoro 资源准备"]').textContent, /删除未完成/)
+  assert.equal(ui.field('英语音色').value, `system:${local.voiceURI}`)
+  assert.match(otherUI.container.querySelector('[aria-label="Kokoro 资源准备"]').textContent, /删除未完成/)
   await ui.flush(() => utterance.onend())
   assert.equal(ui.field('文本进度').value, '2', 'system reading continues normally')
 })
@@ -246,7 +253,7 @@ test('seeks and configuration preserve queued intent but paused changes remain s
     assert.deepEqual(requests(api).at(-1).payload, { text: 'Then it flew home.', voice: 'af_heart', rate })
     assert.match(body(ui).textContent, /排队/)
   }
-  await ui.input('英语音色', 'bm_george')
+  await ui.input('英语音色', 'kokoro:bm_george')
   assert.equal(requests(api).at(-1).payload.voice, 'bm_george')
   api.phase = 'generating'; await ui.poll()
   assert.match(body(ui).textContent, /生成/)
@@ -255,7 +262,7 @@ test('seeks and configuration preserve queued intent but paused changes remain s
   await ready(ui, api)
   const previous = api.media.at(-1), stale = { playing: previous.onplaying, ended: previous.onended, error: previous.onerror }
   await ui.flush(() => previous.onplaying())
-  await ui.input('音频来源', 'web-speech')
+  await ui.input('英语音色', `system:${local.voiceURI}`)
   assert.equal(api.synth.spoken.at(-1).text, 'It rested near the river.')
   assert.equal(api.synth.spoken.at(-1).rate, 2)
   await ui.flush(() => { stale.playing(); stale.ended(); stale.error() })
@@ -263,9 +270,9 @@ test('seeks and configuration preserve queued intent but paused changes remain s
   await ui.click('暂停')
   const before = requests(api).length, systemBefore = api.synth.spoken.length
   await ui.input('文本进度', 0)
-  await ui.input('音频来源', 'kokoro')
+  await ui.input('英语音色', 'kokoro:bm_george')
   for (const rate of [0.5, 1, 1.5, 2]) await ui.input('朗读语速', rate)
-  await ui.input('英语音色', 'bf_emma')
+  await ui.input('英语音色', 'kokoro:bf_emma')
   assert.equal(requests(api).length, before)
   assert.equal(api.synth.spoken.length, systemBefore)
   assert.match(body(ui).textContent, /已暂停/)
@@ -346,7 +353,7 @@ test('only an active visible Kokoro owner heartbeats through waiting, media and 
   count = heartbeats().length; await ui.poll()
   assert.equal(heartbeats().length, count, 'hidden owner releases and stops heartbeat')
   Object.defineProperty(ui.window.document, 'hidden', { configurable: true, value: false })
-  await ui.input('音频来源', 'web-speech'); await ui.click('继续'); await ui.poll()
+  await ui.input('英语音色', `system:${local.voiceURI}`); await ui.click('继续'); await ui.poll()
   assert.equal(heartbeats().length, count, 'system source never polls Kokoro sessions')
   assert.equal(api.synth.spoken.length, 1)
 })

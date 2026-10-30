@@ -698,10 +698,10 @@ test('two visible clients confirm global removal through the actual Host and the
     while (!boundary.media.length) { assert.ok(Date.now() < deadline); await ui.poll(); await settle(ui) }
     await ui.flush(() => boundary.media[0].onplaying())
   }
-  await uiA.click('删除 Kokoro 资源'); await uiA.click('暂不删除'); await settle(uiA)
+  await uiA.click('删除资源'); await uiA.click('暂不删除'); await settle(uiA)
   assert.equal((await h.request('speech.assets.status')).data.assetsReady, true)
   assert.notEqual(a.media[0].src, ''); assert.notEqual(b.media[0].src, '')
-  await uiA.click('删除 Kokoro 资源'); await uiA.click('确认删除此主机 Kokoro 资源'); await settle(uiA)
+  await uiA.click('删除资源'); await uiA.click('确认删除此主机 Kokoro 资源'); await settle(uiA)
   assert.equal(a.media[0].src, '')
   assert.notEqual(b.media[0].src, '', 'no instant push is claimed for the other HTTP page')
   assert.deepEqual(await fs.readdir(h.speechRoot), [])
