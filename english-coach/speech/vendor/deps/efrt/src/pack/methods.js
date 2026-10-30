@@ -1,0 +1,234 @@
+import fns from './fns.js'
+import pack from './pack.js'
+import { normalizeKey, unsupportedChars } from './keys.js'
+import createNode from './node.js'
+
+const methods = {
+  // Insert words from one big string, or from an array.
+  insertWords: function (words) {
+    if (words === undefined) {
+      return
+    }
+    if (typeof words === 'string') {
+      words = words.split(/[^a-zA-Z]+/)
+    }
+    for (let i = 0; i < words.length; i++) {
+      words[i] = normalizeKey(words[i])
+    }
+    fns.unique(words)
+    for (let i = 0; i < words.length; i++) {
+      if (!unsupportedChars.test(words[i])) {
+        this.insert(words[i])
+      }
+    }
+  },
+
+  insert: function (word) {
+    this._insert(word, this.root)
+    const lastWord = this.lastWord
+    this.lastWord = word
+
+    const prefix = fns.commonPrefix(word, lastWord)
+    if (prefix === lastWord) {
+      return
+    }
+
+    const freeze = this.uniqueNode(lastWord, word, this.root)
+    if (freeze) {
+      this.combineSuffixNode(freeze)
+    }
+  },
+
+  _insert: function (word, node) {
+    let prefix, next
+
+    // Duplicate word entry - ignore
+    if (word.length === 0) {
+      return
+    }
+
+    // Do any existing props share a common prefix?
+    const keys = Object.keys(node.edges)
+    for (let i = 0; i < keys.length; i++) {
+      const prop = keys[i]
+      prefix = fns.commonPrefix(word, prop)
+      if (prefix.length === 0) {
+        continue
+      }
+      // Prop is a proper prefix - recurse to child node
+      if (prop === prefix && typeof node.edges[prop] === 'object') {
+        this._insert(word.slice(prefix.length), node.edges[prop])
+        return
+      }
+      // Duplicate terminal string - ignore
+      if (prop === word && typeof node.edges[prop] === 'number') {
+        return
+      }
+      next = createNode()
+      next.edges[prop.slice(prefix.length)] = node.edges[prop]
+      this.addTerminal(next, word = word.slice(prefix.length))
+      delete node.edges[prop]
+      node.edges[prefix] = next
+      this.wordCount++
+      return
+    }
+
+    // No shared prefix.  Enter the word here as a terminal string.
+    this.addTerminal(node, word)
+    this.wordCount++
+  },
+
+  // Add a terminal string to node.
+  // An empty suffix or one code point is stored directly as a terminal.
+  // Longer suffixes point to a shared node, without splitting surrogate pairs.
+  // Note - don't prematurely share suffixes - these
+  // terminals may become split and joined with other
+  // nodes in this part of the tree.
+  addTerminal: function (node, prop) {
+    const width = prop.codePointAt(0) > 0xffff ? 2 : 1
+    if (prop.length <= width) {
+      node.edges[prop] = 1
+      return
+    }
+    const next = createNode()
+    node.edges[prop.slice(0, width)] = next
+    this.addTerminal(next, prop.slice(width))
+  },
+
+  // Well ordered list of properties in a node (string or object properties)
+  // Use nodesOnly==true to return only properties of child nodes (not
+  // terminal strings.
+  nodeProps: function (node, nodesOnly) {
+    const props = []
+    for (const prop in node.edges) {
+      if (prop !== '') {
+        if (!nodesOnly || typeof node.edges[prop] === 'object') {
+          props.push(prop)
+        }
+      }
+    }
+    props.sort()
+    return props
+  },
+
+  optimize: function () {
+    this.combineSuffixNode(this.root)
+    this.prepDFS()
+    this.countDegree(this.root)
+    this.prepDFS()
+    this.collapseChains(this.root)
+  },
+
+  // Convert Trie to a DAWG by sharing identical nodes
+  combineSuffixNode: function (node) {
+    // Frozen node - can't change.
+    if (node._c) {
+      return node
+    }
+    // Make sure all children are combined and generate unique node
+    // signature for this node.
+    let sig = []
+    if (this.isTerminal(node)) {
+      sig.push('!')
+    }
+    const props = this.nodeProps(node)
+    for (let i = 0; i < props.length; i++) {
+      const prop = props[i]
+      if (typeof node.edges[prop] === 'object') {
+        node.edges[prop] = this.combineSuffixNode(node.edges[prop])
+        sig.push(prop)
+        sig.push(node.edges[prop]._c)
+      } else {
+        sig.push(prop)
+      }
+    }
+    // Preserve the distinction between digit labels and numeric child IDs.
+    sig = JSON.stringify(sig)
+
+    const shared = this.suffixes[sig]
+    if (shared) {
+      return shared
+    }
+    this.suffixes[sig] = node
+    node._c = this.cNext++
+    return node
+  },
+
+  prepDFS: function () {
+    this.vCur++
+  },
+
+  visited: function (node) {
+    if (node._v === this.vCur) {
+      return true
+    }
+    node._v = this.vCur
+    return false
+  },
+
+  countDegree: function (node) {
+    if (node._d === undefined) {
+      node._d = 0
+    }
+    node._d++
+    if (this.visited(node)) {
+      return
+    }
+    const props = this.nodeProps(node, true)
+    for (let i = 0; i < props.length; i++) {
+      this.countDegree(node.edges[props[i]])
+    }
+  },
+
+  // Remove intermediate singleton nodes by hoisting into their parent
+  collapseChains: function (node) {
+    let prop, child, i
+    if (this.visited(node)) {
+      return
+    }
+    const props = this.nodeProps(node)
+    for (i = 0; i < props.length; i++) {
+      prop = props[i]
+      child = node.edges[prop]
+      if (typeof child !== 'object') {
+        continue
+      }
+      this.collapseChains(child)
+      // Hoist the singleton child's single property to the parent
+      if (child._g !== undefined && (child._d === 1 || child._g.length === 1)) {
+        delete node.edges[prop]
+        prop += child._g
+        node.edges[prop] = child.edges[child._g]
+      }
+    }
+    // Identify singleton nodes
+    if (props.length === 1 && !this.isTerminal(node)) {
+      node._g = prop
+    }
+  },
+
+  isTerminal: function (node) {
+    return !!node.edges['']
+  },
+
+  // Find highest node in Trie that is on the path to word
+  // and that is NOT on the path to other.
+  uniqueNode: function (word, other, node) {
+    const props = this.nodeProps(node, true)
+    for (let i = 0; i < props.length; i++) {
+      const prop = props[i]
+      if (prop === word.slice(0, prop.length)) {
+        if (prop !== other.slice(0, prop.length)) {
+          return node.edges[prop]
+        }
+        return this.uniqueNode(word.slice(prop.length), other.slice(prop.length), node.edges[prop])
+      }
+    }
+    return undefined
+  },
+
+  pack: function (useDictionary, versioned) {
+    return pack(this, useDictionary, versioned)
+  }
+}
+export default methods

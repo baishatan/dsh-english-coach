@@ -1,0 +1,158 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Identity and conversion notice for two existing local experimental graphs",
+  "dateEvidence": "2026-10-29 probe export-summary and recorded admission report; no precise exporter timestamp or named individual is asserted",
+  "originalArchiveSha256": "229f2def0e0113e68c1105ecba22f26f82f8af60203701587448a34d1f138c93",
+  "graphs": [
+    {
+      "accent": "us",
+      "originalRepository": "PeterReid/graphemes_to_phonemes_en_us",
+      "originalRevision": "a5631b285d18d59483c32c0c3379cb9fac924f4b",
+      "sourceWeight": {
+        "file": "model.safetensors",
+        "url": "https://huggingface.co/PeterReid/graphemes_to_phonemes_en_us/resolve/a5631b285d18d59483c32c0c3379cb9fac924f4b/model.safetensors",
+        "bytes": 3011692,
+        "sha256": "dc4a02e62d4fcb4bb4097ecf00db89b8e1a12a549a52ab6adfbba220b80a55c5",
+        "bundled": false
+      },
+      "sourceModelCard": {
+        "url": "https://huggingface.co/PeterReid/graphemes_to_phonemes_en_us/resolve/a5631b285d18d59483c32c0c3379cb9fac924f4b/README.md",
+        "bytes": 31,
+        "sha256": "4bcf87ecfbbb8e07a01b21415a970c8b53a5283bf6872b657040d3f45c9241f7",
+        "bundledPath": "notices/PeterReid-en-us-model-card.md",
+        "originalDeclaration": "license: apache-2.0"
+      },
+      "exporter": {
+        "recordedProbeRelativePath": "gpl-free-probe-20261029/export-g2p.py",
+        "sha256": "0580310f44b1c49b06a4ba427c3bdc609440d99b5923b5d3b73bd6408fb105de",
+        "sourceBundled": false
+      },
+      "conversionDate": "2026-10-29",
+      "noticeDate": "2026-10-30",
+      "conversionBy": "Local isolated admission tooling recorded in the 2026-10-29 probe, not the upstream repository publisher",
+      "conversion": {
+        "method": "BART conditional-generation evaluation wrapper exported to ONNX single logits; greedy decoder in local JS",
+        "torch": "2.7.1",
+        "transformers": "4.51.3",
+        "onnx": "1.18.0",
+        "api": "torch.onnx.export",
+        "opset": 17,
+        "dynamo": false,
+        "useCache": false,
+        "inputs": [
+          "input_ids",
+          "decoder_input_ids"
+        ],
+        "output": "logits",
+        "dynamicAxes": {
+          "input_ids": {
+            "1": "encoder_length"
+          },
+          "decoder_input_ids": {
+            "1": "decoder_length"
+          },
+          "logits": {
+            "1": "decoder_length"
+          }
+        },
+        "maxPositionEmbeddings": 64,
+        "externalTensorData": false,
+        "reexportedForThisCandidate": false
+      },
+      "graph": {
+        "path": "gpl-free/exports/us/g2p.onnx",
+        "bytes": 3121518,
+        "sha256": "02850c2e6fb1d5643e6aa5efa77c82c7dea8eac4344839506f386079243a58c2"
+      },
+      "referenceHermes": {
+        "sourceUrl": "https://raw.githubusercontent.com/ArcadiaLabsLLC/hermes-agent/589356e7f409a6f24058f1f8b405e496c041bc23/scripts/phonemizer_misaki_g2p_onnx.py",
+        "sourceSha256": "3643e159af33e5da1e21b120204e50c3a8241f702d47463820424dc9598d4c9d",
+        "licenseUrl": "https://raw.githubusercontent.com/ArcadiaLabsLLC/hermes-agent/589356e7f409a6f24058f1f8b405e496c041bc23/LICENSE",
+        "licensePath": "notices/Hermes-MIT.txt",
+        "licenseSha256": "821556e6336796450ab852d375117b48a4887e71d255794fd6318d99982a5ab6",
+        "scope": "Reference attribution for single-logits export method; no exporter source shipped and no claim that every tool licence attaches to output"
+      },
+      "licenseTextPath": "gpl-free/frontend/LICENSE-APACHE-2.0",
+      "localExportNotUpstreamOriginalOnnx": true,
+      "description": "Local export, not an upstream-issued ONNX; 本地导出非上游原发ONNX。 Original upstream model-card licence declaration retained without inventing copyright or NOTICE."
+    },
+    {
+      "accent": "gb",
+      "originalRepository": "PeterReid/graphemes_to_phonemes_en_gb",
+      "originalRevision": "d8357d5067fa26a5c34134d6bbcf4bbf000c0ac8",
+      "sourceWeight": {
+        "file": "model.safetensors",
+        "url": "https://huggingface.co/PeterReid/graphemes_to_phonemes_en_gb/resolve/d8357d5067fa26a5c34134d6bbcf4bbf000c0ac8/model.safetensors",
+        "bytes": 3011692,
+        "sha256": "4994f474bb6f4584076a4e98189caaec11aa3f773a0d82d5bc263a03dd07e703",
+        "bundled": false
+      },
+      "sourceModelCard": {
+        "url": "https://huggingface.co/PeterReid/graphemes_to_phonemes_en_gb/resolve/d8357d5067fa26a5c34134d6bbcf4bbf000c0ac8/README.md",
+        "bytes": 31,
+        "sha256": "4bcf87ecfbbb8e07a01b21415a970c8b53a5283bf6872b657040d3f45c9241f7",
+        "bundledPath": "notices/PeterReid-en-gb-model-card.md",
+        "originalDeclaration": "license: apache-2.0"
+      },
+      "exporter": {
+        "recordedProbeRelativePath": "gpl-free-probe-20261029/export-g2p.py",
+        "sha256": "0580310f44b1c49b06a4ba427c3bdc609440d99b5923b5d3b73bd6408fb105de",
+        "sourceBundled": false
+      },
+      "conversionDate": "2026-10-29",
+      "noticeDate": "2026-10-30",
+      "conversionBy": "Local isolated admission tooling recorded in the 2026-10-29 probe, not the upstream repository publisher",
+      "conversion": {
+        "method": "BART conditional-generation evaluation wrapper exported to ONNX single logits; greedy decoder in local JS",
+        "torch": "2.7.1",
+        "transformers": "4.51.3",
+        "onnx": "1.18.0",
+        "api": "torch.onnx.export",
+        "opset": 17,
+        "dynamo": false,
+        "useCache": false,
+        "inputs": [
+          "input_ids",
+          "decoder_input_ids"
+        ],
+        "output": "logits",
+        "dynamicAxes": {
+          "input_ids": {
+            "1": "encoder_length"
+          },
+          "decoder_input_ids": {
+            "1": "decoder_length"
+          },
+          "logits": {
+            "1": "decoder_length"
+          }
+        },
+        "maxPositionEmbeddings": 64,
+        "externalTensorData": false,
+        "reexportedForThisCandidate": false
+      },
+      "graph": {
+        "path": "gpl-free/exports/gb/g2p.onnx",
+        "bytes": 3121518,
+        "sha256": "0fdbd7912e18114d32ce08ad188f2c7b791137e8b8c360baca54c26cb1f0a32d"
+      },
+      "referenceHermes": {
+        "sourceUrl": "https://raw.githubusercontent.com/ArcadiaLabsLLC/hermes-agent/589356e7f409a6f24058f1f8b405e496c041bc23/scripts/phonemizer_misaki_g2p_onnx.py",
+        "sourceSha256": "3643e159af33e5da1e21b120204e50c3a8241f702d47463820424dc9598d4c9d",
+        "licenseUrl": "https://raw.githubusercontent.com/ArcadiaLabsLLC/hermes-agent/589356e7f409a6f24058f1f8b405e496c041bc23/LICENSE",
+        "licensePath": "notices/Hermes-MIT.txt",
+        "licenseSha256": "821556e6336796450ab852d375117b48a4887e71d255794fd6318d99982a5ab6",
+        "scope": "Reference attribution for single-logits export method; no exporter source shipped and no claim that every tool licence attaches to output"
+      },
+      "licenseTextPath": "gpl-free/frontend/LICENSE-APACHE-2.0",
+      "localExportNotUpstreamOriginalOnnx": true,
+      "description": "Local export, not an upstream-issued ONNX; 本地导出非上游原发ONNX。 Original upstream model-card licence declaration retained without inventing copyright or NOTICE."
+    }
+  ],
+  "notVerified": [
+    "New audio synthesis or listening",
+    "ORT WASM corresponding-source and third-party closure",
+    "Final redistribution/licence admission",
+    "Installed plugin or production resource partition"
+  ]
+}

@@ -1,0 +1,60 @@
+import findMain from './mainClause.js'
+
+const grammar = function (vb) {
+  let tense = null
+  if (vb.has('#PastTense')) {
+    tense = 'PastTense'
+  } else if (vb.has('#FutureTense')) {
+    tense = 'FutureTense'
+  } else if (vb.has('#PresentTense')) {
+    tense = 'PresentTense'
+  }
+  return {
+    tense,
+  }
+}
+
+const parse = function (s) {
+  const clauses = s.clauses()
+  const main = findMain(clauses)
+  const chunks = main.chunks()
+  let subj = s.none()
+  let verb = s.none()
+  let pred = s.none()
+  // a relative clause right after the subject has a verb of its own
+  // ('the boy who you saw at the store committed a robbery')
+  const relative =
+    chunks.length > 2 &&
+    !chunks.eq(0).has('<Verb>') &&
+    chunks.eq(1).has('^(who|whom|whose|which|that)$') &&
+    chunks.filter(ch => ch.has('<Verb>')).length > 1
+  let isSkipped = false
+  chunks.forEach((ch, i) => {
+    if (i === 0 && !ch.has('<Verb>')) {
+      subj = ch
+      return
+    }
+    if (!verb.found && ch.has('<Verb>')) {
+      if (relative && !isSkipped) {
+        isSkipped = true
+        return
+      }
+      verb = ch
+      return
+    }
+    if (verb.found) {
+      pred = pred.concat(ch)
+    }
+  })
+  // cleanup a missed parse
+  if (verb.found && !subj.found) {
+    subj = verb.before('<Noun>+').first()
+  }
+  return {
+    subj,
+    verb,
+    pred,
+    grammar: grammar(verb),
+  }
+}
+export default parse

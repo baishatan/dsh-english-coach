@@ -1,0 +1,53 @@
+{
+  "name": "grad-school",
+  "version": "0.0.9",
+  "description": "graph logic and traversal",
+  "license": "MIT",
+  "repository": "github:spencermountain/grad-school",
+  "author": "Spencer Kelly <spencermountain@gmail.com> (https://spencermountain.dev)",
+  "type": "module",
+  "exports": {
+    ".": {
+      "require": "./builds/grad-school.cjs",
+      "import": "./builds/grad-school.mjs",
+      "default": "./builds/grad-school.cjs"
+    },
+    "./core": {
+      "require": "./builds/grad-school-core.cjs",
+      "import": "./builds/grad-school-core.mjs",
+      "default": "./builds/grad-school-core.cjs"
+    }
+  },
+  "main": "./src/index.js",
+  "module": "./builds/grad-school.mjs",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=12"
+  },
+  "files": [
+    "builds/",
+    "src/"
+  ],
+  "devDependencies": {
+    "@rollup/plugin-terser": "1.0.0",
+    "eslint": "10.11.0",
+    "rollup": "4.63.4",
+    "tap-dancer": "0.4.2",
+    "tape": "5.10.2",
+    "rollup-plugin-filesize-check": "2.0.1"
+  },
+  "unpkg": "./builds/grad-school.cjs",
+  "prettier": {
+    "trailingComma": "none",
+    "semi": false,
+    "singleQuote": true,
+    "printWidth": 100
+  },
+  "dependencies": {},
+  "scripts": {
+    "watch": "node --watch ./scratch.js",
+    "build": "rollup -c --silent",
+    "test": "npm run build && tape \"./tests/**/*.test.js\" | tap-dancer",
+    "lint": "eslint ."
+  }
+}
