@@ -189,6 +189,51 @@ test('replacing a queued page keeps its fair place while only its latest click c
   assert.deepEqual(entries, ['Current small block.', 'A latest.', 'B waiting.'])
 })
 
+test('public page release reclaims only admitted ownership and awaits the last runtime shutdown', { skip: realAssets }, async t => {
+  const entries = [], pending = []
+  let disposals = 0, finishDispose, holdDispose = false
+  const h = await prepared(t, { runtimeFactory: () => ({
+    synthesize(input, { signal }) { entries.push({ ...input, signal }); return new Promise(resolve => pending.push(resolve)) },
+    async dispose() {
+      disposals++; for (const resolve of pending.splice(0)) resolve(wav())
+      if (holdDispose) await new Promise(resolve => { const fallback = setTimeout(resolve, 1000); finishDispose = () => { clearTimeout(fallback); resolve() } })
+    }
+  }) })
+  const otherPage = { page: 'b'.repeat(48) }
+  const current = await h.request('speech.synthesize', sample)
+  await waitFor(() => h.request('speech.status', { taskId: current.data.taskId }), value => value.data?.phase === 'generating', 'A foreground')
+  pending.shift()(wav())
+  await waitFor(() => h.request('speech.status', { taskId: current.data.taskId }), value => value.data?.phase === 'ready', 'A ready')
+  await h.request('speech.audio', { taskId: current.data.taskId })
+  const other = await h.request('speech.synthesize', { ...sample, text: 'B continues.' }, otherPage)
+  await waitFor(() => h.request('speech.status', { taskId: other.data.taskId }, otherPage), value => value.data?.phase === 'generating', 'B running')
+  const next = await h.request('speech.synthesize', { ...sample, text: 'A upcoming.', priority: 'prefetch' })
+  const released = await h.request('speech.session.release')
+  assert.equal(released.ok, true, 'pagehide can release both slots through the public Host command')
+  for (const job of [current, next]) assert.equal((await h.request('speech.status', { taskId: job.data.taskId })).httpStatus, 404)
+  assert.equal(disposals, 0, 'another active page keeps its runtime')
+  assert.equal(entries[1].signal.aborted, false)
+  for (const payload of [{ owner: `browser-peer:${otherPage.page}` }, { page: otherPage.page }, { taskId: other.data.taskId }, null, []]) {
+    assert.equal((await h.request('speech.session.release', payload)).httpStatus, 400, 'JSON cannot nominate another page')
+  }
+  assert.equal((await h.request('speech.session.release', {}, { page: otherPage.page, headers: { cookie: 'other-peer' } })).ok, true)
+  assert.equal((await h.request('speech.session.release', {}, { page: 'f'.repeat(48) })).ok, true, 'unknown random identity cannot release B')
+  assert.equal(entries[1].signal.aborted, false)
+  pending.shift()(wav())
+  await waitFor(() => h.request('speech.status', { taskId: other.data.taskId }, otherPage), value => value.data?.phase === 'ready', 'B survives A close')
+  assert.equal((await h.request('speech.audio', { taskId: other.data.taskId }, otherPage)).httpStatus, 200)
+  let finished = false
+  holdDispose = true
+  const last = h.request('speech.session.release', {}, otherPage).then(value => { finished = true; return value })
+  await waitFor(async () => ({ ok: true, data: { disposals } }), value => value.data.disposals === 1, 'last runtime shutdown')
+  assert.equal(finished, false, 'release must await actual runtime termination')
+  finishDispose()
+  assert.equal((await last).ok, true)
+  assert.equal((await h.request('speech.audio', { taskId: other.data.taskId }, otherPage)).httpStatus, 404)
+  assert.equal((await h.request('speech.assets.status')).data.assetsReady, true, 'persistent assets remain prepared')
+  assert.equal((await h.request('speech.session.release')).ok, true, 'release is idempotent')
+})
+
 test('bounded article prefetch retains delivered foreground audio and yields to queued foreground work', { skip: realAssets }, async t => {
   const entries = [], pending = []
   const h = await prepared(t, { runtimeFactory: () => ({

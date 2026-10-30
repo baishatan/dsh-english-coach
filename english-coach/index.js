@@ -881,7 +881,8 @@ export function apply(ctx, config) {
                 : command === 'speech.status' ? speechAudio.status(speechOwner, payload)
                   : command === 'speech.audio' ? speechAudio.audio(speechOwner, payload)
                     : command === 'speech.cancel' ? speechAudio.cancel(speechOwner, payload)
-                      : { ok: false, code: 'unknown_speech_command', message: '不支持的朗读操作。' }
+                      : command === 'speech.session.release' ? await speechAudio.release(speechOwner, payload)
+                        : { ok: false, code: 'unknown_speech_command', message: '不支持的朗读操作。' }
               if (result.ok && result.audio) {
                 res.statusCode = 200
                 res.setHeader('content-type', 'audio/wav')

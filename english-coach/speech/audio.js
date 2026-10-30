@@ -33,6 +33,15 @@ export function createSpeechAudio({ assets, runtimeFactory } = {}) {
     queue = queue.filter(value => value !== task)
     task.payload = null
   }
+  function reapRuntime() {
+    if (invalidation) return invalidation
+    if (pages.size || !runtime && !active) return Promise.resolve()
+    const previousRuntime = runtime, previousTask = active
+    runtime = null; runtimeRoot = null
+    invalidation = (async () => { await previousRuntime?.dispose(); await previousTask?.done })()
+      .finally(() => { invalidation = null; pump() })
+    return invalidation
+  }
   function evict(key) {
     const entry = cache.get(key)
     if (!entry) return
@@ -175,6 +184,13 @@ export function createSpeechAudio({ assets, runtimeFactory } = {}) {
       if (task.phase !== 'ready' || !cache.has(task.cacheKey)) return failure('speech_not_ready', '生成音频尚未就绪。')
       task.delivered = true
       return { ok: true, audio: cache.get(task.cacheKey).audio }
+    },
+    async release(owner, payload) {
+      if (!plain(payload) || Object.keys(payload).length) return invalid()
+      for (const task of tasks.values()) if (task.owner === owner) remove(task)
+      for (const [key, entry] of cache) if (entry.owner === owner) evict(key)
+      await reapRuntime()
+      return success({ released: true })
     },
     invalidate() {
       if (invalidation) return invalidation
