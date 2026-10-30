@@ -135,6 +135,60 @@ test('one Host synthesis lane keeps each page latest without interrupting anothe
   assert.equal(disposals, 1, 'Host awaits the one runtime disposal')
 })
 
+test('hot page latest clicks yield a round to both waiting pages after the current block', { skip: realAssets }, async t => {
+  const entries = [], pending = []
+  const h = await prepared(t, { runtimeFactory: () => ({
+    synthesize(input, { signal }) { entries.push({ ...input, signal }); return new Promise(resolve => pending.push(resolve)) },
+    async dispose() { for (const resolve of pending.splice(0)) resolve(wav()) }
+  }) })
+  const pageA = { page: 'a'.repeat(48) }, pageB = { page: 'b'.repeat(48) }, pageC = { page: 'c'.repeat(48) }
+  const status = (job, page) => h.request('speech.status', { taskId: job.data.taskId }, page)
+  const a = await h.request('speech.synthesize', { ...sample, text: 'A current.' }, pageA)
+  await waitFor(() => status(a, pageA), value => value.data?.phase === 'generating', 'A current block')
+  let latest = await h.request('speech.synthesize', { ...sample, text: 'A latest 0.' }, pageA)
+  const b = await h.request('speech.synthesize', { ...sample, text: 'B finite.' }, pageB)
+  const c = await h.request('speech.synthesize', { ...sample, text: 'C finite.' }, pageC)
+  pending.shift()(wav())
+  await waitFor(async () => ({ ok: true, data: { count: entries.length } }), value => value.data.count === 2, 'next page turn')
+  assert.equal(entries[1].text, 'B finite.', 'running page goes behind already waiting pages')
+  for (let n = 1; n <= 6; n++) latest = await h.request('speech.synthesize', { ...sample, text: `A latest ${n}.` }, pageA)
+  assert.equal(entries[1].signal.aborted, false, 'hot A cannot interrupt B')
+  pending.shift()(wav())
+  await waitFor(async () => ({ ok: true, data: { count: entries.length } }), value => value.data.count === 3, 'C round')
+  assert.equal(entries[2].text, 'C finite.')
+  for (let n = 7; n <= 12; n++) latest = await h.request('speech.synthesize', { ...sample, text: `A latest ${n}.` }, pageA)
+  assert.equal(entries[2].signal.aborted, false, 'hot A cannot interrupt C')
+  pending.shift()(wav())
+  await waitFor(() => status(latest, pageA), value => value.data?.phase === 'generating', 'only latest A')
+  assert.deepEqual(entries.map(value => value.text), ['A current.', 'B finite.', 'C finite.', 'A latest 12.'])
+  pending.shift()(wav())
+  await waitFor(() => status(latest, pageA), value => value.data?.phase === 'ready', 'latest A ready')
+  for (const [job, page] of [[b, pageB], [c, pageC]]) assert.equal((await h.request('speech.audio', { taskId: job.data.taskId }, page)).httpStatus, 200)
+})
+
+test('replacing a queued page keeps its fair place while only its latest click can run', { skip: realAssets }, async t => {
+  const entries = [], pending = []
+  const h = await prepared(t, { runtimeFactory: () => ({
+    synthesize(input) { entries.push(input.text); return new Promise(resolve => pending.push(resolve)) },
+    async dispose() { for (const resolve of pending.splice(0)) resolve(wav()) }
+  }) })
+  const blockerPage = { page: 'c'.repeat(48) }, otherPage = { page: 'b'.repeat(48) }
+  const blocker = await h.request('speech.synthesize', { ...sample, text: 'Current small block.' }, blockerPage)
+  await waitFor(() => h.request('speech.status', { taskId: blocker.data.taskId }, blockerPage), value => value.data?.phase === 'generating', 'current small block')
+  const old = await h.request('speech.synthesize', { ...sample, text: 'A old.' })
+  const other = await h.request('speech.synthesize', { ...sample, text: 'B waiting.' }, otherPage)
+  const latest = await h.request('speech.synthesize', { ...sample, text: 'A latest.' })
+  assert.equal((await h.request('speech.status', { taskId: old.data.taskId })).httpStatus, 404)
+  pending.shift()(wav())
+  await waitFor(async () => ({ ok: true, data: { count: entries.length } }), value => value.data.count === 2, 'preserved page turn')
+  assert.equal(entries[1], 'A latest.', 'changing content does not move a waiting page behind B')
+  pending.shift()(wav())
+  await waitFor(() => h.request('speech.status', { taskId: other.data.taskId }, otherPage), value => value.data?.phase === 'generating', 'B finite turn')
+  pending.shift()(wav())
+  await waitFor(() => h.request('speech.status', { taskId: latest.data.taskId }), value => value.data?.phase === 'ready', 'latest ready')
+  assert.deepEqual(entries, ['Current small block.', 'A latest.', 'B waiting.'])
+})
+
 test('bounded article prefetch retains delivered foreground audio and yields to queued foreground work', { skip: realAssets }, async t => {
   const entries = [], pending = []
   const h = await prepared(t, { runtimeFactory: () => ({

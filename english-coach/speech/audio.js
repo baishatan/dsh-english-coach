@@ -114,7 +114,12 @@ export function createSpeechAudio({ assets, runtimeFactory } = {}) {
     const task = queue.splice(foreground < 0 ? 0 : foreground, 1)[0]
     if (!task) return
     active = task
-    task.done = run(task).finally(() => { active = null; pump() })
+    task.done = run(task).finally(() => {
+      // A page may replace its running block many times. Its latest pending
+      // request gets the next round, behind every other page already waiting.
+      queue = [...queue.filter(value => value.owner !== task.owner), ...queue.filter(value => value.owner === task.owner)]
+      active = null; pump()
+    })
   }
   return {
     request(owner, payload) {
@@ -129,6 +134,7 @@ export function createSpeechAudio({ assets, runtimeFactory } = {}) {
       if (!pages.has(owner) && pages.size >= MAX_PAGES) return failure('speech_capacity', '朗读页面已达上限，请稍后手动重试。')
       const priority = payload.priority ?? 'foreground'
       let page = pages.get(owner)
+      const previousIndex = queue.indexOf(page?.[priority])
       if (priority === 'prefetch') {
         if (!page?.foreground?.delivered) return failure('speech_not_ready', '当前朗读音频尚未领取，不能预取下一句段。')
         if (page.prefetch) remove(page.prefetch)
@@ -140,7 +146,9 @@ export function createSpeechAudio({ assets, runtimeFactory } = {}) {
       const cacheKey = createHash('sha256').update(JSON.stringify([owner, assetManifest.id, assetManifest.revision, 'wav-f32-24k-v1', payload.text, payload.voice, payload.rate])).digest('hex')
       const task = { id: randomUUID(), owner, priority, delivered: false, cacheKey, payload: { text: payload.text, voice: payload.voice, rate: payload.rate }, phase: 'queued', error: null, epoch, expires: Date.now() + TTL_MS, controller: new AbortController() }
       page[priority] = task
-      tasks.set(task.id, task); pages.set(owner, page); queue.push(task)
+      tasks.set(task.id, task); pages.set(owner, page)
+      if (previousIndex < 0) queue.push(task)
+      else queue.splice(Math.min(previousIndex, queue.length), 0, task)
       pump()
       return success(snapshot(task))
     },
