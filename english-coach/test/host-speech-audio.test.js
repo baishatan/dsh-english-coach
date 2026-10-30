@@ -817,6 +817,52 @@ test('a compatible old generation synthesizes during a slow repair and after its
   t.diagnostic(JSON.stringify({ actualOldGenerationDuringAndAfterCancel: { repair: repair.data.generation, bytes: audio.bytes.length } }))
 })
 
+test('a truncated regular active record can be explicitly repaired after reboot without an implicit download', { skip: realAssets, timeout: 120000 }, async t => {
+  let downloads = 0, offline = false
+  const download = (asset, { signal }) => {
+    downloads++
+    if (offline) throw new Error('isolated offline repair')
+    return createReadStream(join(process.env.ENGLISH_COACH_TEST_ASSETS, asset.path), { signal })
+  }
+  const initial = await prepared(t, { download })
+  await initial.request('speech.assets.repair')
+  await waitFor(() => initial.request('speech.assets.status'), value => value.data?.phase === 'ready', 'first active generation')
+  const pointer = join(initial.speechRoot, 'active.json')
+  assert.equal(await fs.realpath(pointer), pointer, 'fault injection stays in the isolated fixed metadata file')
+  await fs.writeFile(pointer, '{"id":')
+  const identity = await fs.lstat(pointer)
+  assert.equal(identity.isFile(), true); assert.equal(identity.nlink, 1)
+  await initial.dispose()
+  const h = await host(t, { directory: initial.base, download })
+  const damaged = await h.request('speech.assets.status')
+  assert.equal(damaged.data.assetsReady, false)
+  assert.equal(damaged.data.repairRequired, true, 'metadata damage must expose the explicit repair entry')
+  assert.equal((await h.request('speech.assets.prepare')).code, 'speech_repair_required')
+  assert.equal(downloads, 16, 'read, reboot and ordinary prepare do not acquire download permission')
+  offline = true
+  const rejected = await h.request('speech.assets.repair')
+  assert.equal(rejected.ok, true, JSON.stringify(rejected))
+  const failed = await waitFor(() => h.request('speech.assets.status'), value => value.data?.phase === 'error', 'failed explicit metadata repair')
+  assert.equal(failed.data.assetsReady, false)
+  assert.equal(failed.data.repairRequired, true)
+  assert.equal(await fs.readFile(pointer, 'utf8'), '{"id":', 'failed repair does not replace corrupt metadata')
+  offline = false
+  assert.equal((await h.request('speech.assets.repair')).ok, true)
+  await waitFor(() => h.request('speech.assets.status'), value => value.data?.phase === 'ready', 'restored active generation')
+  await h.dispose()
+  const reboot = await host(t, { directory: h.base, download: () => assert.fail('restored synthesis must be offline') })
+  assert.equal((await reboot.request('speech.assets.status')).data.assetsReady, true)
+  const job = await reboot.request('speech.synthesize', { text: 'Opportunity.', voice: 'af_heart', rate: 1 })
+  await waitFor(() => reboot.request('speech.status', { taskId: job.data.taskId }), value => value.data?.phase === 'ready', 'real restored speech')
+  const audio = await reboot.request('speech.audio', { taskId: job.data.taskId })
+  assert.equal(audio.httpStatus, 200)
+  assert.equal(audio.bytes.readUInt32LE(24), 24000)
+  let peak = 0
+  for (let n = 44; n < audio.bytes.length; n += 4) { const value = audio.bytes.readFloatLE(n); assert.ok(Number.isFinite(value)); peak = Math.max(peak, Math.abs(value)) }
+  assert.ok(peak > 0.00001)
+  t.diagnostic(JSON.stringify({ metadataRecoveryWav: { bytes: audio.bytes.length, peak, downloads } }))
+})
+
 test('all speech operations fail closed and reject paths, invalid voices, oversized text and cross-page handles', async t => {
   const h = await host(t)
   const started = await h.request('speech.synthesize', sample)

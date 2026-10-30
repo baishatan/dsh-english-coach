@@ -371,6 +371,29 @@ test('repair rejects foreign contents and bounded orphan generations without del
   assert.equal(downloads, 0)
 })
 
+test('metadata recovery rejects symbolic or hard links and foreign fixed-record identities without downloads', async t => {
+  for (const kind of ['symbolic', 'hard', 'foreign']) {
+    const h = await host(t, { download: () => assert.fail('unsafe or foreign metadata cannot authorize repair') })
+    const manifest = (await h.request('speech.assets.status')).data.manifest
+    await fs.mkdir(h.speechRoot)
+    const foreign = join(h.base, 'foreign.json'), pointer = join(h.speechRoot, 'active.json')
+    const content = kind === 'foreign'
+      ? JSON.stringify({ id: 'foreign-model', revision: manifest.revision, generation: '12345678-1234-4234-9234-123456789abc' })
+      : '{"id":'
+    await fs.writeFile(foreign, content)
+    if (kind === 'symbolic') await fs.symlink(foreign, pointer)
+    else if (kind === 'hard') await fs.link(foreign, pointer)
+    else await fs.copyFile(foreign, pointer)
+    assert.equal((await h.request('speech.assets.status')).data.assetsReady, false)
+    const repaired = await h.request('speech.assets.repair')
+    assert.equal(repaired.ok, false)
+    assert.equal(repaired.code, kind === 'foreign' ? 'speech_invalid_manifest' : 'speech_unsafe_path')
+    assert.equal(await fs.readFile(foreign, 'utf8'), content)
+    assert.equal(await fs.readFile(pointer, 'utf8'), content)
+    assert.deepEqual(await fs.readdir(h.speechRoot), ['active.json'])
+  }
+})
+
 test('network, full disk, truncated, oversized and checksum failures stay unavailable with bounded errors', async t => {
   const failures = [
     [async () => { throw new Error('/private/secret ' + 'x'.repeat(4000)) }, 'speech_network'],
