@@ -24,7 +24,11 @@ export function createSpeechAudio({ assets, runtimeFactory } = {}) {
   function remove(task) {
     task.controller.abort()
     tasks.delete(task.id)
-    if (pages.get(task.owner) === task) pages.delete(task.owner)
+    const page = pages.get(task.owner)
+    if (page?.[task.priority] === task) {
+      page[task.priority] = null
+      if (!page.foreground && !page.prefetch) pages.delete(task.owner)
+    }
     queue = queue.filter(value => value !== task)
     task.payload = null
   }
@@ -99,25 +103,38 @@ export function createSpeechAudio({ assets, runtimeFactory } = {}) {
   function pump() {
     if (active || disposed) return
     expire()
-    const task = queue.shift()
+    // One upcoming task per page is speculative. It never passes an already
+    // queued foreground request and never interrupts the running small task.
+    const foreground = queue.findIndex(task => task.priority === 'foreground')
+    const task = queue.splice(foreground < 0 ? 0 : foreground, 1)[0]
     if (!task) return
     active = task
     task.done = run(task).finally(() => { active = null; pump() })
   }
   return {
     request(owner, payload) {
-      if (!plain(payload) || Object.keys(payload).sort().join(',') !== 'rate,text,voice' ||
+      if (!plain(payload) || !['rate,text,voice', 'priority,rate,text,voice'].includes(Object.keys(payload).sort().join(',')) ||
+          Object.hasOwn(payload, 'priority') && !['foreground', 'prefetch'].includes(payload.priority) ||
           typeof payload.text !== 'string' || !payload.text.trim() || payload.text.length > 400 ||
           !/[A-Za-z0-9]/.test(payload.text) || !/^[\x20-\x7e\t\r\n\u00a0\u00a3\u2010-\u2015\u2018-\u201f\u2026]+$/.test(payload.text) ||
           !assetManifest.voices.includes(payload.voice) || ![0.5, 1, 1.5, 2].includes(payload.rate)) return invalid()
       if (disposed) return failure('RUNTIME_DISPOSED', '插件已停止，请重新打开后手动播放。')
       expire()
       if (!pages.has(owner) && pages.size >= MAX_PAGES) return failure('speech_capacity', '朗读页面已达上限，请稍后手动重试。')
-      const previous = pages.get(owner)
-      if (previous) remove(previous)
+      const priority = payload.priority ?? 'foreground'
+      let page = pages.get(owner)
+      if (priority === 'prefetch') {
+        if (!page?.foreground?.delivered) return failure('speech_not_ready', '当前朗读音频尚未领取，不能预取下一句段。')
+        if (page.prefetch) remove(page.prefetch)
+      } else {
+        if (page?.prefetch) remove(page.prefetch)
+        if (page?.foreground) remove(page.foreground)
+      }
+      page = pages.get(owner) ?? { foreground: null, prefetch: null }
       const cacheKey = createHash('sha256').update(JSON.stringify([owner, assetManifest.id, assetManifest.revision, 'wav-f32-24k-v1', payload.text, payload.voice, payload.rate])).digest('hex')
-      const task = { id: randomUUID(), owner, cacheKey, payload: { ...payload }, phase: 'queued', error: null, expires: Date.now() + TTL_MS, controller: new AbortController() }
-      tasks.set(task.id, task); pages.set(owner, task); queue.push(task)
+      const task = { id: randomUUID(), owner, priority, delivered: false, cacheKey, payload: { text: payload.text, voice: payload.voice, rate: payload.rate }, phase: 'queued', error: null, expires: Date.now() + TTL_MS, controller: new AbortController() }
+      page[priority] = task
+      tasks.set(task.id, task); pages.set(owner, page); queue.push(task)
       pump()
       return success(snapshot(task))
     },
@@ -141,7 +158,9 @@ export function createSpeechAudio({ assets, runtimeFactory } = {}) {
       expire()
       const task = tasks.get(payload.taskId)
       if (task?.owner !== owner) return notFound()
-      return task.phase === 'ready' && cache.has(task.cacheKey) ? { ok: true, audio: cache.get(task.cacheKey).audio } : failure('speech_not_ready', '生成音频尚未就绪。')
+      if (task.phase !== 'ready' || !cache.has(task.cacheKey)) return failure('speech_not_ready', '生成音频尚未就绪。')
+      task.delivered = true
+      return { ok: true, audio: cache.get(task.cacheKey).audio }
     },
     dispose() {
       if (disposal) return disposal

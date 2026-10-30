@@ -476,7 +476,7 @@ window.__ModuleLoader__.load({
         if (active?.kind === 'system' && !preferences.voices.some(voice => voice.voiceURI === active.utterance.voice?.voiceURI)) {
           const current = active.article
           cancel()
-          if (current) { current.status = 'error'; current.error = '正在使用的英语音色已不可用，请换声后重试。'; void save(current) }
+          if (current) { current.playRequested = false; current.status = 'error'; current.error = '正在使用的英语音色已不可用，请换声后重试。'; void save(current) }
           else preferences.error = '正在使用的英语音色已不可用，请换声后重试。'
         }
         preferences.notice = playbackIssue()
@@ -500,7 +500,7 @@ window.__ModuleLoader__.load({
         for (const key of Object.keys(change)) changedPreferences.add(key)
         Object.assign(preferences, change)
         const current = active?.article
-        const playing = current?.status === 'playing'
+        const playing = current?.playRequested === true
         if (active) cancel()
         if (playing) play(current)
         refreshVoices()
@@ -527,35 +527,98 @@ window.__ModuleLoader__.load({
         if (value.url) { window.URL.revokeObjectURL(value.url); value.url = null }
         if (value.taskId) void call('speech.cancel', { taskId: value.taskId })
       }
-      const cancel = () => {
+      let upcoming = null
+      function cancelUpcoming(preserveCache = false) {
+        const previous = upcoming; upcoming = null
+        if (!previous) return
+        previous.controller.abort()
+        if (!preserveCache && previous.taskId) void call('speech.cancel', { taskId: previous.taskId })
+      }
+      async function prefetchNext(value) {
+        const article = value.article, position = article.position + 1
+        if (position >= article.segments.length || !article.playRequested) return
+        cancelUpcoming()
+        const next = { controller: new window.AbortController(), taskId: null, run: token }
+        upcoming = next
+        try {
+          const result = await call('speech.synthesize', { text: article.segments[position], voice: preferences.kokoroVoice, rate: preferences.rate, priority: 'prefetch' }, { signal: next.controller.signal })
+          if (upcoming !== next || next.run !== token || next.controller.signal.aborted) {
+            if (result.ok && result.data.taskId) void call('speech.cancel', { taskId: result.data.taskId })
+            return
+          }
+          if (result.ok) next.taskId = result.data.taskId
+          // Speculative failure never changes foreground sound or study state.
+        } catch { /* foreground requests remain the recovery path */ }
+      }
+      const cancel = (preserveUpcoming = false) => {
+        cancelUpcoming(preserveUpcoming)
         clearResume(); token++
         const previous = active; active = null
         preferences.localStatus = ''; preferences.manualPlay = false
+        if (previous?.article) previous.article.manualPlay = false
         if (previous?.kind === 'kokoro') stopLocal(previous)
         if (available()) { try { synth().cancel() } catch { /* unavailable Host */ } }
+      }
+      function segmentText(text) {
+        const sentences = (text.match(/[^.!?\n]+(?:[.!?]+|\n|$)/g) ?? []).map(s => s.trim()).filter(Boolean)
+        // Fixed text positions for both providers. Keep ordinary legacy
+        // sentences unchanged. Long clauses use <=180 characters, with digits
+        // charged ten characters for spoken number expansion. The runtime's
+        // strict 510-phoneme rejection remains authoritative, never truncation.
+        const cost = text => text.length + (text.match(/\d/g)?.length ?? 0) * 9
+        const segments = sentences.flatMap(sentence => {
+          if (cost(sentence) <= 180) return [sentence]
+          const chunks = []; let rest = sentence
+          while (cost(rest) > 180) {
+            let end = 0, used = 0
+            while (end < rest.length && used + (/\d/.test(rest[end]) ? 10 : 1) <= 180) { used += /\d/.test(rest[end]) ? 10 : 1; end++ }
+            const candidate = rest.slice(0, end)
+            const boundary = Math.max(candidate.lastIndexOf(', ') + 1, candidate.lastIndexOf('; ') + 1, candidate.lastIndexOf(': ') + 1, candidate.lastIndexOf(' '))
+            if (boundary > 0) end = boundary
+            chunks.push(rest.slice(0, end).trim()); rest = rest.slice(end).trim()
+          }
+          if (rest) chunks.push(rest)
+          return chunks
+        })
+        return { segments, version: segments.length === sentences.length ? '' : 'bounded1-' }
       }
       function article(id, text) {
         const previous = articles.get(id)
         if (previous?.text === text) return previous
         if (active?.article === previous) cancel()
-        const value = { id, text, segments: (text.match(/[^.!?\n]+(?:[.!?]+|\n|$)/g) ?? []).map(s => s.trim()).filter(Boolean), position: 0, status: 'idle', error: '', fingerprint: fingerprint(text), revision: 0, loaded: false, notice: previous ? '正文已变化，旧书签已失效，已静默回到起点。' : '', saveError: '' }
+        const { segments, version } = segmentText(text)
+        const value = { id, text, segments, position: 0, status: 'idle', playRequested: false, error: '', fingerprint: version + fingerprint(text), revision: 0, loaded: false, notice: previous ? '正文已变化，旧书签已失效，已静默回到起点。' : '', saveError: '' }
         articles.set(id, value)
         return value
       }
       function pause(value) {
-        if (value.status !== 'playing') return
-        value.status = 'paused'
+        if (!['playing', 'queued', 'loading', 'generating', 'blocked'].includes(value.status)) return
+        value.status = 'paused'; value.playRequested = false; value.manualPlay = false
+        cancelUpcoming()
         clearResume()
         void save(value)
         if (active?.article === value) {
-          try { synth().pause(); if (!synth().paused) cancel() } catch { cancel() }
+          if (active.kind === 'kokoro') {
+            if (active.media) { active.mediaEpoch++; active.media.pause() }
+            else cancel()
+          } else { try { synth().pause(); if (!synth().paused) cancel() } catch { cancel() } }
         }
         emit()
       }
       function play(value) {
-        const issue = playbackIssue() || (preferences.provider === 'kokoro' ? 'Kokoro 文章播放尚未接入；可先试听或朗读短词，也可手动选择系统语音。文本位置已保留。' : '')
-        if (issue) { value.status = 'error'; value.error = issue; emit(); return }
-        if (!value.segments.length) return
+        const issue = preferences.provider === 'kokoro' && KOKORO_VOICES.some(voice => voice.id === preferences.kokoroVoice) ? '' : playbackIssue()
+        if (issue) { value.playRequested = false; value.status = 'error'; value.error = issue; emit(); return }
+        if (!value.segments.length || value.position >= value.segments.length) return
+        value.playRequested = true
+        if (preferences.provider === 'kokoro') {
+          if (active?.article === value && active.media && value.status === 'paused') {
+            value.status = 'loading'; value.message = '音频已就绪，等待播放开始'; emit(); void playLocal(active); return
+          }
+          if (active?.article && active.article !== value) pause(active.article)
+          cancel(); value.error = ''; value.revision++
+          void localSpeech(value.segments[value.position], null, value)
+          return
+        }
         if (active?.article === value && value.status === 'paused') {
           // A bounded liveness check, never a progress clock. Some engines
           // accept resume but emit neither resume nor boundary and stay silent.
@@ -588,21 +651,22 @@ window.__ModuleLoader__.load({
           active = null
           value.position++
           void save(value)
-          if (value.position >= value.segments.length) { value.status = 'completed'; emit() }
+          if (value.position >= value.segments.length) { value.status = 'completed'; value.playRequested = false; emit() }
           else play(value)
         }
         utterance.onerror = () => {
           if (run !== token) return
-          cancel(); value.status = 'error'; value.error = '朗读失败，请重试或更换英语音色。'; emit()
+          cancel(); value.playRequested = false; value.status = 'error'; value.error = '朗读失败，请重试或更换英语音色。'; emit()
         }
         try { if (synth().paused) synth().resume(); synth().speak(utterance) } catch { utterance.onerror() }
         emit()
       }
       function seek(value, position) {
-        const playing = value.status === 'playing'
+        const playing = value.playRequested === true
         if (active?.article === value) cancel()
         value.position = Math.max(0, Math.min(value.segments.length, Number(position) || 0))
         value.status = value.position === value.segments.length ? 'completed' : value.status === 'idle' ? 'idle' : 'paused'
+        value.playRequested = false
         void save(value)
         if (playing && value.position < value.segments.length) play(value)
         else emit()
@@ -613,7 +677,7 @@ window.__ModuleLoader__.load({
         cancel()
         if (preferences.provider === 'kokoro') {
           if (!KOKORO_VOICES.some(voice => voice.id === preferences.kokoroVoice)) { preferences.error = '已保存的 Kokoro 音色当前不可用，请重新选择音色。'; emit(); return }
-          void localShort(text, owner)
+          void localSpeech(text, owner)
           return
         }
         const issue = playbackIssue()
@@ -627,12 +691,17 @@ window.__ModuleLoader__.load({
         try { if (synth().paused) synth().resume(); synth().speak(utterance) } catch { utterance.onerror() }
         emit()
       }
-      async function localShort(text, owner) {
-        const value = { kind: 'kokoro', owner, run: token, controller: new window.AbortController(), taskId: null, media: null, url: null, pollTimer: null, checking: false, deadline: Date.now() + 120000 }
+      async function localSpeech(text, owner, article = null) {
+        const value = { kind: 'kokoro', owner, article, run: token, controller: new window.AbortController(), taskId: null, media: null, url: null, pollTimer: null, checking: false, deadline: Date.now() + 120000 }
         active = value
         const current = () => active === value && value.run === token && !value.controller.signal.aborted
-        const fail = message => { if (!current()) return; cancel(); preferences.error = message; emit() }
-        preferences.error = ''; preferences.localStatus = '检查 Kokoro 资源'; emit()
+        const state = (phase, message) => {
+          if (article) { article.status = phase; article.message = message }
+          else preferences.localStatus = message
+          emit()
+        }
+        const fail = message => { if (!current()) return; cancel(); if (article) { article.playRequested = false; article.status = 'error'; article.error = message } else preferences.error = message; emit() }
+        preferences.error = ''; state('loading', '检查 Kokoro 资源')
         try {
           const assets = await call('speech.assets.status', {}, { signal: value.controller.signal })
           if (!current()) return
@@ -641,7 +710,7 @@ window.__ModuleLoader__.load({
           if (!assets.data.assetsReady) { fail(kokoroUnavailable); return }
           if (!assets.data.runtimeAvailable) { fail('Kokoro 合成运行时尚不可用；请安装兼容插件后手动重试。'); return }
           preferences.notice = ''
-          preferences.localStatus = '正在提交本地朗读'; emit()
+          state('queued', '正在提交本地朗读')
           const result = await call('speech.synthesize', { text, voice: preferences.kokoroVoice, rate: preferences.rate }, { signal: value.controller.signal })
           if (!current()) { if (result.ok && result.data.taskId) void call('speech.cancel', { taskId: result.data.taskId }); return }
           if (!result.ok) { fail(result.message); return }
@@ -655,8 +724,7 @@ window.__ModuleLoader__.load({
               if (!current()) return
               if (!status.ok) { fail(status.message); return }
               const phase = status.data.phase
-              preferences.localStatus = { queued: '本地朗读排队中', loading: '正在加载本地朗读', generating: '正在生成本地朗读', ready: '正在领取生成音频' }[phase] ?? ''
-              emit()
+              state(phase === 'ready' ? 'loading' : phase, { queued: '本地朗读排队中', loading: '正在加载本地朗读', generating: '正在生成本地朗读', ready: '正在领取生成音频' }[phase] ?? '')
               if (phase === 'error') { fail(status.data.error?.message ?? '本地朗读生成失败，请手动重试。'); return }
               if (!['queued', 'loading', 'generating', 'ready'].includes(phase)) { fail('本地朗读任务已停止，请手动重试。'); return }
               if (phase !== 'ready') return
@@ -669,10 +737,26 @@ window.__ModuleLoader__.load({
               value.media = new window.Audio()
               value.media.preload = 'auto'
               value.media.src = value.url
-              value.media.onplaying = () => { if (current()) { preferences.manualPlay = false; preferences.localStatus = '正在播放本地朗读'; emit() } }
-              value.media.onended = () => { if (!current()) return; cancel(); preferences.localStatus = '试听结束'; emit() }
-              value.media.onerror = () => fail('生成音频播放失败，请手动重试或选择系统语音；不会自动换源。')
-              preferences.localStatus = '音频已就绪，等待播放开始'; emit()
+              value.mediaEpoch = 0
+              value.bindMedia = () => {
+                const epoch = value.mediaEpoch
+                const audible = () => current() && epoch === value.mediaEpoch && (!article || article.status !== 'paused')
+                value.media.onplaying = () => { if (audible()) { if (article) article.manualPlay = false; else preferences.manualPlay = false; state('playing', '正在播放本地朗读') } }
+                value.media.onended = () => {
+                  if (!audible() || article && article.status !== 'playing') return
+                  // A foreground request for the same next text promotes the
+                  // Host's private cached prefetch. Do not cancel/evict it here.
+                  cancel(!!article)
+                  if (article) {
+                    article.position++; void save(article)
+                    if (article.position >= article.segments.length) { article.status = 'completed'; article.playRequested = false; emit() }
+                    else play(article)
+                  } else { preferences.localStatus = '试听结束'; emit() }
+                }
+                value.media.onerror = () => { if (audible()) fail('生成音频播放失败，请手动重试或选择系统语音；不会自动换源。') }
+              }
+              state('loading', '音频已就绪，等待播放开始')
+              if (article) void prefetchNext(value)
               await playLocal(value)
             } finally { value.checking = false }
           }
@@ -682,17 +766,24 @@ window.__ModuleLoader__.load({
       }
       async function playLocal(value = active) {
         if (value?.kind !== 'kokoro' || !value.media || value.run !== token || active !== value) return
+        if (value.article) { value.article.manualPlay = false; value.article.status = 'loading'; value.article.message = '音频已就绪，等待播放开始'; emit() }
+        value.bindMedia?.()
+        const epoch = value.mediaEpoch
         try { await value.media.play() } catch {
-          if (active !== value || value.run !== token) return
-          preferences.manualPlay = true
-          preferences.localStatus = '音频已就绪；浏览器需要你再次点击播放。'
+          if (active !== value || value.run !== token || epoch !== value.mediaEpoch || value.article && !value.article.playRequested) return
+          if (value.article) {
+            value.article.manualPlay = true
+            value.article.status = 'blocked'
+            value.article.message = '音频已就绪；浏览器需要你再次点击播放。'
+          } else { preferences.manualPlay = true; preferences.localStatus = '音频已就绪；浏览器需要你再次点击播放。' }
           preferences.error = ''; emit()
         }
       }
-      function suspend() { if (active?.article) pause(active.article); else if (active) { cancel(); emit() } }
+      function suspend() { if (active?.article) pause(active.article); if (active) { cancel(); emit() } }
       const hidden = () => { if (document.hidden) suspend() }
       return { article, pause, play, restart, seek, save, restore, preferences, configure, selectedVoice, refreshVoices, short, playLocal,
         stop() { if (active) { suspend(); emit() } },
+        releaseArticle(value) { pause(value); if (active?.article === value) { cancel(); emit() } },
         release(owner) { if (active?.owner === owner) { cancel(); emit() } },
         subscribe(listener) {
           listeners.add(listener)
@@ -1444,13 +1535,15 @@ window.__ModuleLoader__.load({
     function Speak({ text = '', materialId }) {
       const audio = useSpeech()
       const article = useMemo(() => audio.article(materialId, text), [materialId, text])
-      useEffect(() => { void audio.restore(article); return () => audio.pause(article) }, [article])
-      const status = { idle: '待播放', playing: '播放中', paused: '已暂停', completed: '朗读已完成', error: '朗读错误' }[article.status]
+      useEffect(() => { void audio.restore(article); return () => audio.releaseArticle(article) }, [article])
+      const waiting = ['queued', 'loading', 'generating', 'blocked'].includes(article.status)
+      const status = { idle: '待播放', playing: '播放中', paused: '已暂停', completed: '朗读已完成', error: '朗读错误' }[article.status] ?? article.message
       return h('div', { style: { margin: '10px 0' } },
         h('div', { className: 'ec-row' },
           h('span', { role: 'status' }, status),
-          h(Btn, { disabled: !text.trim() || article.status === 'playing' || article.status === 'completed', onClick: () => audio.play(article) }, article.status === 'paused' ? '继续' : article.status === 'error' ? '重试朗读' : '播放'),
-          h(Btn, { disabled: article.status !== 'playing', onClick: () => audio.pause(article) }, '暂停'),
+          article.manualPlay ? h(Btn, { primary: true, onClick: () => { void audio.playLocal() } }, '播放生成音频') : null,
+          h(Btn, { disabled: !text.trim() || waiting || article.status === 'playing' || article.status === 'completed', onClick: () => audio.play(article) }, article.status === 'paused' ? '继续' : article.status === 'error' ? '重试朗读' : '播放'),
+          h(Btn, { disabled: !waiting && article.status !== 'playing', onClick: () => audio.pause(article) }, '暂停'),
           h(Btn, { disabled: !text.trim(), onClick: () => audio.restart(article) }, '从头播放')),
         h('label', { className: 'ec-label' }, `文本进度：${article.position} / ${article.segments.length} 句段`,
           h('input', { type: 'range', min: 0, max: article.segments.length, step: 1, value: article.position, 'aria-label': '文本进度', disabled: !article.segments.length, style: { width: '100%' }, onChange: event => audio.seek(article, event.target.value) })),
