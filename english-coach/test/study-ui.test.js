@@ -46,7 +46,7 @@ for (const entry of ['today', 'words', 'overlay']) {
     assert.equal(api.calls.filter(({ command }) => command === 'generate.vocab').length, 0)
     await ui.click('继续学习')
     assert.match(ui.text(), /正在出词/)
-    assert.deepEqual(api.calls.filter(({ command }) => command === 'generate.vocab').map(({ payload }) => payload), [{}])
+    assert.deepEqual(api.calls.filter(({ command }) => command === 'generate.vocab').map(({ payload }) => ({ continue: payload.continue })), [{ continue: true }])
   })
 }
 
@@ -131,7 +131,7 @@ for (const entry of ['today', 'overlay']) {
     await answer(ui)
     await ui.click('继续学习')
     assert.equal(term(ui), 'next-library-word')
-    assert.deepEqual(api.calls.filter(({ command }) => command === 'generate.vocab').map(({ payload }) => payload), [{}])
+    assert.deepEqual(api.calls.filter(({ command }) => command === 'generate.vocab').map(({ payload }) => ({ continue: payload.continue })), [{ continue: true }])
     assert.equal(api.calls.some(({ command, payload }) => command === 'generate.vocab' && payload.profile === true), false)
   })
 }
@@ -147,7 +147,7 @@ test('单词页先到本轮学习，实际项数与全部待复习分开呈现',
   assert.match(ui.text(), /全部待复习 31 项/)
   await answer(ui)
   await answer(ui)
-  assert.match(ui.text(), /本轮 2 项，已完成 2 项/)
+  assert.match(ui.text(), /已完成 2 \/ 2 项/)
 })
 
 test('单词页实际保存新词库偏好只影响下一批，不替换当前和剩余题目', async (t) => {
@@ -213,14 +213,14 @@ test('悬浮已结束快照重开不自动开始下一批，必须显式继续',
   api.dueCount = 0
   const ui = await open(t, api, 'overlay')
   await answer(ui)
-  assert.match(ui.text(), /这批答对 1 个/)
+  assert.match(ui.text(), /已完成 1 \/ 1 项/)
   await ui.click('收起')
   api.batch = [card('next', 'next-batch', true)]
   const readsBefore = api.calls.filter(({ command }) => command === 'study.batch').length
   await ui.click(ui.container.querySelector('.ec-pill-btn'))
   assert.equal(term(ui), undefined)
-  assert.match(ui.text(), /这批答对 1 个/)
-  assert.equal(api.calls.filter(({ command }) => command === 'study.batch').length, readsBefore)
+  assert.match(ui.text(), /已完成 1 \/ 1 项/)
+  assert.equal(api.calls.filter(({ command }) => command === 'study.batch').length, readsBefore + 1, '重开只读同步，不隐式开批')
   await ui.click('继续学习')
   assert.equal(term(ui), 'next-batch')
 })
@@ -241,7 +241,7 @@ test('悬浮旧首读迟到不能覆盖重新打开后手动续批及其完成�
   await answer(ui)
   await ui.flush(async () => staleFirst.resolve({ ok: true, data: { items: [card('stale', 'stale-first-batch')], dueCount: 9, batchSize: 3 } }))
   assert.equal(term(ui), undefined)
-  assert.match(ui.text(), /这批答对 1 个/)
+  assert.match(ui.text(), /已完成 1 \/ 1 项/)
   assert.doesNotMatch(ui.text(), /stale-first-batch|今天到期 9 个/)
 })
 
@@ -415,7 +415,7 @@ for (const entry of ['today', 'overlay']) {
     assert.ok(ui.button('选择词库'))
     assert.equal(ui.buttons('按画像补词').length, 0)
     await ui.click('继续学习')
-    assert.deepEqual(api.calls.filter(({ command }) => command === 'generate.vocab').map(({ payload }) => payload), [{}, {}])
+    assert.deepEqual(api.calls.filter(({ command }) => command === 'generate.vocab').map(({ payload }) => ({ continue: payload.continue })), [{ continue: true }, { continue: true }])
     assert.doesNotMatch(ui.text(), /正在出词/)
     assert.equal(api.activeWordListId, 'cet4')
   })

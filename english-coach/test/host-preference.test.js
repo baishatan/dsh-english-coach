@@ -11,13 +11,13 @@ import { getWordCatalog } from '../core/catalog.js'
 
 // External Host adapters only. Tests call the registered HTTP handler and public
 // tools; no prompt helper, private dispatch export, or learner-data injection.
-async function host() {
+async function host({ beforeSession } = {}) {
   const root = await fs.mkdtemp(join(tmpdir(), 'english-coach-host-preference-'))
   const tools = new Map(), intervals = [], records = [], createdSessions = []
   let route, context, failSchedule = false, sessionEvents = []
   const services = {
     sessionController: {
-      async create(request) { createdSessions.push(request); return { sessionId: 'isolated-session' } },
+      async create(request) { createdSessions.push(request); await beforeSession?.(); return { sessionId: 'isolated-session' } },
       async inspect() { return { events: sessionEvents } }
     },
     schedule: {
@@ -98,6 +98,28 @@ test('lesson tool declares optional paragraph translations and shares domain val
   assert.equal(failure.field, 'items[1].translations')
 })
 
+test('record tool requires stable vocabulary identity and preserves lesson-only completion', async () => {
+  const h = await host()
+  const tool = h.tools.get('english_record')
+  const properties = tool.parameters.properties.reviewAnswers.items.properties
+  for (const name of ['roundId', 'revision', 'presentationId', 'attemptId']) assert.ok(properties[name], name)
+  assert.match(tool.description, /稳定.*身份/)
+  assert.match(properties.at.description, /不.*历史/)
+  await h.tools.get('english_add_words').execute({ items: [{ term: 'identity', meaning: '身份', choices: ['身份', '未来', '过去', '现在'], answerIndex: 0 }] })
+  const itemId = (await execute(h.root, 'review.list')).data.items[0].id
+  const refused = await tool.execute({ reviewAnswers: [{ itemId, correct: true }] })
+  assert.equal(refused.data.applied.length, 0)
+  assert.equal(refused.data.skipped[0].reason, 'answer_identity_required')
+  const request = { reviewAnswers: [{ itemId, correct: false, attemptId: 'host-error', at: '2020-01-01T00:00:00.000Z' }] }
+  assert.equal((await tool.execute(request)).data.applied.length, 1)
+  assert.equal((await tool.execute(request)).data.applied.length, 0)
+  assert.equal((await execute(h.root, 'review.list')).data.items[0].answerCount, 1)
+  const today = (await execute(h.root, 'state.get')).data.today
+  await h.tools.get('english_save_lesson').execute(lesson(today))
+  assert.equal((await tool.execute({ lessonCompletions: [{ itemId: 'read', date: today }] })).ok, true)
+  assert.equal((await execute(h.root, 'lesson.get', { date: today })).data.lesson.items[0].done, true)
+})
+
 test('manual lesson request contains actual full-catalog candidates and non-fabrication rules', async () => {
   const h = await host()
   assert.equal((await h.request('wordlists.select', { id: 'cet6' })).ok, true)
@@ -170,8 +192,8 @@ test('active-list supplement uses the shared domain operation without a model jo
   assert.equal(again.data.addedCount, 0)
   assert.equal(h.records.length, 0)
   const explicit = await h.request('generate.vocab', { profile: true })
-  assert.equal(explicit.data.mode, 'generated')
-  assert.equal(h.records.length, 1)
+  assert.equal(explicit.data.mode, 'static', '未完成原批优先于显式画像请求')
+  assert.equal(h.records.length, 0)
   assert.equal((await execute(h.root, 'study.preference')).data.activeWordList.id, 'cet4')
 })
 
@@ -184,11 +206,90 @@ test('without a list, ordinary supplementation reuses due items before requestin
   assert.equal(h.records.length, 0)
 })
 
+test('unfinished durable round blocks static and explicit profile generation at every Host entry', async () => {
+  const h = await host()
+  await execute(h.root, 'review.add', { items: [{ term: 'pending', meaning: '待完成', choices: ['待完成', '将来', '过去', '现在'], answerIndex: 0 }] })
+  const original = (await h.request('study.batch')).data
+  await h.tool({ action: 'select', id: 'ielts' })
+  for (const invoke of [
+    () => execute(h.root, 'study.supplement', { continue: true }),
+    () => h.request('generate.vocab', { continue: true }),
+    () => h.request('generate.vocab', { profile: true, continue: true }),
+    () => h.tool({ action: 'supplement', profile: true })
+  ]) {
+    const result = await invoke()
+    assert.equal(result.ok, true)
+    assert.deepEqual(result.data.round, original.round, '所有入口只能续原批')
+    assert.equal((await execute(h.root, 'review.list')).data.total, 1)
+    assert.equal(h.records.length, 0, '未完成时不能悄悄启动模型')
+    assert.equal(h.createdSessions.length, 0)
+  }
+})
+
+test('only explicit continuation may fill an empty round from a completed generation', async () => {
+  const h = await host()
+  const empty = (await h.request('study.batch')).data
+  const untouched = await h.request('generate.vocab', { profile: true })
+  assert.deepEqual(untouched.data.round, empty.round)
+  assert.equal(h.records.length, 0)
+  const started = await h.request('generate.vocab', { profile: true, continue: true, roundId: empty.round.id, revision: empty.round.revision })
+  assert.equal(started.data.mode, 'generated')
+  assert.equal(h.records.length, 1)
+  await h.tools.get('english_add_words').execute({ items: [{ term: 'generated', meaning: '生成词', choices: ['生成词', '将来', '过去', '现在'], answerIndex: 0 }] })
+  h.endSession()
+  assert.equal((await h.request('job.status', { kind: 'vocab' })).data.status, 'done')
+  const loaded = (await h.request('study.batch')).data
+  assert.equal(loaded.round.status, 'active')
+  assert.equal(loaded.items[0].term, 'generated')
+  assert.deepEqual((await h.request('study.batch')).data.round, loaded.round)
+  await h.tools.get('english_add_words').execute({ items: [{ term: 'late generation', meaning: '迟到词', choices: ['迟到词', '将来', '过去', '现在'], answerIndex: 0 }] })
+  assert.deepEqual((await h.request('study.batch')).data.items, loaded.items, '生成结束后的读取也不能替换进行中原批')
+})
+
+test('concurrent continuation token starts only one vocabulary schedule and stale token never restarts it', async () => {
+  const h = await host()
+  const empty = (await h.request('study.batch')).data
+  const token = { continue: true, profile: true, roundId: empty.round.id, revision: empty.round.revision }
+  const results = await Promise.all([h.request('generate.vocab', token), h.request('generate.vocab', token)])
+  assert.equal(results.every(result => result.ok), true)
+  assert.equal(h.records.length, 1)
+  assert.equal(h.createdSessions.length, 1)
+  assert.equal(results[0].data.mode, 'generated')
+  assert.equal(results[1].data.mode, 'generated')
+  assert.equal(results[0].data.id, results[1].data.id)
+  h.endSession()
+  await h.request('job.status', { kind: 'vocab' })
+  await h.request('generate.vocab', token)
+  assert.equal(h.records.length, 1)
+})
+
+test('vocabulary scheduling revalidates the saved round after asynchronous session creation', async () => {
+  let entered, release
+  const started = new Promise(resolve => { entered = resolve })
+  const blocked = new Promise(resolve => { release = resolve })
+  const h = await host({ beforeSession: async () => { entered(); await blocked } })
+  const empty = (await h.request('study.batch')).data
+  const generation = h.request('generate.vocab', { continue: true, profile: true, roundId: empty.round.id, revision: empty.round.revision })
+  await started
+  try {
+    await h.tools.get('english_add_words').execute({ items: [{ term: 'arrived meanwhile', meaning: '已到达', choices: ['已到达', '未来', '过去', '现在'], answerIndex: 0 }] })
+    const active = (await h.request('study.batch')).data
+    assert.equal(active.round.status, 'active')
+    release()
+    const result = await generation
+    assert.equal(result.ok, true)
+    assert.equal(h.records.length, 0, '会话创建前一次guard不足以防TOCTOU')
+    assert.deepEqual(result.data.round, active.round)
+  } finally { release(); await generation }
+})
+
 test('no preference keeps model supplementation; generation failures remain visible', async () => {
   const h = await host()
+  const empty = (await h.request('study.batch')).data
   const initial = await h.tool({ action: 'supplement' })
   assert.equal(initial.ok, true)
-  assert.equal(initial.data.mode, 'generated')
+  assert.equal(initial.data.mode, 'generated', '显式工具补词读取最新空批身份后继续')
+  assert.notEqual((await h.request('study.batch')).data.round.id, empty.round.id)
   assert.equal(h.records.length, 1)
   h.failSchedule()
   const result = await h.request('generate')

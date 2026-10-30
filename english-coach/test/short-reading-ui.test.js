@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import test from 'node:test'
 import { tempFixture, disposeFixture } from './temp-fixture.js'
 import { execute } from '../core/index.js'
@@ -34,7 +36,7 @@ async function fixture(t, { provider = 'kokoro' } = {}) {
   await save('lesson.start', { date: '2026-10-30' })
   const pending = new Set(), calls = [], media = [], urls = [], revoked = [], spoken = []
   const api = {
-    run, calls, media, urls, revoked, spoken, phase: 'queued', rejectPlay: false,
+    root, run, calls, media, urls, revoked, spoken, phase: 'queued', rejectPlay: false,
     assets: { phase: 'ready', assetsReady: true, runtimeAvailable: true, manifest: { revision: 'synthetic', downloadBytes: 94453730 }, downloadedBytes: 94453730, validatedBytes: 94453730, diskBytes: 94454000 },
     setupWindow(window) {
       Object.defineProperty(window, 'innerWidth', { configurable: true, value: 320 })
@@ -189,6 +191,37 @@ test('all short entries use the selected Kokoro English, voice and rate without 
   assert.ok(api.calls.filter(({ command }) => command === 'speech.synthesize').every(({ payload }) => !/[\u3400-\u9fff]/.test(payload.text)))
 })
 
+test('Kokoro pronunciation during saved wrong-answer feedback preserves round, receipts and correction outcome', async t => {
+  const api = await fixture(t); api.phase = 'ready'
+  const ui = await open(t, api)
+  const wrong = [...ui.container.querySelectorAll('.ec-choice')].find(node => node.lastElementChild.textContent === '港口')
+  assert.ok(wrong)
+  await ui.click(wrong); await api.settle(ui)
+  assert.match(ui.text(), /答错了/)
+  const before = await api.run('study.batch')
+  assert.equal(before.ok, true)
+  assert.equal(before.data.round.current.feedback.correct, false)
+  const reviewFile = join(api.root, 'review/items.json')
+  const savedBefore = await readFile(reviewFile)
+  const pronunciation = entry(ui, 'orchard', ui.container.querySelector('.ec-deck'))
+  await ui.click(pronunciation); await api.settle(ui)
+  await ui.poll(); await api.settle(ui)
+  const audio = api.media.at(-1)
+  assert.equal(audio.plays, 1)
+  await ui.flush(() => audio.onplaying())
+  assert.match(feedback(pronunciation).textContent, /正在播放本地朗读/)
+  await ui.flush(() => audio.onended()); await api.settle(ui)
+  assert.deepEqual(await readFile(reviewFile), savedBefore, '朗读不改持久批次、复习项和回执')
+  assert.deepEqual((await api.run('study.batch')).data, before.data)
+  assert.match(ui.text(), /答错了/)
+  assert.equal(api.calls.filter(({ command }) => command === 'review.answer').length, 1)
+  await ui.click('下一个'); await api.settle(ui)
+  assert.match(ui.container.querySelector('.ec-deck-term').textContent, /harvest/)
+  const current = await api.run('study.batch')
+  assert.equal(current.data.round.summary.completed, 0)
+  assert.equal(current.data.round.summary.retryCount, 0)
+})
+
 test('system voice loss and a short utterance failure stay at the requesting entry and can be retried manually', async t => {
   const api = await fixture(t, { provider: 'web-speech' }), ui = await open(t, api)
   const before = await api.snapshot(), word = entry(ui, 'orchard'), card = entry(ui, 'take a break')
@@ -304,8 +337,21 @@ test('a card changing its English releases the old entry even when React keeps t
   assert.ok(entry(ui, 'harvest'))
   assert.equal(audio.src, '', 'the old card no longer owns visible playback')
   assert.equal(api.media.length, 1, 'a new card does not automatically speak')
+  const afterNext = await api.snapshot()
+  const beforeRound = afterAnswer['study.batch'].data.round, nextRound = afterNext['study.batch'].data.round
+  assert.equal(nextRound.id, beforeRound.id)
+  assert.equal(nextRound.at, 1, '明确下一题会保存新的当前呈现')
+  assert.equal(nextRound.current.itemId, '01-harvest')
+  assert.notEqual(nextRound.current.id, beforeRound.current.id)
+  assert.equal(nextRound.revision, beforeRound.revision + 1)
+  assert.deepEqual(nextRound.summary, beforeRound.summary, '切换题目不额外计分或作答')
+  assert.deepEqual(afterNext['study.batch'].data.items.map(({ choiceOrder, ...item }) => item),
+    afterAnswer['study.batch'].data.items.map(({ choiceOrder, ...item }) => item), '切换题目不改词汇及排期')
+  for (const command of ['state.get', 'review.list', 'review.queue', 'progress.get', 'settings.get']) {
+    assert.deepEqual(afterNext[command], afterAnswer[command], `切换题目不改 ${command}`)
+  }
   await ui.flush(() => oldEnded())
-  assert.deepEqual(await api.snapshot(), afterAnswer)
+  assert.deepEqual(await api.snapshot(), afterNext, '旧音频回调不能改变下一题或学习状态')
 })
 
 test('hiding, collapsing and unmounting short entries abort their media and ignore late binary audio', async t => {

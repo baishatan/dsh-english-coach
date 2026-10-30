@@ -6,6 +6,7 @@ import test from 'node:test'
 
 import { ANCHOR_HASH, ANCHOR_POOL } from '../core/anchors.js'
 import { execute } from '../core/index.js'
+import { answerFixture } from './answer-fixture.js'
 
 // ------------------------------------------------------------------ fixtures
 
@@ -25,7 +26,7 @@ function plusDays(date, days) {
 }
 
 function run(root, command, payload, now) {
-  return execute(root, command, payload, { now })
+  return command === 'review.answer' ? answerFixture(root, payload, now) : execute(root, command, payload, { now })
 }
 
 function source(overrides = {}) {
@@ -439,7 +440,7 @@ test('复习项在 1 / 7 / 30 天各答对一次后变为掌握', async () => {
   assert.equal((await run(root, 'review.queue', {}, plusDays(day38, 89))).data.dueCount, 0)
   assert.equal((await run(root, 'review.queue', {}, plusDays(day38, 90))).data.dueCount, 1)
 
-  // 抽检答错退回 30 天盒
+  // 抽检错误仍保持掌握及四格，留在当批纠正
   const failed = await run(
     root,
     'review.answer',
@@ -447,11 +448,13 @@ test('复习项在 1 / 7 / 30 天各答对一次后变为掌握', async () => {
     plusDays(day38, 90)
   )
   assert.equal(failed.data.correct, false)
-  assert.equal(failed.data.box, 3)
-  assert.equal(failed.data.status, 'learning')
+  assert.equal(failed.data.box, 4)
+  assert.equal(failed.data.status, 'mastered')
+  assert.equal(failed.data.mastered, 1)
+  assert.equal(failed.data.dueCount, 1)
 })
 
-test('复习中途答错回到第一盒，掌握不成立', async () => {
+test('复习中途答错保留原盒及到期状态，正确纠正前不算掌握', async () => {
   const root = await makeRoot()
   const day0 = at('2026-10-20')
   await run(root, 'lesson.save', lessonPayload('2026-10-20'), day0)
@@ -462,8 +465,10 @@ test('复习中途答错回到第一盒，掌握不成立', async () => {
   const day8 = plusDays(day0, 8)
   const wrong = await run(root, 'review.answer', { itemId: 'rv-1', choice: 3 }, day8)
   assert.equal(wrong.data.correct, false)
-  assert.equal(wrong.data.box, 1)
+  assert.equal(wrong.data.box, 2)
   assert.equal(wrong.data.status, 'learning')
+  assert.equal(wrong.data.dueAt, day8.toISOString())
+  assert.equal(wrong.data.dueCount, 1)
 
   const nextDay = plusDays(day8, 1)
   assert.equal((await run(root, 'review.queue', {}, nextDay)).data.dueCount, 1)

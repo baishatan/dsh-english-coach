@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { join, resolve, sep } from 'node:path'
 
 import {
@@ -87,6 +88,43 @@ async function load(ctx, key, fallback = DEFAULTS[key]) {
   const { value, warning } = await readJson(file(ctx, key), fallback)
   if (warning) ctx.warn(warning)
   return value
+}
+
+/** Every review writer must preserve an authority newer than its backup. */
+async function loadReviewForWrite(ctx) {
+  const { value, warning } = await readJson(file(ctx, 'review'), DEFAULTS.review)
+  // A backup may predate the latest answer. Do not let a fallback create a new
+  // round or award that answer again; retain the damaged file for recovery.
+  if (warning) fail('round_recovery_failed', `恢复学习批次失败：${warning}。请检查存储后重试，当前进度未改动`)
+  return value
+}
+
+async function loadReviewForStudy(ctx) {
+  const review = await loadReviewForWrite(ctx)
+  await projectReviewAnswers(ctx, review)
+  return review
+}
+
+// Only committed receipt events are projected. JSON is the authority, and the
+// event key makes an append/acknowledgement failure safe to retry on study reads.
+async function projectReviewAnswers(ctx, review) {
+  const pending = Object.values(review.answerReceipts ?? {}).filter(receipt => receipt.event && !receipt.projected)
+  if (!pending.length) return
+  try {
+    const keys = new Set((await readJsonl(file(ctx, 'reviewLog'))).map(event => event.key))
+    for (const receipt of pending) {
+      if (!keys.has(receipt.event.key)) {
+        const saved = await appendJsonl(file(ctx, 'reviewLog'), receipt.event)
+        if (saved.key !== receipt.event.key) throw new Error('复习日志追加后无法读回有效作答key')
+        keys.add(saved.key)
+      }
+      receipt.projected = true
+    }
+    await save(ctx, 'review', review)
+  } catch (error) {
+    for (const receipt of pending) receipt.projected = false
+    ctx.warn(`答案已保存，但复习日志写入失败；无需再次作答：${error?.message ?? error}`)
+  }
 }
 
 /** Settings gained keys over time; a file written earlier must still load today. */
@@ -351,7 +389,7 @@ function publicReviewItem(item) {
     box: hasAnswered(item) ? item.box : 0,
     status: item.status,
     dueAt: item.dueAt,
-    fresh: Boolean(item.fresh),
+    fresh: !hasAnswered(item),
     sourceLesson: item.sourceLesson ?? null,
     createdAt: item.createdAt ?? null,
     lastAt: item.lastAt ?? null,
@@ -489,6 +527,95 @@ function studyBatch(items, settings, now) {
   return { items: [...old, ...fresh].slice(0, settings.study.wordsPerDay).map(item => ({ ...publicReviewItem(item), due: true })), dueCount: due.length, batchSize: settings.study.wordsPerDay, activeWordListId }
 }
 
+function matchesRound(round, payload) {
+  return Boolean(round && payload?.roundId === round.id && payload?.revision === round.revision && (payload?.presentationId ?? null) === (round.current?.id ?? null))
+}
+
+function newStudyRound(batch, now, revision = 1) {
+  const id = randomUUID()
+  const order = batch.items.map(item => item.id)
+  return {
+    id, revision, status: order.length ? 'active' : 'empty',
+    startedAt: now.toISOString(), batchSize: batch.batchSize, activeWordListId: batch.activeWordListId,
+    order, at: 0, facts: Object.fromEntries(order.map(itemId => [itemId, { answers: [], completedAt: null }])),
+    current: order.length ? { id: `${id}:1`, itemId: order[0], choiceOrder: [0, 1, 2, 3], picked: null, feedback: null } : null
+  }
+}
+
+function publicStudyBatch(review, now) {
+  const round = review.round
+  const items = round.order.map(id => review.items.find(item => item.id === id)).map(item => {
+    const projected = { ...publicReviewItem(item), due: isDue(item, now) }
+    if (round.current?.itemId !== item.id) return projected
+    const choiceOrder = round.current.choiceOrder
+    return { ...projected, choices: choiceOrder.map(index => item.choices[index]), answerIndex: choiceOrder.indexOf(item.answerIndex), choiceOrder }
+  })
+  const facts = Object.values(round.facts)
+  const summary = {
+    total: facts.length,
+    completed: facts.filter(fact => fact.completedAt).length,
+    firstTryCorrect: facts.filter(fact => fact.answers[0]?.correct).length,
+    retryCount: facts.reduce((sum, fact) => sum + Math.max(0, fact.answers.length - 1), 0)
+  }
+  return { items, dueCount: dueItems(review.items, now).length, batchSize: round.batchSize, activeWordListId: round.activeWordListId,
+    round: { id: round.id, revision: round.revision, status: round.status, at: round.at, current: round.current, summary } }
+}
+
+// Both public answer entrances commit the same effective fact. Receipts outlive
+// the current round; timestamps are metadata, never a source of historical credit.
+async function effectiveAnswer(ctx, payload, booleanAnswer = false) {
+  const review = await loadReviewForStudy(ctx)
+  const items = review.items ?? []
+  const itemId = String(payload?.itemId ?? '')
+  const hasRoundIdentity = payload?.roundId !== undefined || payload?.presentationId !== undefined || payload?.revision !== undefined
+  const key = payload?.roundId && payload?.presentationId
+    ? JSON.stringify([payload.roundId, payload.presentationId])
+    : typeof payload?.attemptId === 'string' && payload.attemptId.trim() ? JSON.stringify(['attempt', payload.attemptId]) : null
+  const receipt = key && review.answerReceipts?.[key]
+  const batch = () => review.round ? { batch: publicStudyBatch(review, ctx.now) } : {}
+  if (receipt) {
+    if (receipt.itemId !== itemId) fail('answer_identity_conflict', '同一作答身份不能用于另一个词', 'itemId')
+    return { ...receipt.result, ...batch(), key, replayed: true }
+  }
+  const round = review.round
+  if (hasRoundIdentity) {
+    if (!matchesRound(round, payload) || itemId !== round.current?.itemId || round.current.feedback) {
+      fail('stale_presentation', '当前题已变化，请读取已保存批次后继续', 'presentationId')
+    }
+  } else if (!key || round?.status === 'active') {
+    fail('answer_identity_required', '作答需要当前批次呈现身份；独立补记需要稳定 attemptId，不能凭词和时间推测新作答', 'presentationId')
+  }
+  const index = items.findIndex(item => item.id === itemId)
+  if (index < 0) fail('item_not_found', `复习队列里没有 ${itemId}`, 'itemId')
+  const item = items[index]
+  if (booleanAnswer && typeof payload.correct !== 'boolean') fail('invalid_field', 'correct 必须是布尔值', 'correct')
+  const choice = booleanAnswer ? payload.correct ? item.answerIndex : (item.answerIndex + 1) % 4 : Number(payload.choice)
+  if (!Number.isInteger(choice) || choice < 0 || choice > 3) fail('invalid_field', 'choice 必须是 0 到 3 的整数', 'choice')
+  if (!isDue(item, ctx.now)) fail('not_due', `「${item.term}」还没到期，${item.dueAt.slice(0, 10)} 之后再答`, 'itemId')
+  const correct = choice === item.answerIndex
+  const updated = advance(item, correct, ctx.now)
+  items[index] = updated
+  if (hasRoundIdentity) {
+    const fact = round.facts[itemId]
+    fact.answers.push({ at: ctx.now.toISOString(), choice, correct, presentationId: round.current.id, choiceOrder: round.current.choiceOrder })
+    if (correct) fact.completedAt = ctx.now.toISOString()
+    round.current.picked = round.current.choiceOrder.indexOf(choice)
+    round.current.feedback = { correct, explanation: item.explanation }
+    round.revision++
+  }
+  const result = {
+    correct, answerIndex: item.answerIndex, explanation: item.explanation,
+    box: publicReviewItem(updated).box, fresh: publicReviewItem(updated).fresh,
+    status: updated.status, dueAt: updated.dueAt,
+    dueCount: dueItems(items, ctx.now).length, mastered: countMastered(items)
+  }
+  const event = { key, at: ctx.now.toISOString(), itemId, choice, correct, box: updated.box, status: updated.status }
+  review.answerReceipts = { ...review.answerReceipts, [key]: { itemId, result, event, projected: false } }
+  await save(ctx, 'review', { ...review, items })
+  await projectReviewAnswers(ctx, review)
+  return { ...result, ...batch(), key, replayed: false }
+}
+
 function bookmarkIdentity(payload) {
   for (const field of ['materialId', 'contentFingerprint']) {
     if (typeof payload?.[field] !== 'string' || !payload[field].trim() || payload[field].length > 500) fail('invalid_field', `${field} 必须是非空标识`, field)
@@ -504,6 +631,10 @@ function queryPage(items, payload) {
   const page = Number.isFinite(requested) ? Math.min(pages, Math.max(1, Math.floor(requested))) : 1
   return { total: items.length, pages, page, pageSize, items: items.slice((page - 1) * pageSize, page * pageSize) }
 }
+
+// Vocabulary-only reservation while Host awaits schedule.create. Process-local
+// lifetime avoids a persisted orphan claim freezing recovery after Host restart.
+const generationClaims = new Map()
 
 // ---------------------------------------------------------------- handlers
 
@@ -1006,7 +1137,7 @@ const handlers = {
     }
     merged.cards = enrichable
     merged.reviewItems = [...(merged.reviewItems ?? []), ...deriveReviewItems(merged)]
-    const review = await load(ctx, 'review')
+    const review = await loadReviewForWrite(ctx)
     // Validate all additions before any course or provenance write.
     const enrolled = enrol(review, merged.reviewItems, ctx.now, { kind: 'lesson', id: merged.date }, 'reviewItems')
     await saveLesson(ctx, merged)
@@ -1091,7 +1222,7 @@ const handlers = {
   async 'review.add'(ctx, payload) {
     const incoming = Array.isArray(payload?.items) ? payload.items : []
     if (!incoming.length) fail('invalid_field', '至少要有一个词', 'items')
-    const review = await load(ctx, 'review')
+    const review = await loadReviewForWrite(ctx)
     const result = enrol(review, incoming, ctx.now, { kind: 'supplement' })
     if (result.addedCount || result.linkedCount) await save(ctx, 'review', review)
     return { ...result, added: result.added.map(publicReviewItem) }
@@ -1157,25 +1288,92 @@ const handlers = {
       candidates: candidates.slice(0, 60).map(entry => ({ term: entry.term, meaning: entry.meaning })), candidateCount: candidates.length, batchSize: settings.study.wordsPerDay }
   },
 
-  async 'study.supplement'(ctx) {
+  async 'study.supplement'(ctx, payload) {
     const settings = await loadSettings(ctx)
-    const review = await load(ctx, 'review')
+    const review = await loadReviewForStudy(ctx)
+    if (review.round && (generationClaims.has(resolve(ctx.root)) || review.round.status === 'active' || payload?.continue !== true || !matchesRound(review.round, payload))) {
+      return { ...publicStudyBatch(review, ctx.now), addedCount: 0 }
+    }
     const before = studyBatch(review.items ?? [], settings, ctx.now)
     const available = listCandidates(review.items ?? [], settings)
-    if (!available.list) return { ...before, addedCount: 0, remainingPlayable: 0, exhaustion: null, shortfall: before.batchSize - before.items.length, mode: 'profile_required' }
     const needed = Math.max(0, before.batchSize - before.items.length)
-    const incoming = available.candidates.slice(0, needed).map(entry => ({ id: entry.id, term: entry.term, kind: entry.kind, meaning: entry.meaning, ...entry.practice }))
-    const enrolled = enrol(review, incoming, ctx.now, { kind: 'wordlist', id: available.list.id })
-    if (enrolled.addedCount || enrolled.linkedCount) await save(ctx, 'review', review)
+    const incoming = (payload?.profile === true ? [] : available.candidates.slice(0, needed)).map(entry => ({ id: entry.id, term: entry.term, kind: entry.kind, meaning: entry.meaning, ...entry.practice }))
+    const enrolled = enrol(review, incoming, ctx.now, { kind: 'wordlist', id: available.list?.id })
     const after = studyBatch(review.items ?? [], settings, ctx.now)
+    review.round = newStudyRound(after, ctx.now, (review.round?.revision ?? 0) + 1)
+    if (!after.items.length && (!available.list || payload?.profile === true)) review.round.awaitingGeneration = true
+    await save(ctx, 'review', review)
     const remaining = listCandidates(review.items ?? [], settings)
-    return { ...after, addedCount: enrolled.addedCount, remainingPlayable: remaining.remainingPlayable, exhaustion: remaining.exhaustion, shortfall: after.batchSize - after.items.length }
+    return { ...publicStudyBatch(review, ctx.now), addedCount: enrolled.addedCount, remainingPlayable: remaining.remainingPlayable, exhaustion: remaining.exhaustion,
+      shortfall: after.batchSize - after.items.length, ...(!available.list || payload?.profile === true ? { mode: 'profile_required' } : {}) }
   },
 
   async 'study.batch'(ctx) {
-    const review = await load(ctx, 'review')
-    const settings = await loadSettings(ctx)
-    return studyBatch(review.items ?? [], settings, ctx.now)
+    const review = await loadReviewForStudy(ctx)
+    if (!review.round || review.round.status === 'empty' && review.round.awaitingGeneration && !generationClaims.has(resolve(ctx.root))) {
+      const settings = await loadSettings(ctx)
+      const batch = studyBatch(review.items ?? [], settings, ctx.now)
+      if (!review.round || batch.items.length) {
+        review.round = newStudyRound(batch, ctx.now, (review.round?.revision ?? 0) + 1)
+        await save(ctx, 'review', review)
+      }
+    }
+    return publicStudyBatch(review, ctx.now)
+  },
+
+  // A vocabulary-only reservation spans the asynchronous Host schedule call.
+  // It freezes only this empty round, not unrelated jobs or learning commands.
+  async 'study.generation.claim'(ctx, payload) {
+    const review = await loadReviewForStudy(ctx)
+    const round = review.round
+    if (!matchesRound(round, payload) || round.status !== 'empty' || !round.awaitingGeneration) return { ...publicStudyBatch(review, ctx.now), claimed: false }
+    if (generationClaims.has(resolve(ctx.root))) return { ...publicStudyBatch(review, ctx.now), claimed: false }
+    const batch = studyBatch(review.items ?? [], await loadSettings(ctx), ctx.now)
+    if (batch.items.length) {
+      review.round = newStudyRound(batch, ctx.now, round.revision + 1)
+      await save(ctx, 'review', review)
+      return { ...publicStudyBatch(review, ctx.now), claimed: false }
+    }
+    const claimId = randomUUID()
+    generationClaims.set(resolve(ctx.root), { roundId: round.id, claimId })
+    return { ...publicStudyBatch(review, ctx.now), claimed: true, claimId }
+  },
+
+  async 'study.generation.release'(ctx, payload) {
+    const review = await loadReviewForStudy(ctx)
+    const claim = generationClaims.get(resolve(ctx.root))
+    if (claim?.roundId === payload?.roundId && claim?.claimId === payload?.claimId) generationClaims.delete(resolve(ctx.root))
+    return publicStudyBatch(review, ctx.now)
+  },
+
+  async 'study.next'(ctx, payload) {
+    const review = await loadReviewForStudy(ctx)
+    const round = review.round
+    if (round && !matchesRound(round, payload)) return publicStudyBatch(review, ctx.now)
+    if (!round?.current?.feedback) fail('answer_required', '请先保存当前题的答案，再继续')
+    const { current } = round
+    if (current.feedback.correct) round.at++
+    else {
+      round.order.splice(round.at, 1)
+      round.order.push(current.itemId)
+    }
+    round.revision++
+    const itemId = round.order[round.at]
+    if (!itemId) { round.current = null; round.status = 'completed' }
+    else {
+      const choiceOrder = [0, 1, 2, 3]
+      if (round.facts[itemId].answers.length) {
+        for (let index = 3; index > 0; index--) {
+          const other = Math.floor(Math.random() * (index + 1))
+          ;[choiceOrder[index], choiceOrder[other]] = [choiceOrder[other], choiceOrder[index]]
+        }
+        const previousOrder = round.facts[itemId].answers.at(-1)?.choiceOrder ?? [0, 1, 2, 3]
+        if (choiceOrder.every((value, index) => value === previousOrder[index])) choiceOrder.push(choiceOrder.shift())
+      }
+      round.current = { id: `${round.id}:${round.revision}`, itemId, choiceOrder, picked: null, feedback: null }
+    }
+    await save(ctx, 'review', review)
+    return publicStudyBatch(review, ctx.now)
   },
 
   async 'wordlists.list'(ctx) {
@@ -1230,47 +1428,7 @@ const handlers = {
   },
 
   async 'review.answer'(ctx, payload) {
-    const itemId = String(payload?.itemId ?? '')
-    const choice = Number(payload?.choice)
-    const review = await load(ctx, 'review')
-    const items = review.items ?? []
-    const index = items.findIndex((item) => item.id === itemId)
-    if (index < 0) fail('item_not_found', `复习队列里没有 ${itemId}`, 'itemId')
-    if (!Number.isInteger(choice) || choice < 0 || choice > 3) {
-      fail('invalid_field', 'choice 必须是 0 到 3 的整数', 'choice')
-    }
-    const item = items[index]
-    // Mastery means "correct at the 1, 7 and 30 day interval", so an item that
-    // is not yet due cannot advance a box. Answering early is practice, and
-    // practice that moved the box would make the intervals meaningless.
-    // Due is decided in whole days, same as `review.list`, or the deck could
-    // show a word that this guard then refuses.
-    if (!isDue(item, ctx.now)) {
-      fail('not_due', `「${item.term}」还没到期，${item.dueAt.slice(0, 10)} 之后再答`, 'itemId')
-    }
-    const correct = choice === item.answerIndex
-    const updated = advance(item, correct, ctx.now)
-    items[index] = updated
-    await save(ctx, 'review', { ...review, items })
-    await appendJsonl(join(ctx.root, FILES.reviewLog), {
-      at: ctx.now.toISOString(),
-      itemId,
-      choice,
-      correct,
-      box: updated.box,
-      status: updated.status
-    })
-    return {
-      correct,
-      answerIndex: item.answerIndex,
-      explanation: item.explanation,
-      box: publicReviewItem(updated).box,
-      fresh: Boolean(updated.fresh),
-      status: updated.status,
-      dueAt: updated.dueAt,
-      dueCount: dueItems(items, ctx.now).length,
-      mastered: countMastered(items)
-    }
+    return effectiveAnswer(ctx, payload)
   },
 
   // --------------------------------------------------------------- progress
@@ -1308,28 +1466,18 @@ const handlers = {
   async 'record.batch'(ctx, payload) {
     const applied = []
     const skipped = []
-    const review = await load(ctx, 'review')
-    const items = review.items ?? []
-
+    let latestBatch
     for (const answer of Array.isArray(payload?.reviewAnswers) ? payload.reviewAnswers : []) {
       const itemId = String(answer?.itemId ?? '')
-      const index = items.findIndex((item) => item.id === itemId)
-      if (index < 0) {
-        skipped.push({ itemId, reason: 'item_not_found' })
-        continue
+      try {
+        const result = await effectiveAnswer(ctx, answer, true)
+        if (result.batch) latestBatch = result.batch
+        if (result.replayed) skipped.push({ itemId, reason: 'duplicate', result })
+        else applied.push({ key: result.key, itemId, kind: 'review', correct: result.correct })
+      } catch (error) {
+        if (!error?.isCommandError) throw error
+        skipped.push({ itemId, reason: error.code })
       }
-      const stamp = isIsoTimestamp(answer?.at) ? answer.at : ctx.now.toISOString()
-      const key = `${itemId}|${stamp}`
-      if (applied.some((entry) => entry.key === key)) {
-        skipped.push({ itemId, reason: 'duplicate' })
-        continue
-      }
-      const correct = Boolean(answer?.correct)
-      items[index] = advance(items[index], correct, ctx.now)
-      applied.push({ key, itemId, kind: 'review', correct })
-    }
-    if (applied.some((entry) => entry.kind === 'review')) {
-      await save(ctx, 'review', { ...review, items })
     }
 
     for (const entry of Array.isArray(payload?.lessonCompletions) ? payload.lessonCompletions : []) {
@@ -1359,7 +1507,7 @@ const handlers = {
       }
       applied.push({ key, itemId, kind: 'lesson', date })
     }
-    return { applied, skipped }
+    return { applied, skipped, ...(latestBatch ? { batch: latestBatch } : {}) }
   }
 }
 

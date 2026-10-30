@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { execute } from '../core/index.js'
+import { answerFixture } from './answer-fixture.js'
 
 const now = new Date(2026, 9, 29, 9)
 const tomorrow = new Date(2026, 9, 30, 9)
@@ -11,7 +12,7 @@ const word = (term, extra = {}) => ({ term, meaning: '正确释义', choices: ['
 async function fixture(t) {
   const root = await fs.mkdtemp(join(tmpdir(), 'coach-new-word-'))
   t.after(() => fs.rm(root, { recursive: true, force: true }))
-  return { root, run: (command, payload = {}, date = now) => execute(root, command, payload, { now: date }) }
+  return { root, run: (command, payload = {}, date = now) => command === 'review.answer' ? answerFixture(root, payload, date) : execute(root, command, payload, { now: date }) }
 }
 
 test('单词和整块表达尚未完成初学时，公开学习进度为零格', async t => {

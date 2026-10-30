@@ -157,7 +157,11 @@ window.__ModuleLoader__.load({
       nextWord: '下一个',
       finishReview: '完成复习',
       reviewDone: '这一批学完了',
-      reviewDoneHint: '这批答对 {n} 个。复习排期已按作答更新，还可以继续下一批。',
+      roundOutcome: '本批成绩',
+      roundCompleted: '已完成 {completed} / {total} 项',
+      roundFirstTryCorrect: '首次答对 {n} 项',
+      roundRetryCount: '重试 {n} 次',
+      reviewDoneHint: '复习排期已按保存结果更新，还可以继续下一批。',
       wordKind: '单词',
       expressionKind: '表达',
       kbdPick: '按 1–4 直接选',
@@ -283,20 +287,25 @@ window.__ModuleLoader__.load({
 
     // ---------------------------------------------------------- shared round
 
-    // One in-memory round per Client lifetime, not one round per mounted view.
-    // The Host still owns candidate selection, answer validation and all writes.
+    // All views render the Host's saved round. Only pending/error UI lives here;
+    // candidate order, option mapping, feedback and completion belong to Host.
     const studyRound = (() => {
       const listeners = new Set()
       let state = { batch: null, items: null, at: 0, picked: null, feedback: null, correct: 0, answered: 0, conflict: false, busy: false, loading: false, error: null, job: null, dueCount: null, nextDueAt: null }
       let active = 0, generation = 0, revision = 0, timer = null, polling = false
       let summaryRead = 0, latestSummary = 0
       const patch = change => { state = { ...state, ...change }; for (const listener of listeners) listener() }
-      const begin = batch => {
+      const begin = (batch, warning = null) => {
+        if (state.batch && batch.round.revision < state.batch.round.revision) return false
+        if (state.batch && batch.round.revision === state.batch.round.revision && state.busy) { patch({ loading: false }); return false }
         revision++
-        patch({ batch, items: batch.items ?? [], at: 0, picked: null, feedback: null, correct: 0, answered: 0, conflict: false, busy: false, loading: false, error: null, dueCount: batch.dueCount ?? state.dueCount })
+        const { round } = batch
+        patch({ batch, items: batch.items, at: round.at, picked: round.current?.picked ?? null, feedback: round.current?.feedback ?? null,
+          correct: round.summary.completed, answered: round.summary.completed, conflict: false, busy: false, loading: false, error: warning, dueCount: batch.dueCount ?? state.dueCount })
       }
-      async function load() {
-        if (state.loading || state.items !== null) return
+      const identity = () => ({ roundId: state.batch.round.id, revision: state.batch.round.revision, presentationId: state.batch.round.current?.id })
+      async function load(force = false) {
+        if (state.loading || state.items !== null && !force) return
         const request = ++generation
         patch({ loading: true, error: null })
         const result = await call('study.batch')
@@ -330,7 +339,7 @@ window.__ModuleLoader__.load({
         subscribe(listener) { listeners.add(listener); startPolling(); return () => { listeners.delete(listener); if (!listeners.size) stopPolling() } },
         acquire() {
           active++
-          if (!state.error) void load()
+          void load(true)
           startPolling()
           return () => {
             active--
@@ -342,15 +351,17 @@ window.__ModuleLoader__.load({
         async answer(choice) {
           const word = state.items?.[state.at]
           if (!word || state.picked !== null || state.busy || state.conflict) return
+          const version = revision
           patch({ picked: choice, busy: true, error: null })
-          const result = await call('review.answer', { itemId: word.id, choice: word.choiceOrder?.[choice] ?? choice })
-          if (!result.ok) { patch({ busy: false, picked: null, feedback: null, error: result.message }); return }
-          revision++
-          const savedWord = { ...word }
-          for (const field of ['box', 'fresh', 'status', 'dueAt']) if (result.data[field] !== undefined) savedWord[field] = result.data[field]
-          patch({ busy: false, items: state.items.map((item, index) => index === state.at ? savedWord : item), correct: state.correct + Number(result.data.correct), answered: state.answered + 1,
-            feedback: { correct: result.data.correct, explanation: result.data.explanation ?? word.explanation },
-            dueCount: result.data.dueCount ?? (state.dueCount === null ? null : Math.max(0, state.dueCount - 1)), nextDueAt: result.data.dueAt ?? state.nextDueAt })
+          const result = await call('review.answer', { ...identity(), itemId: word.id, choice: word.choiceOrder?.[choice] ?? choice })
+          if (!result.ok) {
+            if (version !== revision) return
+            patch({ busy: false, picked: null, feedback: null, error: result.message })
+            if (result.code === 'stale_presentation') await load(true)
+            return
+          }
+          begin(result.data.batch, result.warnings?.join(' ') || null)
+          patch({ nextDueAt: result.data.dueAt ?? state.nextDueAt })
           notifyReview()
           if (state.at + 1 >= state.items.length) {
             const version = revision
@@ -358,27 +369,19 @@ window.__ModuleLoader__.load({
             if (fresh.ok && version === revision) patch({ nextDueAt: fresh.data.nextDueAt ?? state.nextDueAt })
           }
         },
-        next() {
-          if (state.busy || !state.feedback) return
-          if (state.feedback && !state.feedback.correct) {
-            const items = [...state.items]
-            const [word] = items.splice(state.at, 1)
-            const order = word.choices.map((_, index) => index)
-            for (let index = order.length - 1; index > 0; index--) {
-              const other = Math.floor(Math.random() * (index + 1))
-              ;[order[index], order[other]] = [order[other], order[index]]
-            }
-            if (order.every((value, index) => value === index)) order.push(order.shift())
-            items.push({ ...word, choices: order.map(index => word.choices[index]), answerIndex: order.indexOf(word.answerIndex),
-              choiceOrder: order.map(index => word.choiceOrder?.[index] ?? index) })
-            patch({ items, picked: null, feedback: null, error: null })
-          } else patch({ at: state.at + 1, picked: null, feedback: null, conflict: false, error: null })
+        async next() {
+          if (state.busy || !state.feedback) return false
+          patch({ busy: true, error: null })
+          const result = await call('study.next', identity())
+          if (!result.ok) { patch({ busy: false, error: result.message }); return false }
+          begin(result.data, result.warnings?.join(' ') || null)
+          return true
         },
         async continue() {
           if (state.busy || state.loading || state.items === null || state.job?.status === 'pending' || state.at < state.items.length) return
           const request = ++generation
           patch({ busy: true, error: null })
-          const result = await call('generate.vocab', {})
+          const result = await call('generate.vocab', { continue: true, ...identity() })
           if (request !== generation) return
           if (!result.ok) { patch({ busy: false, error: result.message }); return }
           if (result.data.mode === 'generated') { patch({ busy: false, job: result.data }); startPolling() }
@@ -1257,7 +1260,8 @@ window.__ModuleLoader__.load({
 .ec-pill-count { min-width: 19px; height: 19px; border-radius: 999px; background: var(--dsw-alias-brand-primary);
   color: var(--dsw-alias-bg-base); font-size: 10.5px; display: inline-flex; align-items: center;
   justify-content: center; padding: 0 5px; font-variant-numeric: tabular-nums; }
-.ec-pop { position: absolute; right: 0; bottom: calc(100% + 10px); width: 306px; max-height: 70vh; overflow: auto;
+.ec-pop { position: absolute; right: 0; bottom: calc(100% + 10px); box-sizing: border-box;
+  width: min(338px, calc(100vw - 16px)); max-height: min(70vh, var(--ec-pop-max-height, 70vh)); overflow: auto; overflow-wrap: anywhere;
   border-radius: 14px; border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-overlay);
   box-shadow: 0 14px 44px rgba(0,0,0,.24); padding: 15px; }
 .ec-pop[data-down="true"] { top: calc(100% + 10px); bottom: auto; }
@@ -1271,10 +1275,11 @@ window.__ModuleLoader__.load({
 .ec-pop-prompt { font-size: 11.5px; color: var(--dsw-alias-label-secondary); margin-top: 3px; }
 /* 306px 的悬浮层里，选项比面板里紧一档，四行释义一屏放得下 */
 .ec-pop .ec-choices { margin: 12px 0 0; gap: 6px; }
-.ec-pop .ec-choice { font-size: 12.8px; padding: 8px 9px; gap: 8px; }
+.ec-pop .ec-choice { box-sizing: border-box; min-width: 0; font-size: 12.8px; padding: 8px 9px; gap: 8px; }
+.ec-pop .ec-choice > span:last-child { min-width: 0; }
 .ec-pop .ec-fb { margin-top: 12px; }
 .ec-pop .ec-acts { margin-top: 10px; }
-.ec-pop-acts { display: flex; align-items: center; justify-content: flex-start; gap: 8px; margin-top: 14px; }
+.ec-pop-acts { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 8px; margin-top: 14px; }
 .ec-pop-acts > .ec-btn { flex: none; white-space: nowrap; margin-left: 0; }
 `
     function Style() {
@@ -2169,6 +2174,13 @@ window.__ModuleLoader__.load({
       return `${count}${reason}`
     }
 
+    function RoundOutcome({ summary }) {
+      if (!summary) return null
+      return h('div', { role: 'group', 'aria-label': t('roundOutcome'), className: 'ec-sub', style: { margin: '8px 0', lineHeight: 1.6 } },
+        h('div', null, t('roundCompleted', summary)),
+        h('div', null, t('roundFirstTryCorrect', { n: summary.firstTryCorrect }), ' · ', t('roundRetryCount', { n: summary.retryCount })))
+    }
+
     function WordDeck({ words, compact, onGoWords, onChooseList }) {
       const { items: ids, batch, at: index, picked, feedback, correct, answered, conflict, busy, error, job } = useStudyRound()
       const word = ids?.[index] ?? null
@@ -2177,7 +2189,7 @@ window.__ModuleLoader__.load({
       const generating = job?.status === 'pending'
       const answer = studyRound.answer
       const questionRef = useRef(null)
-      const next = () => { studyRound.next(); questionRef.current?.focus() }
+      const next = async () => { if (await studyRound.next()) questionRef.current?.focus() }
       const generateMore = studyRound.continue
 
       useEffect(() => {
@@ -2215,8 +2227,8 @@ window.__ModuleLoader__.load({
           { className: 'ec-done-card' },
           h('div', { className: 'ec-done-mark' }, '✓'),
           h('h2', null, t('reviewDone')),
-          h('div', { className: 'ec-muted', style: { marginTop: 6 } }, `本轮 ${ids.length} 项，已完成 ${correct} 项。`),
-          h('div', { className: 'ec-muted', style: { marginTop: 6 } }, t('reviewDoneHint', { n: correct })),
+          h(RoundOutcome, { summary: batch.round.summary }),
+          h('div', { className: 'ec-muted', style: { marginTop: 6 } }, t('reviewDoneHint')),
           h(
             'div',
             { className: 'ec-acts' },
@@ -2266,9 +2278,9 @@ window.__ModuleLoader__.load({
             word.fresh ? h('span', { className: 'ec-chip ec-chip-brand' }, t('newWord')) : null,
             h('span', { className: 'ec-chip' }, word.kind === 'word' ? t('wordKind') : t('expressionKind')),
             h(BoxDots, { box: word.box }),
-            h('span', { className: 'ec-sub' }, `本轮第 ${index + 1} / ${ids.length} 项`),
-            h('span', { className: 'ec-sub' }, `已完成 ${correct} / ${ids.length} 项`)
+            h('span', { className: 'ec-sub' }, `本轮第 ${index + 1} / ${ids.length} 项`)
           ),
+          h(RoundOutcome, { summary: batch.round.summary }),
           h('div', { className: 'ec-term-line' },
             h('div', { className: 'ec-deck-term' }, word.term), h(PronounceButton, { text: word.term })),
           h('div', { className: 'ec-deck-prompt' }, t('pickMeaning')),
@@ -2291,7 +2303,7 @@ window.__ModuleLoader__.load({
                 h(
                   'div',
                   { className: 'ec-acts' },
-                  h(Btn, { primary: true, small: true, onClick: next }, isLast ? t('finishReview') : t('nextWord')),
+                  h(Btn, { primary: true, small: true, disabled: busy, onClick: next }, isLast ? t('finishReview') : t('nextWord')),
                   h('span', { className: 'ec-kbd' }, t('kbdHint'))
                 )
               )
@@ -3685,6 +3697,7 @@ window.__ModuleLoader__.load({
 
       // Where the learner dragged the pill: null means "the default corner".
       const [pos, setPosState] = useState(null)
+      const [viewport, setViewport] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }))
       const positionRef = useRef(null)
       const pillRef = useRef(null)
       const dragRef = useRef(null)
@@ -3721,6 +3734,7 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return undefined
         const onResize = () => {
+          setViewport({ width: window.innerWidth, height: window.innerHeight })
           const current = positionRef.current
           const box = pillRef.current?.getBoundingClientRect?.()
           if (!current || !box) return
@@ -3784,7 +3798,7 @@ window.__ModuleLoader__.load({
       const finished = Boolean(session) && session.cards.length > 0 && !card
 
       const questionRef = useRef(null)
-      const next = () => { studyRound.next(); questionRef.current?.focus() }
+      const next = async () => { if (await studyRound.next()) questionRef.current?.focus() }
       const answer = studyRound.answer
       const continueRemaining = studyRound.continue
 
@@ -3813,7 +3827,7 @@ window.__ModuleLoader__.load({
       const nextAt = round.nextDueAt
       const nextText = !dueCount && nextAt ? t('nextDueShort', { date: formatDay(nextAt) }) : ''
       const quietText = finished
-        ? t('reviewDoneHint', { n: session.correct })
+        ? t('reviewDoneHint')
         : hasDraft
           ? t('draftReady')
           : t('nothingDueHint')
@@ -3833,7 +3847,15 @@ window.__ModuleLoader__.load({
         setOpen(false)
       }
 
-      const openDown = Boolean(pos && pos.y < 420)
+      const pillBox = pillRef.current?.getBoundingClientRect()
+      const pillWidth = pillBox?.width ?? 130, pillHeight = pillBox?.height ?? 38
+      const pillX = pos?.x ?? viewport.width - pillWidth - 22
+      const pillY = pos?.y ?? viewport.height - pillHeight - 22
+      const popWidth = Math.min(338, viewport.width - 16)
+      const popLeft = Math.max(8, Math.min(pillX + pillWidth - popWidth, viewport.width - popWidth - 8))
+      const above = Math.max(0, pillY - 18), below = Math.max(0, viewport.height - pillY - pillHeight - 18)
+      const openDown = above < 420 && below > above
+      const popStyle = { left: popLeft - pillX, right: 'auto', '--ec-pop-max-height': `${openDown ? below : above}px` }
       const pillStyle = pos ? { left: pos.x, top: pos.y, right: 'auto', bottom: 'auto' } : undefined
 
       return h(
@@ -3846,7 +3868,7 @@ window.__ModuleLoader__.load({
           open
             ? h(
                 'div',
-                { className: 'ec-pop', 'data-down': openDown },
+                { className: 'ec-pop', 'data-down': openDown, style: popStyle },
                 h(
                   'div',
                   { className: 'ec-pop-head' },
@@ -3865,9 +3887,8 @@ window.__ModuleLoader__.load({
                   ? h(
                       'div',
                       { tabIndex: -1, ref: questionRef },
-                      h('div', { className: 'ec-deck-meta' },
-                        h(BoxDots, { box: card.box }),
-                        h('span', { className: 'ec-sub' }, `已完成 ${session.correct} / ${session.cards.length} 项`)),
+                      h('div', { className: 'ec-deck-meta' }, h(BoxDots, { box: card.box })),
+                      h(RoundOutcome, { summary: queue.round.summary }),
                       h('div', { className: 'ec-term-line' },
                         h('div', { className: 'ec-pop-term' }, card.term), h(PronounceButton, { text: card.term })),
                       h('div', { className: 'ec-pop-prompt' }, t('pickMeaning')),
@@ -3900,6 +3921,7 @@ window.__ModuleLoader__.load({
                   : h(
                       'div',
                       null,
+                      finished ? h(RoundOutcome, { summary: queue.round.summary }) : null,
                       h('div', { className: 'ec-pop-hint' }, quietText),
                       generating ? h('div', { className: 'ec-pop-hint' }, t('generatingWordsHint')) : null,
                       nextText ? h('div', { className: 'ec-pop-hint' }, nextText) : null
@@ -3912,7 +3934,7 @@ window.__ModuleLoader__.load({
                   'div',
                   { className: 'ec-pop-acts' },
                   card && (session.feedback || conflict)
-                    ? h(Btn, { primary: true, small: true, onClick: next }, session.feedback?.correct && session.correct >= session.cards.length ? t('finishReview') : t('nextWord'))
+                    ? h(Btn, { primary: true, small: true, disabled: busy, onClick: next }, session.feedback?.correct && session.correct >= session.cards.length ? t('finishReview') : t('nextWord'))
                     : !card && !initialLoading && session !== null
                       ? h(Btn, { primary: true, small: true, disabled: busy || generating, onClick: continueRemaining }, generating ? t('generatingWords') : t('continueLearning'))
                       : null,

@@ -149,6 +149,30 @@ test('deletion aborts active synthesis immediately while a repair transport is s
   assert.equal(downloads, 9)
 })
 
+test('owned Host speech preserves a saved correction round and its effective-answer receipt', { skip: realAssets }, async t => {
+  const h = await prepared(t, { runtimeFactory: () => ({ async synthesize() { return wav() }, async dispose() {} }) })
+  const initial = await h.request('review.add', { items: [{ term: 'orchard', meaning: '果园', choices: ['果园', '港口', '山谷', '屋顶'], answerIndex: 0 }] })
+  assert.equal(initial.ok, true)
+  const batch = await h.request('study.batch')
+  const { round } = batch.data
+  const answer = { itemId: round.current.itemId, roundId: round.id, revision: round.revision, presentationId: round.current.id, choice: 1 }
+  const wrong = await h.request('review.answer', answer)
+  assert.equal(wrong.data.correct, false)
+  const reviewFile = join(h.root, 'review/items.json')
+  const before = await fs.readFile(reviewFile)
+  const started = await h.request('speech.synthesize', { text: 'orchard', voice: 'af_heart', rate: 1 })
+  await waitFor(() => h.request('speech.status', { taskId: started.data.taskId }), value => value.data?.phase === 'ready', 'saved-round speech')
+  const audio = await h.request('speech.audio', { taskId: started.data.taskId })
+  assert.equal(audio.httpStatus, 200)
+  assert.equal(audio.headers['content-type'], 'audio/wav')
+  assert.deepEqual(audio.bytes, wav())
+  assert.deepEqual(await fs.readFile(reviewFile), before, 'Host speech cannot rewrite the saved round or receipt')
+  assert.deepEqual((await h.request('study.batch')).data.round, wrong.data.batch.round)
+  const replay = await h.request('review.answer', { ...answer, choice: 0 })
+  assert.equal(replay.data.correct, false, 'replaying the saved identity returns the original effective answer')
+  assert.deepEqual(replay.data.batch.round, wrong.data.batch.round)
+})
+
 test('prepared manual speech returns an owned binary WAV rather than audio in JSON', { skip: realAssets }, async t => {
   let release, entered = false
   const pending = new Promise(resolve => { release = resolve })
