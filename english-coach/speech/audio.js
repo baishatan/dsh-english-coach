@@ -153,6 +153,7 @@ export function createSpeechAudio({ assets, runtimeFactory } = {}) {
       if (disposed) return failure('RUNTIME_DISPOSED', '插件已停止，请重新打开后手动播放。')
       if (invalidation) return failure('speech_assets_changing', '共享朗读资源正在切换；请完成后重新点击播放。')
       expire()
+      if (invalidation) return failure('speech_assets_changing', '共享朗读资源正在切换；请完成后重新点击播放。')
       if (!pages.has(owner) && pages.size >= MAX_PAGES) return failure('speech_capacity', '朗读页面已达上限，请稍后手动重试。')
       const priority = payload.priority ?? 'foreground'
       let page = pages.get(owner)

@@ -317,6 +317,21 @@ test('a new page waits for last-page reclamation and cannot reuse a stopping run
   assert.equal((await h.request('speech.audio', { taskId: first.data.taskId })).httpStatus, 404)
 })
 
+test('lease-triggered reclamation rejects a fresh page until actual shutdown finishes', { skip: realAssets }, async t => {
+  let finishDispose, held = false
+  const h = await prepared(t, { runtimeFactory: () => ({
+    async synthesize() { return wav() },
+    async dispose() { if (held) await new Promise(resolve => { const fallback = setTimeout(resolve, 1000); finishDispose = () => { clearTimeout(fallback); resolve() } }) }
+  }) })
+  const first = await h.request('speech.synthesize', sample)
+  await waitFor(() => h.request('speech.status', { taskId: first.data.taskId }), value => value.data?.phase === 'ready', 'lease owner ready')
+  held = true
+  const now = Date.now(), clock = t.mock.method(Date, 'now', () => now + 15_001)
+  const next = await h.request('speech.synthesize', { ...sample, text: 'New owner at expired lease.' }, { page: 'b'.repeat(48) })
+  assert.equal(next.code, 'speech_assets_changing', 'a lease expiry must recheck admission after it starts asynchronous runtime shutdown')
+  finishDispose(); clock.mock.restore()
+})
+
 test('bounded article prefetch retains delivered foreground audio and yields to queued foreground work', { skip: realAssets }, async t => {
   const entries = [], pending = []
   const h = await prepared(t, { runtimeFactory: () => ({
