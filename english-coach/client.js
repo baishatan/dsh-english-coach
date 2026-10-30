@@ -250,7 +250,8 @@ window.__ModuleLoader__.load({
           method: 'POST',
           headers: { 'content-type': 'application/json', ...(isSpeech ? { 'x-english-coach-speech-session': speechSession } : {}) },
           body: JSON.stringify(payload ?? {}),
-          signal: options.signal
+          signal: options.signal,
+          ...(options.keepalive ? { keepalive: true } : {})
         })
       } catch (error) {
         return { ok: false, code: 'network', message: `连不上插件后台：${error.message ?? error}` }
@@ -526,6 +527,8 @@ window.__ModuleLoader__.load({
         value.controller.abort()
         if (value.pollTimer !== null) clearInterval(value.pollTimer)
         value.pollTimer = null
+        if (value.heartbeatTimer !== null) clearInterval(value.heartbeatTimer)
+        value.heartbeatTimer = null
         if (value.media) {
           value.media.onplaying = value.media.onended = value.media.onerror = null
           try { value.media.pause(); value.media.removeAttribute('src'); value.media.load() } catch { /* released media */ }
@@ -700,7 +703,7 @@ window.__ModuleLoader__.load({
         emit()
       }
       async function localSpeech(text, owner, article = null) {
-        const value = { kind: 'kokoro', owner, article, run: token, controller: new window.AbortController(), taskId: null, media: null, url: null, pollTimer: null, checking: false, deadline: Date.now() + 120000 }
+        const value = { kind: 'kokoro', owner, article, run: token, controller: new window.AbortController(), taskId: null, media: null, url: null, pollTimer: null, heartbeatTimer: null, checking: false, heartbeatChecking: false, deadline: Date.now() + 120000 }
         active = value
         const current = () => active === value && value.run === token && !value.controller.signal.aborted
         const state = (phase, message) => {
@@ -729,6 +732,17 @@ window.__ModuleLoader__.load({
           if (!current()) { if (result.ok && result.data.taskId) void call('speech.cancel', { taskId: result.data.taskId }); return }
           if (!result.ok) { fail(result.message); return }
           value.taskId = result.data.taskId
+          // The same sound owner keeps one lightweight session heartbeat while
+          // visible, including retained paused media. No learning-directory poll
+          // and no timer for an idle page, system source, or unmounted entry.
+          value.resourceGeneration = assets.data.resourceGeneration ?? null
+          value.heartbeatTimer = setInterval(() => {
+            if (!current() || !listeners.size || document.hidden || value.heartbeatChecking) return
+            value.heartbeatChecking = true
+            void call('speech.session.touch', {}, { signal: value.controller.signal })
+              .then(status => { if (current() && status.ok) value.sessionStatus = status.data })
+              .finally(() => { value.heartbeatChecking = false })
+          }, 5000)
           const poll = async initial => {
             if (!current() || value.checking) return
             if (Date.now() >= value.deadline) { fail('本地朗读等待超时，请手动重试。'); return }
@@ -799,15 +813,16 @@ window.__ModuleLoader__.load({
         }
       }
       function suspend() { if (active?.article) pause(active.article); if (active || shortFeedback) { cancel(); emit() } }
-      const hidden = () => { if (document.hidden) suspend() }
+      function releaseSession() { suspend(); void call('speech.session.release', {}, { keepalive: true }) }
+      const hidden = () => { if (document.hidden) releaseSession() }
       return { article, pause, play, restart, seek, save, restore, preferences, configure, selectedVoice, refreshVoices, short, shortState, playLocal,
         stop() { if (active) { suspend(); emit() } },
         releaseArticle(value) { pause(value); if (active?.article === value) { cancel(); emit() } },
         release(owner) { if (active?.owner === owner || shortFeedback?.owner === owner) { cancel(); emit() } },
         subscribe(listener) {
           listeners.add(listener)
-          if (listeners.size === 1) { refreshVoices(); synth()?.addEventListener?.('voiceschanged', refreshVoices); document.addEventListener('visibilitychange', hidden); window.addEventListener('pagehide', suspend); void loadPreferences() }
-          return () => { listeners.delete(listener); if (!listeners.size) { synth()?.removeEventListener?.('voiceschanged', refreshVoices); document.removeEventListener('visibilitychange', hidden); window.removeEventListener('pagehide', suspend); suspend(); cancel() } }
+          if (listeners.size === 1) { refreshVoices(); synth()?.addEventListener?.('voiceschanged', refreshVoices); document.addEventListener('visibilitychange', hidden); window.addEventListener('pagehide', releaseSession); void loadPreferences() }
+          return () => { listeners.delete(listener); if (!listeners.size) { synth()?.removeEventListener?.('voiceschanged', refreshVoices); document.removeEventListener('visibilitychange', hidden); window.removeEventListener('pagehide', releaseSession); releaseSession(); cancel() } }
         }
       }
     })()

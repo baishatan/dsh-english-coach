@@ -58,6 +58,7 @@ export async function mountClient({ request, slot = 'main', setupWindow, layout 
   await act(async () => root.render(Array.isArray(slot)
     ? React.createElement(React.Fragment, null, ...entries.map(({ options, Component }) => React.createElement('div', { key: options.name, 'data-test-slot': options.name }, React.createElement(Component))))
     : React.createElement(entries[0].Component)))
+  let closed = false
   const ui = {
     window: dom.window, container,
     text: () => { const visible = container.cloneNode(true); visible.querySelectorAll('style,script').forEach((node) => node.remove()); return visible.textContent },
@@ -87,6 +88,8 @@ export async function mountClient({ request, slot = 'main', setupWindow, layout 
     async poll() { await act(async () => { for (const { callback } of [...intervals.values()]) callback() }) },
     async flush(callback = () => {}) { await act(callback) },
     async close() {
+      if (closed) return
+      closed = true
       await act(async () => root.unmount())
       dom.window.close()
       for (const [key, descriptor] of previous) {
