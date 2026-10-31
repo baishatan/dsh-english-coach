@@ -14,7 +14,9 @@
     "test": "node --test test/*.test.js",
     "test:core": "node --test test/core.test.js test/learning-experience.test.js test/host-preference.test.js test/translation.test.js",
     "test:ui": "node --test test/*-ui.test.js",
-    "check:package": "node scripts/check-package.mjs"
+    "check:package": "node scripts/check-package.mjs",
+    "check:speech-transport": "node scripts/check-speech-transport.mjs",
+    "check:speech-worker": "node scripts/check-speech-worker.mjs"
   },
   "exports": {
     ".": "./index.js",
