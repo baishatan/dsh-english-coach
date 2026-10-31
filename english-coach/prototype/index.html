@@ -1,0 +1,1286 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>英语教练 · 视图原型</title>
+<!--
+  原型，不是成品。要回答的问题是：
+  「插件主页的视图和排版应该长什么样，才能让学习（尤其是单词）一眼看见、顺手做完？」
+
+  三个结构完全不同的版本，用底部浮条切换（← →），URL 带 ?variant=A|B|C。
+  所有课程、词汇、对话、会话标题和进度均为纯合成示例；不包含个人学习数据或来源原文。
+  双击本文件即可打开，不联网、不构建。
+-->
+<style>
+:root {
+  --bg-base: #f4f4f5;
+  --bg-1: #ffffff;
+  --bg-2: #fafafa;
+  --bg-overlay: #ffffff;
+  --border-1: #e8e8ea;
+  --border-2: #d7d7db;
+  --text-1: #1b1b1f;
+  --text-2: #6d6d76;
+  --text-3: #9b9ba4;
+  --brand: #3f5bd9;
+  --brand-soft: rgba(63, 91, 217, .08);
+  --ok: #17794a;
+  --ok-soft: rgba(23, 121, 74, .07);
+  --err: #b4342a;
+  --err-soft: rgba(180, 52, 42, .07);
+  --warn: #a06400;
+  --side: #efeff1;
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Helvetica Neue", Arial, sans-serif;
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Songti SC", serif;
+  --shadow: 0 1px 2px rgba(16, 18, 27, .04), 0 8px 24px rgba(16, 18, 27, .05);
+}
+html[data-theme="dark"] {
+  --bg-base: #151517;
+  --bg-1: #1d1d20;
+  --bg-2: #232327;
+  --bg-overlay: #242428;
+  --border-1: #2c2c31;
+  --border-2: #3a3a41;
+  --text-1: #ececf0;
+  --text-2: #a1a1aa;
+  --text-3: #77777f;
+  --brand: #8296ff;
+  --brand-soft: rgba(130, 150, 255, .12);
+  --ok: #4cc38a;
+  --ok-soft: rgba(76, 195, 138, .1);
+  --err: #f0736a;
+  --err-soft: rgba(240, 115, 106, .1);
+  --warn: #d9a441;
+  --side: #101012;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 24px rgba(0, 0, 0, .28);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg-base);
+  color: var(--text-1);
+  font: 13.5px/1.62 var(--font);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+button { font: inherit; color: inherit; }
+html[data-theme="dark"] .btn.primary,
+html[data-theme="dark"] .pill-btn .count,
+html[data-theme="dark"] .choice[data-state="correct"] .key,
+html[data-theme="dark"] .choice[data-state="wrong"] .key { color: #101014; }
+.en { font-family: var(--serif); }
+.muted { color: var(--text-2); }
+.faint { color: var(--text-3); }
+.num { font-variant-numeric: tabular-nums; }
+
+/* ---------------------------------------------------------- mock app shell */
+.app { display: flex; min-height: 100vh; }
+.side {
+  width: 264px; flex: none; height: 100vh; position: sticky; top: 0;
+  background: var(--side); border-right: 1px solid var(--border-1);
+  padding: 16px 12px 14px; display: flex; flex-direction: column; gap: 3px;
+}
+.brand { display: flex; align-items: center; gap: 9px; padding: 4px 8px 16px; font-weight: 600; font-size: 13.5px; }
+.brand .mark {
+  width: 22px; height: 22px; border-radius: 7px; background: var(--text-1); color: var(--side);
+  display: grid; place-items: center; font-size: 11px; font-weight: 700;
+}
+.side .hint { font-size: 11px; color: var(--text-3); letter-spacing: .06em; padding: 10px 9px 5px; }
+.nav {
+  display: flex; align-items: center; gap: 9px; padding: 6px 9px; border-radius: 8px;
+  font-size: 12.8px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.nav .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); flex: none; opacity: .5; }
+.side .grow { flex: 1; }
+.panel-entry {
+  display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 8px;
+  font-size: 12.8px; color: var(--text-1); background: var(--bg-1);
+  border: 1px solid var(--border-1); box-shadow: 0 1px 2px rgba(0, 0, 0, .03);
+}
+.panel-entry .ico {
+  width: 20px; height: 20px; border-radius: 6px; background: var(--brand-soft); color: var(--brand);
+  display: grid; place-items: center; font-size: 10px; font-weight: 700; flex: none;
+}
+.main { flex: 1; min-width: 0; }
+
+/* --------------------------------------------------------------- primitives */
+.page { padding: 30px 34px 110px; margin: 0 auto; }
+.page-a { max-width: 800px; }
+.page-b { max-width: 1060px; }
+.page-c { max-width: 688px; min-height: 100vh; display: flex; flex-direction: column; padding-bottom: 96px; }
+.page-c .c-mid { margin: auto 0; padding-top: 20px; }
+h1, h2, h3, p { margin: 0; }
+h1 { font-size: 23px; font-weight: 600; letter-spacing: -.02em; line-height: 1.3; }
+h2 { font-size: 14.5px; font-weight: 600; letter-spacing: -.01em; }
+.eyebrow { font-size: 11.5px; letter-spacing: .07em; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.card {
+  background: var(--bg-1); border: 1px solid var(--border-1); border-radius: 14px;
+  padding: 18px 20px; box-shadow: var(--shadow);
+}
+.card + .card, .stack > * + * { margin-top: 14px; }
+.card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+.card-head .sub { font-size: 12px; color: var(--text-3); margin-left: auto; font-variant-numeric: tabular-nums; }
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  border: 1px solid transparent; background: var(--bg-2); color: var(--text-1);
+  padding: 7px 13px; border-radius: 8px; font-size: 12.8px; cursor: pointer;
+  transition: background .12s ease, border-color .12s ease, opacity .12s ease;
+}
+.btn:hover { background: var(--border-1); }
+.btn.primary { background: var(--brand); color: #fff; }
+.btn.primary:hover { filter: brightness(1.06); }
+.btn.ghost { background: transparent; border-color: var(--border-2); color: var(--text-1); }
+.btn.ghost:hover { background: var(--bg-2); }
+.btn[disabled] { opacity: .45; cursor: default; }
+.btn.sm { padding: 5px 10px; font-size: 12px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--border-1); background: var(--bg-2); color: var(--text-2); font-size: 11.5px;
+}
+.chip.brand { color: var(--brand); border-color: transparent; background: var(--brand-soft); }
+.chip.ok { color: var(--ok); border-color: transparent; background: var(--ok-soft); }
+.dots { display: inline-flex; gap: 3px; align-items: center; }
+.dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--border-2); }
+.dots i.on { background: var(--brand); }
+.hair { height: 1px; background: var(--border-1); margin: 14px 0; border: 0; }
+.ring {
+  width: 52px; height: 52px; border-radius: 50%; flex: none; display: grid; place-items: center;
+  background: conic-gradient(var(--brand) calc(var(--p) * 1%), var(--border-1) 0);
+}
+.ring > span {
+  width: 40px; height: 40px; border-radius: 50%; background: var(--bg-1);
+  display: grid; place-items: center; font-size: 11.5px; color: var(--text-2); font-variant-numeric: tabular-nums;
+}
+.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+.stat b { display: block; font-size: 22px; font-weight: 600; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.stat span { font-size: 11.5px; color: var(--text-2); }
+
+/* ------------------------------------------------------------------ lesson */
+.lesson-title { font-size: 16px; font-weight: 600; letter-spacing: -.01em; line-height: 1.45; }
+.lesson-sum { margin-top: 5px; color: var(--text-2); font-size: 12.8px; }
+.items { margin-top: 12px; }
+.li {
+  display: grid; grid-template-columns: 40px minmax(0, 1fr) auto 18px; gap: 12px;
+  align-items: center; padding: 9px 0; border-top: 1px solid var(--border-1);
+}
+.li:first-child { border-top: 0; }
+.li .type {
+  font-size: 10.5px; color: var(--text-2); background: var(--bg-2); border: 1px solid var(--border-1);
+  border-radius: 6px; padding: 2px 0; text-align: center; letter-spacing: .02em;
+}
+.li .name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.li .min { font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.li .check {
+  width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--border-2);
+  display: grid; place-items: center; font-size: 10px; color: transparent;
+}
+.li[data-done="true"] .name { color: var(--text-3); }
+.li[data-done="true"] .check { border-color: var(--ok); background: var(--ok-soft); color: var(--ok); }
+.lesson-foot { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
+
+/* ------------------------------------------------------------------- words */
+.word-row {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  padding: 10px 0; border: 0; border-top: 1px solid var(--border-1); background: none; cursor: pointer;
+}
+.word-row:first-child { border-top: 0; }
+.word-row:hover .term { color: var(--brand); }
+.word-row .term { font-size: 15.5px; line-height: 1.35; transition: color .12s ease; }
+.word-row .kind { font-size: 10.5px; color: var(--text-3); border: 1px solid var(--border-1); border-radius: 5px; padding: 1px 5px; flex: none; }
+.word-row .right { margin-left: auto; display: flex; align-items: center; gap: 10px; flex: none; }
+.word-row .due { font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+
+.wordcard { }
+.wordcard .term { font-size: clamp(26px, 3.2vw, 33px); line-height: 1.22; letter-spacing: -.015em; }
+.wordcard .prompt { margin: 14px 0 10px; font-size: 12px; color: var(--text-3); }
+.wordcard .meta { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.choices { display: grid; gap: 8px; }
+.choice {
+  display: flex; align-items: center; gap: 10px; text-align: left; width: 100%;
+  padding: 9px 11px; border-radius: 9px; border: 1px solid var(--border-1);
+  background: var(--bg-1); cursor: pointer; font-size: 13.2px; line-height: 1.45;
+  transition: border-color .12s ease, background .12s ease, opacity .12s ease;
+}
+.choice:hover:not([disabled]) { border-color: var(--border-2); background: var(--bg-2); }
+.choice .key {
+  width: 19px; height: 19px; border-radius: 5px; border: 1px solid var(--border-1);
+  background: var(--bg-2); color: var(--text-3); display: grid; place-items: center;
+  font-size: 10.5px; flex: none; font-variant-numeric: tabular-nums;
+}
+.choice[data-state="correct"] { border-color: var(--ok); background: var(--ok-soft); }
+.choice[data-state="correct"] .key { background: var(--ok); border-color: var(--ok); color: #fff; }
+.choice[data-state="wrong"] { border-color: var(--err); background: var(--err-soft); }
+.choice[data-state="wrong"] .key { background: var(--err); border-color: var(--err); color: #fff; }
+.choice[data-state="dim"] { opacity: .5; }
+.feedback { margin-top: 13px; padding-top: 12px; border-top: 1px dashed var(--border-1); }
+.feedback .verdict { font-size: 12.5px; font-weight: 600; color: var(--ok); }
+.feedback[data-tone="err"] .verdict { color: var(--err); }
+.feedback .meaning { font-size: 14px; margin-top: 3px; }
+.feedback .example { margin-top: 6px; font-size: 14px; color: var(--text-2); }
+.feedback .note { margin-top: 7px; font-size: 12.3px; color: var(--text-2); padding-left: 9px; border-left: 2px solid var(--border-1); }
+.feedback .acts { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.kbd-hint { font-size: 11px; color: var(--text-3); margin-left: auto; }
+.done-card { text-align: center; padding: 34px 24px 30px; }
+.done-mark {
+  width: 42px; height: 42px; border-radius: 50%; background: var(--ok-soft); color: var(--ok);
+  display: grid; place-items: center; margin: 0 auto 12px; font-size: 18px;
+}
+.done-card h2 { font-size: 17px; }
+.done-card .acts { display: flex; gap: 8px; justify-content: center; margin-top: 16px; }
+
+/* ------------------------------------------------------------- variant A */
+.a-head { display: flex; align-items: flex-start; gap: 20px; margin-bottom: 24px; }
+.a-head h1 { margin: 4px 0 6px; }
+.a-head .lede { color: var(--text-2); font-size: 12.8px; }
+.a-head .ring-wrap { margin-left: auto; display: flex; align-items: center; gap: 10px; flex: none; padding-top: 6px; }
+.a-head .ring-wrap .cap { font-size: 11.5px; color: var(--text-3); line-height: 1.35; text-align: right; }
+.sec { margin-top: 26px; }
+.sec-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.sec-head .sub { font-size: 11.5px; color: var(--text-3); }
+.sec-head .btn { margin-left: auto; }
+.a-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
+.a-pair .card + .card { margin-top: 0; }
+.goal { display: flex; align-items: flex-start; gap: 9px; padding: 6px 0; font-size: 12.8px; color: var(--text-1); }
+.goal .box {
+  width: 15px; height: 15px; border-radius: 4px; border: 1px solid var(--border-2); flex: none; margin-top: 2px;
+  display: grid; place-items: center; font-size: 9px; color: transparent;
+}
+.goal[data-done="true"] { color: var(--text-3); }
+.goal[data-done="true"] .box { background: var(--brand); border-color: var(--brand); color: #fff; }
+.phase-name { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+.phase-goal { font-size: 12.5px; color: var(--text-2); }
+.settings-link { display: flex; gap: 14px; margin-top: 28px; font-size: 12px; color: var(--text-3); }
+.settings-link span { cursor: default; }
+
+/* ------------------------------------------------------------- variant B */
+.b-head { display: flex; align-items: center; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; }
+.b-head h1 { font-size: 17px; letter-spacing: -.01em; }
+.seg { display: inline-flex; background: var(--bg-2); border: 1px solid var(--border-1); border-radius: 9px; padding: 2px; }
+.seg button {
+  border: 0; background: none; padding: 5px 12px; border-radius: 7px; font-size: 12.3px;
+  color: var(--text-2); cursor: pointer;
+}
+.seg button[data-on="true"] { background: var(--bg-1); color: var(--text-1); box-shadow: 0 1px 2px rgba(0, 0, 0, .07); }
+.b-head .status { margin-left: auto; display: flex; align-items: center; gap: 14px; font-size: 12px; color: var(--text-2); }
+.b-head .status b { color: var(--text-1); font-weight: 600; font-variant-numeric: tabular-nums; }
+.b-grid { display: grid; grid-template-columns: minmax(0, 1fr) 336px; gap: 16px; align-items: start; }
+.b-side > * + * { margin-top: 14px; }
+.b-side .wordcard .term { font-size: 25px; }
+.lib-filter { display: flex; gap: 6px; margin: 10px 0 4px; }
+.lib-filter button {
+  border: 1px solid var(--border-1); background: var(--bg-1); color: var(--text-2);
+  border-radius: 999px; padding: 3px 10px; font-size: 11.5px; cursor: pointer;
+}
+.lib-filter button[data-on="true"] { background: var(--text-1); border-color: var(--text-1); color: var(--bg-1); }
+.lib-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--border-1); }
+.lib-row:first-of-type { border-top: 0; }
+.lib-row .term { font-size: 14px; flex: 1 1 auto; min-width: 0; white-space: normal; line-height: 1.35; }
+.lib-row .kind { flex: none; white-space: nowrap; }
+.lib-row .right { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: none; }
+.lib-row .due { font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; width: 52px; text-align: right; }
+.timeline { display: grid; gap: 0; }
+.step { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 12px; padding: 12px 0; border-top: 1px solid var(--border-1); }
+.step:first-child { border-top: 0; }
+.step .mark {
+  width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--border-2);
+  display: grid; place-items: center; font-size: 10px; color: var(--text-3); margin-top: 1px;
+}
+.step[data-on="true"] .mark { border-color: var(--brand); background: var(--brand-soft); color: var(--brand); }
+.step .name { font-size: 13.2px; font-weight: 600; }
+.step[data-on="true"] .name { color: var(--brand); }
+.step .goal { font-size: 12.3px; color: var(--text-2); margin-top: 2px; }
+.step .focus { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.curve-empty {
+  height: 96px; border-radius: 10px; border: 1px dashed var(--border-2); display: grid; place-items: center;
+  color: var(--text-3); font-size: 12px; margin-top: 10px;
+}
+.weak { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 12.5px; }
+.weak .bar { flex: 1; height: 4px; border-radius: 2px; background: var(--border-1); overflow: hidden; }
+.weak .bar i { display: block; height: 100%; background: var(--warn); }
+
+/* ------------------------------------------------------------- variant C */
+.c-head { display: flex; align-items: flex-start; gap: 14px; }
+.c-head h1 { margin-top: 3px; font-size: 19px; }
+.c-head .acts { margin-left: auto; display: flex; gap: 8px; }
+.flow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 20px 0 6px; }
+.flow-pill {
+  display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px;
+  border: 1px solid var(--border-1); background: var(--bg-1); color: var(--text-2);
+  font-size: 12.3px; cursor: pointer;
+}
+.flow-pill b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.flow-pill[data-on="true"] { border-color: var(--brand); background: var(--brand-soft); color: var(--brand); }
+.flow .done-chip { margin-left: auto; }
+.c-focus .card { padding: 24px 24px 20px; }
+.c-foot { margin: 18px 0 0; display: flex; align-items: center; gap: 10px; font-size: 11.5px; color: var(--text-3); }
+.c-foot .right { margin-left: auto; }
+.listen-line { display: flex; gap: 10px; padding: 7px 0; font-size: 13.4px; line-height: 1.55; border-top: 1px dashed var(--border-1); }
+.listen-line:first-of-type { border-top: 0; }
+.listen-line .spk { flex: none; width: 38px; font-size: 10.5px; color: var(--text-3); padding-top: 3px; letter-spacing: .04em; }
+.listen-line .say { color: var(--text-1); }
+.order-words { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
+.order-words span {
+  padding: 5px 10px; border-radius: 7px; background: var(--bg-2); border: 1px solid var(--border-1); font-size: 13px;
+}
+.overview-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--border-1); }
+.overview-row:first-child { border-top: 0; }
+.overview-row .st { margin-left: auto; font-size: 11.5px; }
+.overview-row[data-done="true"] .name { color: var(--text-3); }
+.overview-row[data-done="true"] .st { color: var(--ok); }
+
+/* -------------------------------------------------------------------- sheet */
+.sheet-back {
+  position: fixed; inset: 0; z-index: 70; background: rgba(10, 10, 12, .34);
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+  -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);
+}
+.sheet {
+  width: min(460px, 100%); max-height: calc(100vh - 76px); overflow: auto;
+  background: var(--bg-1); border: 1px solid var(--border-1); border-radius: 16px;
+  padding: 18px 20px 20px; box-shadow: 0 24px 80px rgba(0, 0, 0, .3);
+}
+.sheet-head { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 14px; }
+.sheet-head .btn { margin-left: auto; }
+
+/* --------------------------------------------------------------------- pill */
+.pill { position: fixed; right: 24px; bottom: 22px; z-index: 60; }
+.pill-btn {
+  display: flex; align-items: center; gap: 8px; padding: 9px 14px 9px 12px; border-radius: 999px;
+  background: var(--bg-overlay); border: 1px solid var(--border-2); box-shadow: var(--shadow);
+  cursor: pointer; font-size: 12.5px;
+}
+.pill-btn .count {
+  min-width: 19px; height: 19px; padding: 0 5px; border-radius: 999px; background: var(--brand); color: #fff;
+  display: grid; place-items: center; font-size: 10.5px; font-variant-numeric: tabular-nums;
+}
+.pill-pop {
+  position: absolute; right: 0; bottom: 48px; width: 306px; padding: 15px;
+  background: var(--bg-overlay); border: 1px solid var(--border-1); border-radius: 14px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, .16);
+}
+.pill-pop .pp-head { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--text-3); }
+.pill-pop .pp-head b { color: var(--text-1); font-size: 12.5px; }
+.pill-pop .pp-term { font-size: 24px; margin: 12px 0 2px; letter-spacing: -.01em; }
+.pill-pop .pp-hint { font-size: 12px; color: var(--text-2); margin-top: 6px; }
+.pill-pop .pp-acts { display: flex; gap: 8px; margin-top: 14px; }
+
+/* ----------------------------------------------------------------- switcher */
+.switcher {
+  position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 90;
+  display: flex; align-items: center; gap: 2px; padding: 5px 6px; border-radius: 999px;
+  background: #0e0e10; color: #f4f4f5; box-shadow: 0 8px 30px rgba(0, 0, 0, .3);
+  font-size: 12px; white-space: nowrap;
+}
+.switcher button {
+  border: 0; background: transparent; color: #f4f4f5; width: 26px; height: 26px;
+  border-radius: 50%; display: grid; place-items: center; cursor: pointer; font-size: 13px;
+}
+.switcher button:hover { background: #26262b; }
+.switcher .label { padding: 0 9px; display: flex; align-items: baseline; gap: 7px; }
+.switcher .label b { font-weight: 600; }
+.switcher .label span { color: #9a9aa2; font-size: 11.5px; }
+.switcher .sep { width: 1px; height: 16px; background: #2e2e34; margin: 0 3px; }
+.switcher .tag { color: #7d7d86; font-size: 10.5px; padding-right: 6px; letter-spacing: .02em; }
+
+@media (max-width: 1100px) {
+  .side { display: none; }
+  .page { padding: 24px 20px 110px; }
+  .b-grid { grid-template-columns: 1fr; }
+  .a-pair { grid-template-columns: 1fr; }
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand"><span class="mark">D</span>DeepSeek</div>
+    <div class="hint">最近</div>
+    <div class="nav"><span class="dot"></span>示例会话：纸模型配色</div>
+    <div class="nav"><span class="dot"></span>示例会话：展台摆放</div>
+    <div class="nav"><span class="dot"></span>示例会话：合作小计划</div>
+    <div class="grow"></div>
+    <div class="panel-entry"><span class="ico">英</span>英语教练</div>
+    <div class="nav" style="margin-top:4px"><span class="dot"></span>设置</div>
+  </aside>
+  <main class="main" id="root"></main>
+</div>
+
+<div class="pill" id="pill"></div>
+
+<div class="switcher" role="toolbar" aria-label="原型版本切换">
+  <button data-act="prev" title="上一个版本（←）">←</button>
+  <div class="label"><b id="sw-id">A</b><span id="sw-name">学习日报</span></div>
+  <button data-act="variant-next" title="下一个版本（→）">→</button>
+  <span class="sep"></span>
+  <button data-act="theme" title="切换明暗">◐</button>
+  <span class="tag">原型 · 示例数据</span>
+</div>
+
+<script>
+/* ------------------------------------------------------------------ 数据 */
+const DATA = {
+  "date": "2030 年 4 月 16 日 · 周二（合成示例）",
+  "band": "中级",
+  "target": "中高级",
+  "minutes": 30,
+  "streak": 3,
+  "lesson": {
+    "title": "手工展台：摆放模型与分工合作",
+    "summary": "合成情境：读一段模型展台的布置说明，再听两位虚构角色商量颜色与分工。",
+    "items": [
+      {
+        "id": "reading",
+        "type": "阅读",
+        "name": "一张虚构展台的布置说明",
+        "min": 6,
+        "done": true
+      },
+      {
+        "id": "expressions",
+        "type": "表达",
+        "name": "三个描述合作步骤的示例表达",
+        "min": 6,
+        "done": true
+      },
+      {
+        "id": "listening",
+        "type": "听力",
+        "name": "虚构角色商量模型的颜色",
+        "min": 10,
+        "done": false
+      },
+      {
+        "id": "quiz",
+        "type": "测验",
+        "name": "合成情境的理解题",
+        "min": 5,
+        "done": false
+      },
+      {
+        "id": "ordering",
+        "type": "排序",
+        "name": "拼出展台描述句",
+        "min": 3,
+        "done": false
+      }
+    ]
+  },
+  "words": [
+    {
+      "id": "demo-w1",
+      "term": "compact",
+      "kind": "单词",
+      "box": 2,
+      "due": "今天",
+      "days": 0,
+      "status": "learning",
+      "meaning": "小巧紧凑的",
+      "example": "The compact model fits inside a paper box.",
+      "note": "形容物品小巧、占用空间少；这里描述虚构的手工模型。",
+      "choices": [
+        "容易破碎的",
+        "小巧紧凑的",
+        "颜色明亮的",
+        "需要充电的"
+      ],
+      "answer": 1
+    },
+    {
+      "id": "demo-w2",
+      "term": "set aside",
+      "kind": "表达",
+      "box": 2,
+      "due": "今天",
+      "days": 0,
+      "status": "learning",
+      "meaning": "留出；放在一旁",
+      "example": "We set aside a small tray for spare buttons.",
+      "note": "set aside 可接时间、空间或物品；本句指留出一个小托盘。",
+      "choices": [
+        "立刻丢弃",
+        "仔细比较",
+        "留出；放在一旁",
+        "反复测量"
+      ],
+      "answer": 2
+    },
+    {
+      "id": "demo-w3",
+      "term": "take turns",
+      "kind": "表达",
+      "box": 1,
+      "due": "今天",
+      "days": 0,
+      "status": "learning",
+      "meaning": "轮流",
+      "example": "The two toy robots take turns carrying the flag.",
+      "note": "take turns doing something 表示轮流做某事。",
+      "choices": [
+        "同时离开",
+        "改变方向",
+        "提前结束",
+        "轮流"
+      ],
+      "answer": 3
+    },
+    {
+      "id": "demo-w4",
+      "term": "arrange",
+      "kind": "单词",
+      "box": 1,
+      "due": "今天",
+      "days": 0,
+      "status": "learning",
+      "meaning": "排列；布置",
+      "example": "Arrange the wooden stars in a circle.",
+      "note": "arrange 强调有目的地安排顺序或位置。",
+      "choices": [
+        "排列；布置",
+        "打碎；拆除",
+        "借出；归还",
+        "遮盖；隐藏"
+      ],
+      "answer": 0
+    },
+    {
+      "id": "demo-w5",
+      "term": "sketch",
+      "kind": "单词",
+      "box": 3,
+      "due": "4 月 20 日",
+      "days": 4,
+      "status": "learning",
+      "meaning": "草图；画草图",
+      "example": "A quick sketch shows where the paper trees will stand.",
+      "note": "草图只标出主要形状，不必包含每个细节。",
+      "choices": [
+        "草图；画草图",
+        "工具箱",
+        "丝带",
+        "平衡木"
+      ],
+      "answer": 0
+    },
+    {
+      "id": "demo-w6",
+      "term": "outline",
+      "kind": "单词",
+      "box": 2,
+      "due": "4 月 18 日",
+      "days": 2,
+      "status": "learning",
+      "meaning": "轮廓；概述",
+      "example": "The outline of a tiny castle appears on the card.",
+      "note": "作名词时可以指形状轮廓，也可以指内容提纲。",
+      "choices": [
+        "表面纹理",
+        "轮廓；概述",
+        "底部支架",
+        "零件总数"
+      ],
+      "answer": 1
+    },
+    {
+      "id": "demo-w7",
+      "term": "portable",
+      "kind": "单词",
+      "box": 4,
+      "due": "5 月 15 日",
+      "days": 29,
+      "status": "mastered",
+      "meaning": "便携的",
+      "example": "A portable stage folds into a yellow suitcase.",
+      "note": "portable 描述便于携带或移动的物品。",
+      "choices": [
+        "便携的",
+        "透明的",
+        "昂贵的",
+        "倾斜的"
+      ],
+      "answer": 0
+    },
+    {
+      "id": "demo-w8",
+      "term": "reusable",
+      "kind": "单词",
+      "box": 4,
+      "due": "5 月 15 日",
+      "days": 29,
+      "status": "mastered",
+      "meaning": "可重复使用的",
+      "example": "The reusable labels have pictures of small planets.",
+      "note": "re- 表示再次，usable 表示可使用的。",
+      "choices": [
+        "可重复使用的",
+        "只能折叠的",
+        "需要翻译的",
+        "尚未命名的"
+      ],
+      "answer": 0
+    },
+    {
+      "id": "demo-w9",
+      "term": "in advance",
+      "kind": "表达",
+      "box": 3,
+      "due": "4 月 21 日",
+      "days": 5,
+      "status": "learning",
+      "meaning": "提前",
+      "example": "The imaginary helpers cut the paper shapes in advance.",
+      "note": "表示某事在预定活动之前完成。",
+      "choices": [
+        "提前",
+        "偶尔",
+        "逐个",
+        "原地"
+      ],
+      "answer": 0
+    },
+    {
+      "id": "demo-w10",
+      "term": "checklist",
+      "kind": "单词",
+      "box": 4,
+      "due": "4 月 29 日",
+      "days": 13,
+      "status": "mastered",
+      "meaning": "核对清单",
+      "example": "Our pretend checklist includes glue, paper, and string.",
+      "note": "清单中的项目用于逐一核对。",
+      "choices": [
+        "核对清单",
+        "展示台",
+        "调色盘",
+        "说明标签"
+      ],
+      "answer": 0
+    }
+  ],
+  "weekly": [
+    {
+      "text": "用虚构物品写一句位置说明",
+      "done": true
+    },
+    {
+      "text": "给示例对话里的轮流发言做标记",
+      "done": false
+    },
+    {
+      "text": "把合成展台说明改写成三条步骤",
+      "done": false
+    }
+  ],
+  "phase": {
+    "name": "示例阶段一：描述小物件",
+    "goal": "在虚构手工情境中练习描述位置、顺序和合作步骤。",
+    "focus": [
+      "描述模型的位置",
+      "区分两个虚构说话者",
+      "复述布置步骤"
+    ]
+  },
+  "phases": [
+    {
+      "name": "示例阶段一：描述小物件",
+      "goal": "练习说清楚模型的形状与位置。",
+      "band": "中级",
+      "current": true
+    },
+    {
+      "name": "示例阶段二：说明小计划",
+      "goal": "练习把虚构任务拆成连续步骤。",
+      "band": "中高级"
+    },
+    {
+      "name": "示例阶段三：比较小方案",
+      "goal": "练习比较两套展台布置并说明理由。",
+      "band": "中高级"
+    }
+  ],
+  "progress": {
+    "completedDays": 6,
+    "streak": 3,
+    "mastered": 3,
+    "learning": 7,
+    "due": 4,
+    "points": 2
+  },
+  "weak": [
+    {
+      "skill": "词义",
+      "missed": 1
+    },
+    {
+      "skill": "顺序",
+      "missed": 3
+    },
+    {
+      "skill": "听力",
+      "missed": 1
+    }
+  ],
+  "listening": [
+    {
+      "spk": "PIP",
+      "say": "The model bridge is ready, but we still need to choose a color."
+    },
+    {
+      "spk": "NORI",
+      "say": "Let us paint it blue and place it beside the paper garden."
+    },
+    {
+      "spk": "PIP",
+      "say": "Good idea. We can take turns adding the tiny flags."
+    }
+  ],
+  "quiz": {
+    "prompt": "Which color do the speakers choose for the model bridge?",
+    "choices": [
+      "Bright orange.",
+      "Blue.",
+      "Silver.",
+      "Dark green."
+    ],
+    "answer": 1,
+    "explanation": "合成对话中 NORI 建议把模型桥涂成蓝色，因此选择 Blue。"
+  },
+  "ordering": {
+    "words": [
+      "blue",
+      "stands",
+      "model",
+      "a",
+      "The",
+      "lamp.",
+      "beside",
+      "tiny"
+    ],
+    "answer": "The tiny model stands beside a blue lamp.",
+    "hint": "先放主语 The tiny model，再放动词 stands 和表示位置的部分。"
+  }
+}
+
+const DUE = DATA.words.filter((w) => w.due === '今天')
+const REMAINING = DATA.lesson.items.filter((i) => !i.done)
+const REMAINING_MIN = REMAINING.reduce((sum, i) => sum + i.min, 0)
+
+/* ----------------------------------------------------------------- state */
+const VARIANTS = [
+  { id: 'A', name: '学习日报' },
+  { id: 'B', name: '工作台' },
+  { id: 'C', name: '专注模式' }
+]
+const S = {
+  variant: 'A',
+  theme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
+  tab: 'today',
+  filter: 'all',
+  sheet: false,
+  pill: false,
+  flow: 0,
+  overview: false,
+  orderReveal: false,
+  quiz: { picked: null },
+  session: { i: 0, picked: null, correct: 0, finished: false }
+}
+
+/* ---------------------------------------------------------------- helpers */
+const esc = (value) => String(value ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c])
+const root = document.getElementById('root')
+const pillHost = document.getElementById('pill')
+
+function currentWord() {
+  if (S.session.finished) return null
+  return DUE[S.session.i] ?? null
+}
+function boxDots(box) {
+  return '<span class="dots">' + [1, 2, 3, 4, 5].map((n) => `<i class="${n <= box ? 'on' : ''}"></i>`).join('') + '</span>'
+}
+function wordCard() {
+  const word = currentWord()
+  if (!word) {
+    const total = DUE.length
+    return `<div class="card done-card">
+      <div class="done-mark">✓</div>
+      <h2>今天这 ${total} 个词过完了</h2>
+      <div class="muted" style="margin-top:6px">答对 ${S.session.correct} 个。明天这时候会再见到它们，答对的会推得更远。</div>
+      <div class="acts">
+        <button class="btn ghost" data-act="restart">再练一遍</button>
+        <button class="btn primary" data-act="continue">接着做听力</button>
+      </div>
+    </div>`
+  }
+  const picked = S.session.picked
+  const answered = picked !== null
+  const right = answered && picked === word.answer
+  const choices = word.choices.map((text, index) => {
+    let state = ''
+    if (answered) state = index === word.answer ? 'correct' : index === picked ? 'wrong' : 'dim'
+    return `<button class="choice" data-act="pick" data-i="${index}" data-state="${state}" ${answered ? 'disabled' : ''}>
+      <span class="key">${index + 1}</span><span>${esc(text)}</span></button>`
+  }).join('')
+  return `<div class="wordcard">
+    <div class="meta">
+      <span class="chip">${word.kind}</span>${boxDots(word.box)}
+      <span class="faint" style="font-size:11.5px">第 ${S.session.i + 1} / ${DUE.length} 个</span>
+    </div>
+    <div class="term en">${esc(word.term)}</div>
+    <div class="prompt">选一个最接近的意思</div>
+    <div class="choices">${choices}</div>
+    ${answered ? `<div class="feedback" data-tone="${right ? 'ok' : 'err'}">
+      <div class="verdict">${right ? '答对了' : '再看一眼'}</div>
+      <div class="meaning">${esc(word.meaning)}</div>
+      ${word.example ? `<div class="example en">${esc(word.example)}</div>` : ''}
+      ${word.note ? `<div class="note">${esc(word.note)}</div>` : ''}
+      <div class="acts">
+        <button class="btn primary" data-act="next">${S.session.i + 1 >= DUE.length ? '完成复习' : '下一个'}</button>
+        <span class="kbd-hint">按 1–4 选择 · ↵ 继续</span>
+      </div>
+    </div>` : '<div class="kbd-hint" style="margin-top:10px">按 1–4 直接选</div>'}
+  </div>`
+}
+
+/* ------------------------------------------------------------- variant A */
+function renderA() {
+  const done = DATA.lesson.items.filter((i) => i.done).length
+  const items = DATA.lesson.items.map((item) => `<div class="li" data-done="${item.done}">
+      <span class="type">${item.type}</span>
+      <span class="name">${esc(item.name)}</span>
+      <span class="min">${item.min}′</span>
+      <span class="check">✓</span>
+    </div>`).join('')
+  const words = DUE.map((word, index) => `<button class="word-row" data-act="start" data-i="${index}">
+      <span class="term en">${esc(word.term)}</span>
+      <span class="kind">${word.kind}</span>
+      <span class="right">${boxDots(word.box)}<span class="due">${word.due}</span></span>
+    </button>`).join('')
+  const goals = DATA.weekly.map((goal) => `<div class="goal" data-done="${goal.done}">
+      <span class="box">✓</span><span>${esc(goal.text)}</span></div>`).join('')
+  const focus = DATA.phase.focus.map((text) => `<span class="chip">${esc(text)}</span>`).join(' ')
+
+  return `<div class="page page-a">
+    <header class="a-head">
+      <div>
+        <div class="eyebrow">${DATA.date}</div>
+        <h1>今天的三十分钟</h1>
+        <div class="lede">档位「${DATA.band}」 · 目标「${DATA.target}」 · 每天 ${DATA.minutes} 分钟</div>
+      </div>
+      <div class="ring-wrap">
+        <div class="cap">今天已完成<br><b style="color:var(--text-1)">${done} / ${DATA.lesson.items.length} 项</b></div>
+        <span class="ring" style="--p:${Math.round((done / DATA.lesson.items.length) * 100)}"><span>${Math.round((done / DATA.lesson.items.length) * 100)}%</span></span>
+      </div>
+    </header>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>今天的课</h2>
+        <span class="sub">还剩 ${REMAINING.length} 项 · 约 ${REMAINING_MIN} 分钟</span>
+      </div>
+      <div class="lesson-title">${esc(DATA.lesson.title)}</div>
+      <div class="lesson-sum">${esc(DATA.lesson.summary)}</div>
+      <div class="items">${items}</div>
+      <div class="lesson-foot">
+        <button class="btn primary" data-act="noop">继续这一课 · 听力 ${REMAINING[0].min} 分钟</button>
+        <button class="btn ghost" data-act="noop">看全文</button>
+      </div>
+    </section>
+
+    <div class="sec">
+      <div class="sec-head">
+        <h2>今天要复习的词</h2>
+        <span class="sub">${DUE.length} 个 · 约 ${DUE.length} 分钟</span>
+        <button class="btn primary sm" data-act="sheet">开始复习</button>
+      </div>
+      <div class="card" style="padding-top:12px;padding-bottom:12px">${words}</div>
+    </div>
+
+    <div class="a-pair">
+      <section class="card">
+        <h2>本周目标</h2>
+        <div style="margin-top:8px">${goals}</div>
+      </section>
+      <section class="card">
+        <h2>现在在哪</h2>
+        <div class="phase-name" style="margin-top:8px">${esc(DATA.phase.name)}</div>
+        <div class="phase-goal">${esc(DATA.phase.goal)}</div>
+        <div class="focus" style="display:flex;flex-wrap:wrap;gap:5px;margin-top:10px">${focus}</div>
+      </section>
+    </div>
+
+    <div class="sec">
+      <div class="sec-head"><h2>进度</h2><span class="sub">按「1 / 7 / 30 天都答对」算掌握</span></div>
+      <div class="card">
+        <div class="stats">
+          <div class="stat"><b>${DATA.progress.completedDays}</b><span>完成天数</span></div>
+          <div class="stat"><b>${DATA.progress.streak}</b><span>连续天数</span></div>
+          <div class="stat"><b>${DATA.progress.mastered}</b><span>已掌握</span></div>
+          <div class="stat"><b>${DATA.progress.learning}</b><span>在学</span></div>
+        </div>
+        <hr class="hair">
+        <div class="faint" style="font-size:12px">水平曲线要两次测评才有。最近一次：${DATA.band}。</div>
+      </div>
+    </div>
+
+    <div class="settings-link"><span>设置</span><span>数据目录</span><span>重新生成大纲</span></div>
+
+    ${S.sheet ? `<div class="sheet-back" data-act="sheet-close">
+      <div class="sheet" data-act="sheet-body">
+        <div class="sheet-head">
+          <div><div class="eyebrow">今日复习</div><h2 style="margin-top:2px">${DUE.length} 个词，两三分钟</h2></div>
+          <button class="btn ghost sm" data-act="sheet-close">收起</button>
+        </div>
+        ${wordCard()}
+      </div>
+    </div>` : ''}
+  </div>`
+}
+
+/* ------------------------------------------------------------- variant B */
+function libraryRows() {
+  const list = DATA.words.filter((word) => S.filter === 'all' || (S.filter === 'learning' ? word.status === 'learning' : word.status === 'mastered'))
+  if (!list.length) return '<div class="faint" style="padding:14px 0;font-size:12px">这一类还没有词。</div>'
+  return list.map((word) => `<div class="lib-row">
+      <span class="term en">${esc(word.term)}</span>
+      <span class="kind" style="font-size:10.5px;color:var(--text-3);border:1px solid var(--border-1);border-radius:5px;padding:1px 5px">${word.kind}</span>
+      <span class="right">${boxDots(word.box)}<span class="due">${word.days === 0 ? '今天' : word.days + ' 天'}</span></span>
+    </div>`).join('')
+}
+
+function renderB() {
+  const tabs = [['today', '今天'], ['words', '单词'], ['plan', '计划'], ['progress', '进度']]
+    .map(([id, label]) => `<button data-act="tab" data-tab="${id}" data-on="${S.tab === id}">${label}</button>`).join('')
+  const done = DATA.lesson.items.filter((i) => i.done).length
+
+  const lessonCard = `<section class="card">
+      <div class="card-head"><h2>今天的课</h2><span class="sub">${done} / ${DATA.lesson.items.length} 项</span></div>
+      <div class="lesson-title">${esc(DATA.lesson.title)}</div>
+      <div class="lesson-sum">${esc(DATA.lesson.summary)}</div>
+      <div class="items">${DATA.lesson.items.map((item) => `<div class="li" data-done="${item.done}">
+        <span class="type">${item.type}</span><span class="name">${esc(item.name)}</span>
+        <span class="min">${item.min}′</span><span class="check">✓</span></div>`).join('')}</div>
+      <div class="lesson-foot">
+        <button class="btn primary" data-act="noop">继续 · 听力 10 分钟</button>
+      </div>
+    </section>`
+
+  const deckCard = `<section class="card">
+      <div class="card-head"><h2>今天要复习</h2><span class="sub">${DUE.length} 个</span></div>
+      <div style="margin-top:10px">${wordCard()}</div>
+    </section>`
+
+  const weeklyCard = `<section class="card">
+      <div class="card-head"><h2>本周目标</h2><span class="sub">1 / 3</span></div>
+      <div style="margin-top:8px">${DATA.weekly.map((goal) => `<div class="goal" data-done="${goal.done}">
+        <span class="box">✓</span><span>${esc(goal.text)}</span></div>`).join('')}</div>
+    </section>`
+
+  const libCard = `<section class="card">
+      <div class="card-head"><h2>词库</h2><span class="sub">${DATA.words.length} 个</span></div>
+      <div class="lib-filter">
+        ${[['all', '全部'], ['learning', '在学'], ['mastered', '已掌握']].map(([id, label]) =>
+          `<button data-act="filter" data-f="${id}" data-on="${S.filter === id}">${label}</button>`).join('')}
+      </div>
+      <div>${libraryRows()}</div>
+    </section>`
+
+  const planCard = `<section class="card">
+      <div class="card-head"><h2>学习路线</h2><span class="sub">第 1 / 3 阶段</span></div>
+      <div class="timeline" style="margin-top:8px">
+        ${DATA.phases.map((phase, index) => `<div class="step" data-on="${Boolean(phase.current)}">
+          <span class="mark">${phase.current ? '●' : index + 1}</span>
+          <div>
+            <div class="name">${esc(phase.name)}</div>
+            <div class="goal">${esc(phase.goal)}</div>
+            <div class="focus"><span class="chip">${phase.band}</span></div>
+          </div>
+        </div>`).join('')}
+      </div>
+    </section>`
+
+  const progressCard = `<section class="card">
+      <div class="card-head"><h2>进度</h2><span class="sub">按 1 / 7 / 30 天算掌握</span></div>
+      <div class="stats" style="margin-top:10px">
+        <div class="stat"><b>${DATA.progress.completedDays}</b><span>完成天数</span></div>
+        <div class="stat"><b>${DATA.progress.streak}</b><span>连续天数</span></div>
+        <div class="stat"><b>${DATA.progress.mastered}</b><span>已掌握</span></div>
+        <div class="stat"><b>${DATA.progress.learning}</b><span>在学</span></div>
+      </div>
+      <div class="curve-empty">再做一次测评，这里会出一条水平曲线</div>
+    </section>`
+
+  const weakCard = `<section class="card">
+      <div class="card-head"><h2>上次测评的薄弱项</h2></div>
+      <div style="margin-top:6px">${DATA.weak.map((item) => `<div class="weak">
+        <span style="width:34px">${item.skill}</span>
+        <span class="bar"><i style="width:${Math.round((item.missed / 4) * 100)}%"></i></span>
+        <span class="faint" style="font-size:11.5px">错 ${item.missed}</span></div>`).join('')}</div>
+    </section>`
+
+  const progressStrip = `<section class="card">
+      <div style="display:flex;align-items:center;gap:16px">
+        <span class="ring" style="--p:${Math.round((done / DATA.lesson.items.length) * 100)}"><span>${Math.round((done / DATA.lesson.items.length) * 100)}%</span></span>
+        <div>
+          <div style="font-size:12.8px">今天 <b>${done} / ${DATA.lesson.items.length}</b> 项 · 还剩约 ${REMAINING_MIN} 分钟</div>
+          <div class="faint" style="font-size:12px;margin-top:2px">连续 ${DATA.progress.streak} 天 · 已掌握 ${DATA.progress.mastered} 个词</div>
+        </div>
+        <button class="btn ghost sm" data-act="tab" data-tab="progress" style="margin-left:auto">看进度</button>
+      </div>
+    </section>`
+
+  let left = ''
+  let right = ''
+  if (S.tab === 'today') { left = lessonCard + progressStrip; right = deckCard + weeklyCard }
+  else if (S.tab === 'words') { left = deckCard; right = libCard }
+  else if (S.tab === 'plan') { left = planCard; right = weeklyCard }
+  else { left = progressCard; right = weakCard }
+
+  return `<div class="page page-b">
+    <header class="b-head">
+      <h1>英语教练</h1>
+      <div class="seg">${tabs}</div>
+      <div class="status">
+        <span>待复习 <b>${DUE.length}</b></span>
+        <span>连续 <b>${DATA.progress.streak}</b> 天</span>
+        <span>档位 <b>${DATA.band}</b></span>
+      </div>
+    </header>
+    <div class="b-grid">
+      <div>${left}</div>
+      <aside class="b-side">${right}</aside>
+    </div>
+  </div>`
+}
+
+/* ------------------------------------------------------------- variant C */
+function listeningStep() {
+  return `<div class="card">
+    <div class="card-head"><h2>听力 · 虚构角色商量模型的颜色</h2><span class="sub">10 分钟</span></div>
+    <div class="muted" style="font-size:12.5px;margin-top:6px">先听一遍，再看文稿对答案。</div>
+    <div style="display:flex;gap:8px;margin:14px 0 6px">
+      <button class="btn primary" data-act="noop">播放</button>
+      <button class="btn ghost" data-act="noop">显示文稿</button>
+    </div>
+    <div style="margin-top:10px">
+      ${DATA.listening.map((line) => `<div class="listen-line"><span class="spk">${line.spk}</span><span class="say en">${esc(line.say)}</span></div>`).join('')}
+    </div>
+    <div class="acts" style="display:flex;gap:8px;margin-top:16px">
+      <button class="btn primary" data-act="flow-next">完成这一项</button>
+    </div>
+  </div>`
+}
+
+function quizStep() {
+  const picked = S.quiz.picked
+  const answered = picked !== null
+  return `<div class="card">
+    <div class="card-head"><h2>测验 · 两篇素材的理解题</h2><span class="sub">1 / 2</span></div>
+    <div class="en" style="font-size:15px;line-height:1.5;margin-top:10px">${esc(DATA.quiz.prompt)}</div>
+    <div class="choices" style="margin-top:14px">
+      ${DATA.quiz.choices.map((text, index) => {
+        let state = ''
+        if (answered) state = index === DATA.quiz.answer ? 'correct' : index === picked ? 'wrong' : 'dim'
+        return `<button class="choice" data-act="quiz-pick" data-i="${index}" data-state="${state}" ${answered ? 'disabled' : ''}>
+          <span class="key">${index + 1}</span><span class="en" style="font-size:13px">${esc(text)}</span></button>`
+      }).join('')}
+    </div>
+    ${answered ? `<div class="feedback" data-tone="${picked === DATA.quiz.answer ? 'ok' : 'err'}">
+      <div class="verdict">${picked === DATA.quiz.answer ? '答对了' : '再看一眼'}</div>
+      <div class="note" style="border:0;padding:0;margin-top:6px">${esc(DATA.quiz.explanation)}</div>
+      <div class="acts"><button class="btn primary" data-act="flow-next">下一项</button></div>
+    </div>` : ''}
+  </div>`
+}
+
+function orderingStep() {
+  return `<div class="card">
+    <div class="card-head"><h2>排序 · 选词成句</h2><span class="sub">3 分钟</span></div>
+    <div class="muted" style="font-size:12.5px;margin-top:6px">${esc(DATA.ordering.hint)}</div>
+    <div class="order-words">${DATA.ordering.words.map((word) => `<span class="en">${esc(word)}</span>`).join('')}</div>
+    ${S.orderReveal
+      ? `<div class="feedback"><div class="meaning en" style="font-size:15px">${esc(DATA.ordering.answer)}</div>
+         <div class="acts"><button class="btn primary" data-act="flow-next">完成这一项</button></div></div>`
+      : `<button class="btn ghost" data-act="order-reveal">看答案</button>`}
+  </div>`
+}
+
+function overviewBody() {
+  const rows = [
+    { name: `复习 ${DUE.length} 个词`, type: '词汇', min: DUE.length, done: false },
+    ...DATA.lesson.items.map((item) => ({ name: item.name, type: item.type, min: item.min, done: item.done }))
+  ]
+  return `<div class="card">
+    <div class="card-head"><h2>今天全部</h2><span class="sub">${rows.filter((r) => r.done).length} / ${rows.length} 项</span></div>
+    <div style="margin-top:8px">${rows.map((row) => `<div class="overview-row" data-done="${row.done}">
+      <span class="chip">${row.type}</span><span class="name">${esc(row.name)}</span>
+      <span class="st" style="color:${row.done ? 'var(--ok)' : 'var(--text-3)'}">${row.done ? '已完成' : row.min + '′'}</span>
+    </div>`).join('')}</div>
+  </div>`
+}
+
+function renderC() {
+  const flow = [
+    { id: 0, label: `词汇 <b>${DUE.length}</b>` },
+    { id: 1, label: '听力' },
+    { id: 2, label: '测验' },
+    { id: 3, label: '排序' }
+  ].map((step) => `<button class="flow-pill" data-act="flow" data-i="${step.id}" data-on="${S.flow === step.id}">${step.label}</button>`).join('')
+
+  let focus = ''
+  if (S.overview) focus = overviewBody()
+  else if (S.flow === 0) focus = `<div class="card" style="padding:24px">${wordCard()}</div>`
+  else if (S.flow === 1) focus = listeningStep()
+  else if (S.flow === 2) focus = quizStep()
+  else focus = orderingStep()
+
+  return `<div class="page page-c">
+    <header class="c-head">
+      <div>
+        <div class="eyebrow">${DATA.date}</div>
+        <h1>今天 · 30 分钟</h1>
+      </div>
+      <div class="acts">
+        <button class="btn ghost sm" data-act="overview">${S.overview ? '回到专注' : '看全部'}</button>
+      </div>
+    </header>
+    <div class="flow">
+      ${flow}
+      <span class="chip ok done-chip">已完成 2 项</span>
+    </div>
+    <div class="c-mid">
+      <div class="c-focus">${focus}</div>
+      <div class="c-foot">
+        <span>今天还剩 ${REMAINING.length} 项 · 约 ${REMAINING_MIN} 分钟</span>
+        <span class="right">档位 ${DATA.band} · 连续 ${DATA.progress.streak} 天</span>
+      </div>
+    </div>
+  </div>`
+}
+
+/* ----------------------------------------------------------------- render */
+function render() {
+  const y = window.scrollY
+  root.innerHTML = S.variant === 'A' ? renderA() : S.variant === 'B' ? renderB() : renderC()
+  pillHost.innerHTML = renderPill()
+  document.getElementById('sw-id').textContent = S.variant
+  document.getElementById('sw-name').textContent = VARIANTS.find((v) => v.id === S.variant).name
+  document.documentElement.dataset.theme = S.theme
+  document.documentElement.dataset.variant = S.variant
+  window.scrollTo(0, y)
+}
+
+function renderPill() {
+  const pop = S.pill ? `<div class="pill-pop">
+      <div class="pp-head"><b>英语教练</b><span>${DUE.length} 个词今天到期</span></div>
+      <div class="pp-term en">${esc(DUE[0].term)}</div>
+      <div class="pp-hint">这里只是入口：完整的复习、讲解和词库都在面板里。</div>
+      <div class="pp-acts">
+        <button class="btn primary" data-act="pill-learn">在面板里复习</button>
+        <button class="btn ghost" data-act="pill">收起</button>
+      </div>
+    </div>` : ''
+  return `${pop}<button class="pill-btn" data-act="pill" title="按住可以拖到别处">
+    <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H18a2 2 0 0 1 2 2v11.5a2.5 2.5 0 0 0-2.5-2.5H4z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+      <path d="M6.5 22A2.5 2.5 0 0 0 9 19.5h11" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+    </svg>
+    <span>英语教练</span>
+    <span class="count">${DUE.length}</span>
+  </button>`
+}
+
+/* ----------------------------------------------------------------- events */
+function setVariant(id) {
+  S.variant = id
+  S.sheet = false
+  try {
+    history.replaceState(null, '', '?variant=' + id)
+  } catch {
+    /* file:// pages have an opaque origin; the param is a nicety, not a need */
+  }
+  render()
+}
+function pick(index) {
+  if (!currentWord() || S.session.picked !== null) return
+  S.session.picked = index
+  if (index === currentWord().answer) S.session.correct += 1
+  render()
+}
+function advance() {
+  if (S.session.picked === null) return
+  if (S.session.i + 1 >= DUE.length) S.session.finished = true
+  else S.session.i += 1
+  S.session.picked = null
+  render()
+}
+function continueAfterWords() {
+  S.sheet = false
+  if (S.variant === 'A') render()
+  else if (S.variant === 'B') { S.tab = 'today'; render() }
+  else { S.flow = 1; render() }
+}
+
+document.addEventListener('click', (event) => {
+  const target = event.target.closest('[data-act]')
+  if (!target) return
+  const act = target.dataset.act
+  if (act === 'prev' || act === 'variant-next') {
+    const index = VARIANTS.findIndex((v) => v.id === S.variant)
+    const step = act === 'variant-next' ? 1 : -1
+    setVariant(VARIANTS[(index + step + VARIANTS.length) % VARIANTS.length].id)
+    return
+  }
+  if (act === 'theme') { S.theme = S.theme === 'dark' ? 'light' : 'dark'; render(); return }
+  if (act === 'tab') { S.tab = target.dataset.tab; render(); return }
+  if (act === 'filter') { S.filter = target.dataset.f; render(); return }
+  if (act === 'start') { S.session.i = Number(target.dataset.i); S.session.picked = null; S.session.finished = false; S.sheet = true; render(); return }
+  if (act === 'sheet') { S.sheet = true; render(); return }
+  if (act === 'sheet-close') { S.sheet = false; render(); return }
+  if (act === 'sheet-body') { event.stopPropagation(); return }
+  if (act === 'pick') { pick(Number(target.dataset.i)); return }
+  if (act === 'next') { advance(); return }
+  if (act === 'restart') { S.session = { i: 0, picked: null, correct: 0, finished: false }; render(); return }
+  if (act === 'continue') { continueAfterWords(); return }
+  if (act === 'flow') { S.flow = Number(target.dataset.i); S.overview = false; render(); return }
+  if (act === 'flow-next') { S.flow = Math.min(3, S.flow + 1); S.orderReveal = false; S.quiz.picked = null; render(); return }
+  if (act === 'quiz-pick') { if (S.quiz.picked === null) { S.quiz.picked = Number(target.dataset.i); render() } return }
+  if (act === 'order-reveal') { S.orderReveal = true; render(); return }
+  if (act === 'overview') { S.overview = !S.overview; render(); return }
+  if (act === 'pill') { S.pill = !S.pill; render(); return }
+  if (act === 'pill-learn') {
+    S.pill = false
+    if (S.variant === 'A') S.sheet = true
+    else if (S.variant === 'B') S.tab = 'words'
+    else { S.flow = 0; S.overview = false }
+    render()
+    return
+  }
+  if (act === 'noop') return
+})
+
+document.addEventListener('keydown', (event) => {
+  const tag = (event.target.tagName || '').toLowerCase()
+  if (tag === 'input' || tag === 'textarea' || event.target.isContentEditable) return
+  if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+    const index = VARIANTS.findIndex((v) => v.id === S.variant)
+    const step = event.key === 'ArrowRight' ? 1 : -1
+    setVariant(VARIANTS[(index + step + VARIANTS.length) % VARIANTS.length].id)
+    return
+  }
+  if (event.key === 'Escape' && S.sheet) { S.sheet = false; render(); return }
+  if (/^[1-4]$/.test(event.key)) {
+    const visible = S.variant === 'A' ? S.sheet : S.variant === 'C' ? S.flow === 0 && !S.overview : true
+    if (visible) pick(Number(event.key) - 1)
+    return
+  }
+  if (event.key === 'Enter' && S.session.picked !== null) advance()
+})
+
+const initial = new URLSearchParams(location.search).get('variant')
+if (VARIANTS.some((v) => v.id === initial)) S.variant = initial
+render()
+</script>
+</body>
+</html>

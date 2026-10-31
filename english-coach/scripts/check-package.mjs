@@ -50,7 +50,7 @@ for (const asset of (await import(pathToFileURL(join(root, 'speech/asset-manifes
   assert.ok(![...listed].some(file => file === asset.path || file.endsWith(`/${asset.path}`)),
     `Downloaded model/voice assets must not be bundled: ${asset.path}`)
 }
-assert.ok(![...listed].some((file) => /^(test|scripts|prototypes|node_modules|\.scratch)\//.test(file)),
+assert.ok(![...listed].some((file) => /^(test|scripts|prototype|prototypes|node_modules|\.scratch)\//.test(file)),
   'Development files and throwaway prototypes must not enter the archive')
 assert.ok(![...listed].some((file) => /(^|\/)(AGENTS\.md|.*\.prototype\.html)$/.test(file)),
   'Local instructions and prototype HTML must not enter the archive')
