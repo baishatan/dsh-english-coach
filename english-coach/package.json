@@ -15,7 +15,9 @@
     "test:core": "node --test test/core.test.js test/due-review-correction.test.js test/durable-round-recovery.test.js test/host-preference.test.js test/learning-experience.test.js test/new-word-correction.test.js test/round-outcome.test.js test/shared-effective-result.test.js test/translation.test.js test/word-retry-acceptance.test.js",
     "test:ui": "node --test test/*-ui.test.js",
     "check:package": "node scripts/check-package.mjs",
-    "prototype:words-profile": "node prototypes/open-words-profile.mjs"
+    "prototype:words-profile": "node prototypes/open-words-profile.mjs",
+    "check:speech-transport": "node scripts/check-speech-transport.mjs",
+    "check:speech-worker": "node scripts/check-speech-worker.mjs"
   },
   "exports": {
     ".": "./index.js",
