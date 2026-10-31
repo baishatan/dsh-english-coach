@@ -1,0 +1,393 @@
+<!doctype html>
+<!-- THROWAWAY UI PROTOTYPE. Three structurally different words/profile panels on one file route,
+     switchable via ?variant=A|B|C&page=words|profile. Synthetic in-memory data only.
+     This file is not imported by client.js and is excluded by the package files whitelist. -->
+<html lang="zh-CN" data-prototype="true">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; font-src 'none'; form-action 'none'; base-uri 'none'">
+<title>英语教练 · 单词与个人页设计原型</title>
+<style>
+:root{--paper:#fff;--bg:#f5f7f9;--ink:#25334a;--sub:#667184;--line:#e2e7ed;--accent:#345bc0;--soft:#edf2ff;--ok:#267458;--ok-bg:#edf7f1;--bad:#a44343;--bad-bg:#fff2f1;--radius:16px;--ui:"SF Pro Text","PingFang SC","Microsoft YaHei",system-ui,sans-serif;--word:"Iowan Old Style",Georgia,serif}
+*{box-sizing:border-box}html{background:var(--bg)}body{margin:0;color:var(--ink);font:14px/1.6 var(--ui);-webkit-font-smoothing:antialiased}button,input,select,textarea{font:inherit}button,a,input,select,textarea{-webkit-tap-highlight-color:transparent}button{cursor:pointer;color:inherit}button:disabled{cursor:default;opacity:.5}button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{outline:3px solid #7195ec;outline-offset:3px}h1,h2,h3,p{margin:0}h1{font-size:28px;line-height:1.35;font-weight:650;letter-spacing:-.04em}h2{font-size:18px;line-height:1.4;font-weight:600}h3{font-size:15px;font-weight:600}a{color:var(--accent)}small,.small{font-size:12px}.muted{color:var(--sub)}.nowrap{white-space:nowrap}.row{display:flex;align-items:center;gap:12px}.between{justify-content:space-between}.wrap{flex-wrap:wrap}.stack{display:grid;gap:20px}.grow{flex:1;min-width:0}.hidden,[hidden]{display:none!important}.sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.icon{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none;vertical-align:middle}.icon.small{width:16px;height:16px}.proto-notice{padding:8px 24px;border-bottom:1px solid var(--line);font-size:12px;display:flex;gap:16px;justify-content:space-between;color:var(--sub);background:#fff}.proto-notice b{font-weight:550;color:var(--ink)}.proto-notice a{text-decoration:none}.shell{max-width:1180px;margin:auto;padding:0 36px 124px}.app-header{height:90px;display:flex;align-items:center;gap:38px;border-bottom:1px solid var(--line)}.brand{font-size:16px;font-weight:650;display:flex;align-items:center;gap:10px;white-space:nowrap}.brand-mark{width:29px;height:29px;border-radius:8px;background:var(--accent);color:white;display:grid;place-items:center}.brand-mark .icon{width:19px;height:19px}.app-nav{display:flex;align-self:stretch;gap:26px}.app-nav button{background:none;border:0;border-bottom:2px solid transparent;padding:0 2px;font-size:14px;color:var(--sub);min-width:36px}.app-nav button[aria-current=page]{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}.header-meta{margin-left:auto;font-size:12px;color:var(--sub)}.header-meta .dot{display:inline-block;width:6px;height:6px;background:#91a3bc;border-radius:50%;margin-right:7px}.page-head{padding:32px 0 24px;display:flex;justify-content:space-between;gap:20px;align-items:center}.page-head p{margin-top:7px;color:var(--sub)}.button{border:1px solid var(--line);background:var(--paper);border-radius:9px;padding:10px 16px;display:inline-flex;align-items:center;justify-content:center;gap:8px;font-weight:550;min-height:42px;line-height:1.5;white-space:normal}.button:hover:not(:disabled){border-color:#b9c5d6;background:#fafbfc}.button.primary{background:var(--accent);border-color:var(--accent);color:#fff}.button.primary:hover:not(:disabled){background:#294ba7;border-color:#294ba7}.button.quiet{background:transparent;border-color:transparent;color:var(--sub)}.button.quiet:hover{background:#eaf0f6}.button.text{border:0;padding:4px 0;min-height:36px;background:transparent;color:var(--accent);font-weight:500}.button.small{padding:7px 12px;min-height:36px;font-size:12px}.icon-button{display:inline-grid;place-items:center;width:40px;height:40px;border:1px solid var(--line);border-radius:50%;background:#fff;flex:none}.icon-button:hover{background:var(--soft);color:var(--accent)}.panel{background:var(--paper);border:1px solid var(--line);border-radius:var(--radius);padding:26px}.section-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:20px}.section-note{color:var(--sub);font-size:12px;margin-top:16px}.label{font-size:12px;color:var(--sub)}.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:6px;background:#f0f3f7;font-size:12px;white-space:nowrap;color:var(--sub)}.pill.accent{background:var(--soft);color:var(--accent)}.pill.ok{background:var(--ok-bg);color:var(--ok)}.divider{height:1px;background:var(--line);margin:22px 0}.subheading{color:var(--sub);font-size:12px;margin-bottom:14px}.hint{font-size:12px;color:var(--sub);line-height:1.8}.empty{text-align:center;padding:42px 18px}.empty h3{margin-bottom:8px}.empty .button{margin-top:18px}.check-mark{display:inline-grid;place-items:center;width:48px;height:48px;background:var(--ok-bg);color:var(--ok);border-radius:50%;margin-bottom:18px}
+/* The word is the single expressive element; all supporting surfaces stay quiet. */
+.a-focus{display:grid;grid-template-columns:minmax(0,1fr) 248px;gap:28px;align-items:start}.study-card{padding:26px 34px 24px;background:#fff;border:1px solid var(--line);border-radius:18px;min-width:0}.study-top{display:flex;justify-content:space-between;gap:12px;font-size:12px;color:var(--sub);align-items:center}.progress-track{height:3px;border-radius:3px;background:#edf0f4;overflow:hidden;margin-top:15px}.progress-track span{display:block;height:100%;background:var(--accent)}.term-block{padding:27px 0 21px}.term-row{display:flex;align-items:center;gap:16px;flex-wrap:wrap}.term{font:44px/1.2 var(--word);letter-spacing:-.02em;overflow-wrap:anywhere}.pronunciation{font:14px/1.5 var(--ui);color:var(--sub);margin-top:10px}.question{font-size:13px;margin-bottom:14px;color:var(--sub)}.choices{display:grid;grid-template-columns:1fr 1fr;gap:10px}.choice{min-height:60px;text-align:left;background:#fff;border:1px solid var(--line);border-radius:10px;display:flex;align-items:center;gap:12px;padding:13px 14px;line-height:1.55;position:relative}.choice:hover:not(:disabled){background:var(--soft);border-color:#abc0f0}.choice:disabled{opacity:1}.choice-key{color:#7a8495;font-size:12px;min-width:20px}.choice[data-result=correct]{border-color:#86b8a3;background:var(--ok-bg);color:var(--ok)}.choice[data-result=wrong]{border-color:#d9a29d;background:var(--bad-bg);color:var(--bad)}.choice[data-result=dim]{color:#8b94a3;background:#fafbfc}.choice-status{margin-left:auto;font-size:16px}.study-bottom{margin-top:21px;display:flex;justify-content:space-between;align-items:center;gap:12px;color:var(--sub);font-size:12px}.keyboard-hint kbd{font:11px var(--ui);border:1px solid var(--line);border-radius:4px;padding:1px 4px;background:#fafbfd}.feedback{margin-top:19px;padding:18px 0 0;border-top:1px solid var(--line)}.feedback-title{color:var(--ok);font-weight:600;font-size:13px}.feedback-title.wrong{color:var(--bad)}.example{font:17px/1.7 var(--word);margin-top:8px;color:var(--ink)}.feedback .hint{margin-top:8px}.feedback-action{display:flex;align-items:center;justify-content:space-between;margin-top:18px;gap:16px}.study-aside{padding:17px 0}.study-aside h3{margin-bottom:22px}.setting-line{display:flex;justify-content:space-between;align-items:center;padding:12px 0;gap:12px}.setting-line .label{font-size:13px}.setting-line b{font-weight:550}.setting-source{padding:19px 0;border-top:1px solid var(--line);margin-top:12px}.setting-source .label{margin-bottom:6px}.setting-source .row{margin-top:4px}.batch-control{display:flex;align-items:center;gap:8px}.batch-control input{width:58px;text-align:center;padding:5px;border:1px solid var(--line);border-radius:7px;background:white;color:var(--ink)}.browse-gates{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:25px}.gate{background:transparent;text-align:left;display:flex;gap:16px;align-items:center;padding:21px 22px;border:1px solid var(--line);border-radius:12px}.gate:hover{background:#fff;border-color:#bdc9de}.gate[aria-expanded=true]{background:#fff;border-color:#8fa9e2}.gate .gate-icon{color:var(--sub)}.gate strong{display:block;font-size:14px;font-weight:550}.gate small{color:var(--sub);display:block;margin-top:3px}.gate .chevron{margin-left:auto}.browse-expanded{margin-top:20px}.source-tabs{display:flex;gap:8px;flex-wrap:wrap}.source-tabs button{padding:8px 13px;border:1px solid var(--line);border-radius:8px;background:#fff;font-size:13px;min-height:38px}.source-tabs button[aria-pressed=true]{background:var(--soft);color:var(--accent);border-color:#cbd8fa}.source-summary{margin:18px 0;padding:16px 18px;background:#f7f9fc;border-radius:10px;display:flex;align-items:center;justify-content:space-between;gap:16px}.source-summary .hint{margin-top:3px}.list-tools{display:flex;align-items:center;gap:12px;margin:18px 0 14px}.search-box{display:flex;align-items:center;gap:9px;background:#fff;border:1px solid var(--line);border-radius:9px;flex:1;min-width:0;padding:0 12px}.search-box .icon{width:17px;color:var(--sub)}.search-box input{border:0;background:transparent;color:var(--ink);padding:10px 0;width:100%;outline-offset:4px;min-width:0}.filter-select{border:1px solid var(--line);border-radius:8px;background:white;color:var(--ink);padding:10px 28px 10px 12px;max-width:150px}.list-caption{font-size:12px;color:var(--sub);display:flex;justify-content:space-between;margin:0 0 8px;gap:12px}.word-list{max-height:408px;overflow:auto;scrollbar-gutter:stable}.word-row{display:flex;align-items:center;gap:12px;border-top:1px solid #edf0f4;min-height:65px;padding-right:6px}.word-row.selected{background:#f1f5ff}.word-main{display:grid;grid-template-columns:minmax(120px,.9fr) minmax(110px,1fr) auto;gap:18px;align-items:center;flex:1;min-width:0;width:100%;border:0;background:transparent;padding:14px 8px;text-align:left;line-height:1.5}.word-main:hover .list-term{color:var(--accent)}.list-term{font:18px/1.4 var(--word);overflow-wrap:anywhere}.word-meaning{font-size:13px;color:var(--sub);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.word-state{font-size:11px;color:var(--sub);white-space:nowrap}.word-state.due{color:var(--accent)}.word-row .icon-button{border:0;width:34px;height:34px}.pagination{display:flex;justify-content:space-between;align-items:center;padding-top:16px;margin-top:10px;border-top:1px solid var(--line);gap:12px;flex-wrap:wrap;font-size:12px}.pagination select{padding:6px;border:0;background:transparent;color:var(--sub)}.pagination .row{gap:10px}.pagination .button{font-size:12px}.source-footnote{margin-top:13px;font-size:11px;color:var(--sub)}.source-footnote summary{cursor:pointer;padding:5px 0}.source-footnote p{margin-top:8px;max-width:64ch}.detail-term{font:32px/1.3 var(--word);overflow-wrap:anywhere;margin:22px 0 6px}.detail-meaning{font-size:17px;margin-top:16px}.definition-example{border-left:2px solid #c7d3ee;padding-left:16px;margin-top:26px}.detail-facts{margin:24px 0 0;display:grid;grid-template-columns:75px 1fr;gap:10px;font-size:12px}.detail-facts dt{color:var(--sub)}.detail-facts dd{margin:0}.detail-facts .pill{font-size:11px}.detail-tip{padding:14px 16px;background:#f7f9fc;border-radius:8px;font-size:12px;color:var(--sub);margin-top:26px}.detail-footer{margin-top:24px}.review-strip{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:22px;padding:16px 20px;background:#edf2ff;border-radius:10px}.review-strip p{font-size:12px;color:#53678e;margin-top:3px}
+/* B is an object-oriented, three-pane workspace, not A in another colour. */
+.workspace{display:grid;grid-template-columns:146px minmax(0,1fr) 320px;gap:0;border:1px solid var(--line);background:white;border-radius:14px;overflow:hidden;min-height:600px}.workspace-nav{background:#f8fafc;padding:20px 12px;border-right:1px solid var(--line)}.workspace-nav .label{padding:0 10px;margin:0 0 10px}.workspace-nav button{display:flex;align-items:center;gap:8px;text-align:left;border:0;background:transparent;padding:11px 10px;border-radius:7px;width:100%;font-size:13px;color:var(--sub)}.workspace-nav button[aria-pressed=true]{background:#e8eefb;color:var(--accent);font-weight:600}.workspace-nav .nav-separator{margin-top:24px}.workspace-list{padding:22px 20px;min-width:0}.workspace-list h2{font-size:16px}.workspace-list .list-tools{gap:8px;flex-wrap:wrap}.workspace-list .search-box{flex-basis:100%}.workspace-list .filter-select{max-width:none;width:100%;font-size:12px;padding:7px 10px;border:0;background:#f7f9fc}.workspace-list .word-list{max-height:420px}.workspace-list .word-main{grid-template-columns:1fr auto;gap:2px 10px;padding:13px 6px}.workspace-list .word-meaning{grid-column:1;grid-row:2;font-size:12px}.workspace-list .word-state{grid-column:2;grid-row:1/3}.workspace-list .list-caption{margin-top:10px}.workspace-list .source-summary{padding:12px;font-size:12px;display:block}.workspace-list .source-summary .button{margin-top:10px}.workspace-detail{padding:22px;border-left:1px solid var(--line);background:#fcfdff;min-width:0}.workspace-detail .study-card{padding:0;border:0;background:transparent;border-radius:0}.workspace-detail .choices{grid-template-columns:1fr}.workspace-detail .term{font-size:34px}.workspace-detail .term-block{padding:28px 0 20px}.workspace-detail .choice{min-height:48px;padding:10px}.workspace-detail .study-bottom .keyboard-hint{display:none}.workspace-detail .study-bottom{justify-content:center}.workspace-detail .feedback-action{flex-wrap:wrap}.workspace-detail .feedback-action .button{width:100%}.workspace .pagination{font-size:11px}.workspace .pagination .row{gap:3px}.workspace .pagination .button{padding:5px 6px}.pane-title{display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--sub);gap:8px;margin-bottom:14px}.mobile-back{display:none}
+/* C replaces simultaneous panes with reversible task destinations. */
+.compact-page{max-width:640px;margin:0 auto}.compact-page .page-head{padding-top:38px}.c-learn{padding:28px 30px;border-radius:16px;background:#fff;border:1px solid var(--line);border-top:3px solid var(--accent)}.c-learn h2{font-size:23px;line-height:1.45}.c-learn p{margin-top:10px;color:var(--sub);font-size:14px}.c-learn .button.primary{margin-top:26px;width:100%;min-height:48px}.c-learn .hint{margin-top:12px;text-align:center}.c-group{border:1px solid var(--line);border-radius:12px;background:white;margin-top:22px;overflow:hidden}.menu-row{width:100%;display:flex;align-items:center;gap:16px;padding:22px;border:0;background:#fff;text-align:left}.menu-row+.menu-row{border-top:1px solid var(--line)}.menu-row:hover{background:#f9fbfd}.menu-row>span:first-of-type{display:block;flex:1;min-width:0}.menu-row strong{font-size:15px;font-weight:550;display:block}.menu-row small{display:block;margin-top:4px;color:var(--sub)}.menu-row>.icon{color:#6e7b91}.c-foot{padding:22px 4px;display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12px;color:var(--sub)}.back-heading{display:flex;align-items:center;gap:10px;margin:28px 0 20px}.back-heading .button{padding:7px}.back-heading h1{font-size:22px}.compact-page .list-tools{margin-top:0}.compact-page .study-card{padding:28px}.compact-page .source-summary{flex-wrap:wrap}.c-overview{padding:28px 4px 6px}.c-overview h1{margin-bottom:10px}
+/* Profile: saved intentions and estimated ability are deliberately distinct. */
+.profile-a{display:grid;grid-template-columns:minmax(0,1fr) 290px;gap:24px;align-items:start}.goal-summary{padding:28px 30px}.goal-phrase{font-size:23px;line-height:1.6;max-width:29em;margin-top:22px;letter-spacing:-.02em;font-weight:500;overflow-wrap:anywhere}.goal-facts{display:flex;flex-wrap:wrap;gap:28px;margin-top:25px}.goal-fact span{display:block;font-size:12px;color:var(--sub)}.goal-fact b{font-size:15px;font-weight:550;display:block;margin-top:4px}.interests{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;margin-top:24px}.interest{display:inline-flex;border:1px solid var(--line);border-radius:5px;padding:3px 9px;color:#59677e;background:white}.goal-summary details{margin-top:14px;font-size:13px}.goal-summary details summary{color:var(--accent);cursor:pointer}.goal-summary details p{margin-top:12px}.level-box{padding:25px 0 0}.level-box h2{font-size:15px}.level-pair{display:flex;align-items:center;justify-content:space-between;margin-top:22px;gap:16px}.level-pair b{font-size:23px;font-weight:550;display:block;margin-top:5px}.level-pair .icon{color:#a0aabd}.level-box p{font-size:12px;color:var(--sub);margin-top:16px}.metric-line{display:flex;gap:24px;margin-top:26px;flex-wrap:wrap}.metric-line>div{flex:1;min-width:80px}.metric-line b{display:block;font-size:23px;font-weight:550;font-variant-numeric:tabular-nums}.metric-line span{display:block;font-size:12px;color:var(--sub);margin-top:4px}.progress-summary{margin-top:24px;padding:24px 30px;background:#fff;border:1px solid var(--line);border-radius:12px}.progress-summary .metric-line{margin-top:18px}.progress-summary .section-head{margin-bottom:0}.curve-wrap{background:#fff;border:1px solid var(--line);border-radius:12px;padding:26px 28px;margin-top:24px}.curve-wrap h2{font-size:16px}.curve-wrap svg{width:100%;height:180px;display:block;margin-top:20px}.curve-wrap svg text{font:11px var(--ui);fill:var(--sub)}.record-list{margin-top:16px}.record-row{display:flex;gap:16px;justify-content:space-between;align-items:center;padding:13px 0;border-top:1px solid var(--line);font-size:13px}.record-row time{color:var(--sub);font-size:12px}.record-row b{font-weight:550}.profile-b{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:28px}.profile-b .curve-wrap{margin-top:0;border:0;border-radius:0;padding:24px 0}.profile-b .curve-wrap svg{height:228px}.profile-b .goal-summary{padding:24px}.profile-b .goal-phrase{font-size:18px;margin-top:20px}.profile-b .goal-facts{gap:20px}.profile-b .goal-fact b{font-size:14px}.profile-b .progress-summary{padding:24px 0;border:0;border-radius:0;background:transparent;margin:0;border-top:1px solid var(--line)}.focus-suggestion{border-top:1px solid var(--line);padding:22px 0;margin-top:14px}.focus-suggestion p{font-size:13px;color:var(--sub);margin-top:8px;line-height:1.8}.profile-c-summary{padding:26px;background:white;border:1px solid var(--line);border-radius:14px}.profile-c-summary .level-pair{margin:0}.profile-c-summary .metric-line{padding-top:22px;border-top:1px solid var(--line);margin-top:22px;gap:12px}.profile-c-summary .metric-line b{font-size:21px}.profile-c-summary .metric-line span{font-size:11px}.profile-c-summary>.hint{margin-top:16px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:24px}.field{display:grid;gap:8px;align-content:start}.field.full{grid-column:1/-1}.field label{font-size:13px;font-weight:550}.field input,.field select,.field textarea{width:100%;min-width:0;border:1px solid #ccd5e0;border-radius:8px;background:#fff;color:var(--ink);padding:11px 12px}.field textarea{min-height:90px;resize:vertical}.form-actions{display:flex;gap:12px;margin-top:28px;align-items:center;border-top:1px solid var(--line);padding-top:20px}.form-actions .draft-indicator{margin-right:auto;font-size:12px;color:var(--sub)}.field input[type=number]{max-width:160px}.form-error{margin-top:18px;padding:12px 16px;border-radius:8px;background:var(--bad-bg);color:var(--bad);font-size:13px}.form-prototype-note{border-top:1px dashed var(--line);margin-top:18px;padding-top:12px;font-size:11px;color:var(--sub)}.form-prototype-note label{display:flex;align-items:center;gap:8px}.editor{max-width:740px;margin:0 auto}.editor .panel{padding:28px 32px}.editor h1{font-size:24px}
+/* Dialogs and prototype-only comparison controls. */
+dialog{border:1px solid var(--line);border-radius:18px;padding:28px;width:min(480px,calc(100vw - 32px));max-height:calc(100dvh - 48px);overflow:auto;color:var(--ink);background:#fff;box-shadow:0 20px 80px #25334a26}dialog::backdrop{background:#20304e4d}dialog .dialog-title{display:flex;align-items:center;gap:12px;justify-content:space-between}dialog .dialog-title h2{font-size:18px}dialog .dialog-title .icon-button{width:32px;height:32px}dialog p{margin-top:16px}dialog .dialog-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:26px;flex-wrap:wrap}dialog#state-dialog{width:min(700px,calc(100vw - 32px))}dialog pre{background:#f5f7fb;border:1px solid var(--line);border-radius:8px;padding:14px;font-size:11px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:50vh;overflow:auto}#toast{position:fixed;left:50%;transform:translateX(-50%);bottom:100px;max-width:calc(100% - 32px);background:#fff;border:1px solid #b7c8eb;box-shadow:0 6px 24px #25334a14;border-radius:10px;padding:12px 18px;font-size:13px;z-index:15;display:none}#toast.visible{display:block}.prototype-controls{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#25334a;color:#fff;border:1px solid #45516a;border-radius:14px;display:flex;align-items:center;padding:7px;gap:4px;box-shadow:0 8px 30px #25334a26;z-index:10;max-width:calc(100% - 24px)}.prototype-controls button{border:0;background:transparent;color:#fff;min-width:36px;height:38px;border-radius:8px;display:grid;place-items:center;padding:0 10px;font-size:12px}.prototype-controls button:hover{background:#3b4a64}.variant-label{min-width:144px;text-align:center;font-size:13px;line-height:1.3;padding:0 12px}.variant-label small{display:block;color:#bfcbdf;font-size:10px;margin-bottom:2px}.control-divider{height:24px;width:1px;background:#526079;margin:0 6px}.prototype-controls .variant-name{font-weight:550}.state-summary{font-size:12px;color:var(--sub);padding:12px 0 0;text-align:right}.context-only{padding:60px 24px;text-align:center;max-width:600px;margin:auto}.context-only h1{margin:18px 0 10px}.context-only p{color:var(--sub);line-height:1.9}.context-only .row{justify-content:center;margin-top:25px}.scenario-buttons{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}.scenario-buttons .button{font-size:12px}.source-choice{display:block;width:100%;border:1px solid var(--line);border-radius:10px;background:white;padding:16px;text-align:left;margin-top:10px}.source-choice:hover{border-color:#9db3e7}.source-choice[aria-pressed=true]{border-color:var(--accent);background:var(--soft)}.source-choice strong{display:block;font-weight:550}.source-choice small{color:var(--sub)}
+@media(min-width:1500px){.shell{padding-top:12px}.a-focus{grid-template-columns:minmax(0,1fr) 268px;gap:36px}.study-card{padding:30px 40px}}
+@media(max-width:1050px){.shell{padding-left:24px;padding-right:24px}.app-header{gap:26px}.workspace{grid-template-columns:120px minmax(0,1fr) 288px}.workspace-nav{padding:18px 8px}.workspace-list{padding:20px 14px}.workspace-detail{padding:20px}.profile-b{grid-template-columns:minmax(0,1fr) 290px;gap:24px}.a-focus{grid-template-columns:minmax(0,1fr) 212px;gap:24px}.study-card{padding:26px}.profile-a{grid-template-columns:minmax(0,1fr) 250px}.goal-summary{padding:24px}.header-meta{display:none}}
+@media(max-width:850px){.workspace{grid-template-columns:minmax(0,1fr) 300px}.workspace-nav{grid-column:1/-1;border:0;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:4px;padding:10px 14px}.workspace-nav .label{display:none}.workspace-nav button{width:auto;white-space:nowrap;padding:8px 10px}.workspace-nav .nav-separator{margin-top:0}.a-focus{grid-template-columns:minmax(0,1fr) 180px;gap:20px}.choices{grid-template-columns:1fr}.choice{min-height:50px}.profile-a{grid-template-columns:1fr}.level-box{padding:20px 24px;border:1px solid var(--line);border-radius:12px}.level-box .level-pair{max-width:320px}.profile-b{grid-template-columns:1fr}.profile-b>aside{order:-1}.profile-b .goal-summary .goal-facts{gap:30px}.profile-b .goal-phrase{max-width:none}.profile-b .curve-wrap{padding:24px}.profile-b .progress-summary{padding:24px}.profile-b .goal-summary{border:0;border-radius:0;border-left:3px solid var(--accent);background:transparent}.browse-gates{gap:12px}.gate{padding:18px 16px;gap:12px}}
+@media(max-width:640px){.proto-notice{padding:7px 16px;justify-content:center;font-size:11px}.proto-notice>a{display:none}.shell{padding:0 18px 120px}.app-header{height:auto;flex-wrap:wrap;gap:0;padding:18px 0 0}.brand{font-size:14px;width:100%;margin-bottom:12px}.brand-mark{width:25px;height:25px}.app-nav{width:100%;height:47px;justify-content:space-between;gap:0}.app-nav button{padding:0 14px}.page-head{padding:26px 0 20px;align-items:flex-start;gap:12px}.page-head h1{font-size:25px}.page-head p{font-size:12px}.page-head>.button{font-size:12px;padding:8px 10px;min-height:38px;flex-shrink:0}.a-focus{display:block}.study-card{padding:22px}.term-block{padding:25px 0 20px}.term{font-size:39px}.study-aside{padding:18px 3px 0}.study-aside h3{display:none}.study-aside>.setting-line{display:none}.setting-source{margin:0;padding:0;border:0;display:flex;align-items:center;justify-content:space-between;gap:12px}.setting-source>.label{display:none}.setting-source>.hint{display:none}.setting-source>.row{margin:0}.setting-source .row>b:before{content:'新词优先来自 ';font-weight:400;color:var(--sub);font-size:12px}.study-aside>.hint{display:none}.browse-gates{margin-top:20px;grid-template-columns:1fr;gap:10px}.gate{padding:16px 18px}.gate small{margin-top:2px}.panel{padding:20px}.source-tabs button{font-size:12px;padding:7px 10px}.source-summary{padding:14px;align-items:flex-start;flex-wrap:wrap}.source-summary>.button{width:100%}.list-tools{gap:9px}.filter-select{max-width:108px;font-size:12px;padding:10px 7px}.search-box{padding:0 10px}.search-box input{font-size:13px}.list-caption{font-size:11px}.word-main{grid-template-columns:1fr auto;gap:3px 10px;padding:13px 2px}.word-meaning{grid-column:1;grid-row:2;font-size:12px}.word-state{grid-column:2;grid-row:1/3;font-size:10px}.word-row{gap:6px}.word-row .icon-button{width:32px;height:32px}.list-term{font-size:17px}.pagination{justify-content:center}.pagination>label{width:100%;text-align:right}.word-list{max-height:420px}.workspace{display:block;min-height:0}.workspace-nav{display:flex;overflow:auto;gap:2px;padding:10px;flex-wrap:wrap}.workspace-nav button{font-size:12px;padding:8px}.workspace-list{padding:20px}.workspace-list .word-list{max-height:500px}.workspace-detail{display:none;border-left:0;padding:24px}.workspace[data-mobile-detail=true] .workspace-list,.workspace[data-mobile-detail=true] .workspace-nav{display:none}.workspace[data-mobile-detail=true] .workspace-detail{display:block}.workspace-detail .choices{grid-template-columns:1fr}.mobile-back{display:flex;margin-bottom:16px}.workspace-detail .term{font-size:40px}.review-strip{padding:14px 16px;gap:12px}.review-strip strong{font-size:13px}.review-strip .button{flex-shrink:0;padding:9px 11px;font-size:12px}.review-strip p{font-size:11px}.profile-a{gap:20px}.goal-phrase{font-size:20px}.goal-facts{gap:18px 26px}.goal-fact b{font-size:14px}.goal-summary{padding:22px}.goal-summary .section-head{margin-bottom:0}.level-box{padding:22px}.level-box .level-pair{max-width:none}.progress-summary{padding:22px}.progress-summary .section-head h2{font-size:16px}.metric-line{gap:12px}.metric-line>div{min-width:60px}.metric-line b{font-size:22px}.metric-line span{font-size:11px}.curve-wrap{padding:22px 18px}.curve-wrap svg{height:166px}.profile-b .curve-wrap{padding:20px 0}.profile-b .progress-summary{padding:24px 0}.profile-b .goal-summary{padding:10px 0 10px 18px}.profile-b .metric-line{gap:12px}.editor .panel{padding:22px}.form-grid{grid-template-columns:1fr}.field.full{grid-column:auto}.form-actions{flex-wrap:wrap;justify-content:flex-end}.form-actions .draft-indicator{width:100%;margin-bottom:4px}.compact-page .page-head{padding-top:26px}.compact-page .study-card{padding:22px}.c-learn{padding:24px}.c-learn h2{font-size:22px}.menu-row{padding:19px}.c-foot{flex-wrap:wrap}.profile-c-summary{padding:22px}.prototype-controls{bottom:12px;border-radius:12px;padding:6px}.prototype-controls button{padding:0 8px;min-width:33px}.variant-label{min-width:126px;padding:0 7px;font-size:12px}.control-divider{margin:0 3px}.proto-wide{display:none}.state-summary{text-align:left;font-size:11px}.study-bottom{font-size:11px}.study-bottom .keyboard-hint{display:none}#toast{bottom:84px;font-size:12px}.feedback-action .hint{display:none}.feedback-action .button{width:100%}dialog{padding:22px}.source-tabs{gap:6px}.source-footnote{font-size:11px}}
+@media(prefers-reduced-motion:no-preference){.choice,.gate,.button{transition:background .12s,border-color .12s}dialog[open]{animation:appear .13s ease-out}@keyframes appear{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
+@media print{.prototype-controls,.proto-notice,.state-summary,#toast{display:none}.shell{padding:0}.word-list{max-height:none}.panel,.study-card{break-inside:avoid}body{background:#fff}}
+</style>
+</head>
+<body>
+<div class="proto-notice"><span><b>交互原型</b>　示例数据，刷新后还原，不影响你的学习记录</span><a href="#" data-action="about">这次比较什么？</a></div>
+<div class="shell"><header class="app-header" id="header"></header><main id="app"></main><div id="state-summary" class="state-summary"></div></div>
+<div class="prototype-controls" id="switcher" aria-label="原型方案切换"></div>
+<div id="toast" role="status" aria-live="polite"></div>
+<dialog id="detail-dialog" aria-labelledby="detail-title"></dialog>
+<dialog id="source-dialog" aria-labelledby="source-title"></dialog>
+<dialog id="leave-dialog" aria-labelledby="leave-title"></dialog>
+<dialog id="state-dialog" aria-labelledby="state-title"></dialog>
+<dialog id="about-dialog" aria-labelledby="about-title"></dialog>
+<script>
+'use strict';
+// All writes below change only this page's memory. No Host bridge or persistent browser storage.
+const $ = (selector, root=document) => root.querySelector(selector);
+const $$ = (selector, root=document) => [...root.querySelectorAll(selector)];
+const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+const icons = {
+ book:'<path d="M3 5.5c3-1.4 6-1.4 9 .5 3-1.9 6-1.9 9-.5v14c-3-1.4-6-1.4-9 .5-3-1.9-6-1.9-9-.5z"/><path d="M12 6v14"/>',
+ left:'<path d="m14 6-6 6 6 6"/>',right:'<path d="m10 6 6 6-6 6"/>',down:'<path d="m6 9 6 6 6-6"/>',
+ sound:'<path d="m11 5-5 4H3v6h3l5 4zM15 8a6 6 0 0 1 0 8M18 5a10 10 0 0 1 0 14"/>',
+ search:'<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/>',
+ layers:'<path d="m12 3 10 5-10 5L2 8zM2 12l10 5 10-5M2 16l10 5 10-5"/>',
+ cards:'<rect x="7" y="3" width="13" height="16" rx="2"/><path d="M4 7v12a3 3 0 0 0 3 3h9M11 8h5M11 12h5"/>',
+ check:'<path d="m5 12 4 4L19 6"/>',close:'<path d="m6 6 12 12M6 18 18 6"/>',
+ edit:'<path d="m15 4 5 5M4 20l5-1L20 8a2 2 0 0 0-5-5L4 14z"/>',
+ clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+ profile:'<circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/>',
+ chart:'<path d="M4 3v17h17M8 14l4-4 4 2 5-7"/>',
+ play:'<path d="m8 5 11 7-11 7z"/>',info:'<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/>',
+ arrow:'<path d="M4 12h16m-6-6 6 6-6 6"/>'
+};
+const icon = (name, cls='') => `<svg class="icon ${cls}" viewBox="0 0 24 24" aria-hidden="true">${icons[name] || icons.info}</svg>`;
+const btn = (label, action, cls='', attrs='') => `<button type="button" class="button ${cls}" data-action="${action}" ${attrs}>${label}</button>`;
+const audio = term => `<button type="button" class="icon-button" data-action="sound" data-term="${esc(term)}" aria-label="朗读 ${esc(term)}（原型只演示反馈）" title="朗读（示意，不发声）">${icon('sound')}</button>`;
+const definitions = [
+ ['adapt','适应；调整','/əˈdæpt/','We need to adapt to the new schedule.','adapt to 表示适应某种环境或变化。'],
+ ['approach','方法；接近','/əˈprəʊtʃ/','We need a different approach to this problem.','an approach to 表示处理问题的方法。'],
+ ['balance','平衡','/ˈbæləns/','It is important to balance work and rest.','balance A and B 表示兼顾两者。'],
+ ['benefit','益处；使受益','/ˈbenɪfɪt/','Regular practice has many benefits.','benefit from 表示从某事中受益。'],
+ ['clarify','澄清；说明','/ˈklærɪfaɪ/','Could you clarify what you mean?','clarify a point 表示把某个要点说明白。'],
+ ['commit','承诺；投入','/kəˈmɪt/','We can commit more time to the project.','commit time to something 表示为某事投入时间。'],
+ ['compare','比较','/kəmˈpeə/','Compare the two examples.','compare A with B 表示比较两者。'],
+ ['confident','自信的','/ˈkɒnfɪdənt/','She feels confident about her presentation.','be confident about 表示对某事有信心。'],
+ ['consider','考虑','/kənˈsɪdə/','Please consider all the options.','consider doing something 表示考虑做某事。'],
+ ['consistent','一致的；持续稳定的','/kənˈsɪstənt/','Consistent practice makes a difference.','consistent 表示在一段时间内保持一致，而不是偶尔发生。'],
+ ['context','语境；背景','/ˈkɒntekst/','Read the sentence in context.','in context 表示结合上下文。'],
+ ['contribute','贡献；促成','/kənˈtrɪbjuːt/','Everyone can contribute to the discussion.','contribute to 表示对某事作出贡献或促成某事。'],
+ ['curious','好奇的','/ˈkjʊəriəs/','I am curious about how it works.','be curious about 表示对某事感到好奇。'],
+ ['deliver','交付；传达','/dɪˈlɪvə/','We will deliver the report on Friday.','deliver a report 可表示交付报告。'],
+ ['develop','发展；培养','/dɪˈveləp/','Reading helps us develop new skills.','develop a skill 表示培养一项技能。'],
+ ['efficient','效率高的','/ɪˈfɪʃənt/','This is a more efficient way to work.','efficient 侧重节省时间或资源。'],
+ ['encourage','鼓励','/ɪnˈkʌrɪdʒ/','The teacher encouraged us to ask questions.','encourage someone to do something 表示鼓励某人做某事。'],
+ ['essential','必不可少的','/ɪˈsenʃəl/','Sleep is essential for good health.','essential 强调不可缺少，而不只是有用。'],
+ ['evaluate','评估','/ɪˈvæljueɪt/','We need to evaluate the results.','evaluate 表示依据标准判断价值或效果。'],
+ ['evidence','证据','/ˈevɪdəns/','There is no evidence to support this idea.','evidence 通常用作不可数名词。'],
+ ['expand','扩大；展开','','We plan to expand the team.','expand the team 表示扩大团队。'],
+ ['expect','预期；期待','','What do you expect to happen?','expect to do 表示预计会做某事。'],
+ ['explore','探索','','Let us explore another option.','explore an option 表示研究一种可能的选择。'],
+ ['flexible','灵活的','','We offer flexible working hours.','flexible hours 表示可以灵活安排的时间。'],
+ ['focus','专注；焦点','','Focus on one task at a time.','focus on 表示专注于某事。'],
+ ['improve','改善；提高','','Practice can improve your pronunciation.','improve a skill 表示提高一项技能。'],
+ ['include','包括','','The price includes breakfast.','include 表示把某项包含在整体中。'],
+ ['independent','独立的','','She is an independent researcher.','independent 表示不依赖他人或组织。'],
+ ['insight','洞察；深入理解','','The report offers insight into the problem.','insight into 表示对某事的深入理解。'],
+ ['maintain','维持；维护','','Try to maintain a regular routine.','maintain 表示使某种状态持续。'],
+ ['notice','注意到；通知','','Did you notice the change?','notice 表示察觉到某事。'],
+ ['opportunity','机会','','This is a good opportunity to learn.','an opportunity to do something 表示做某事的机会。'],
+ ['organize','组织；整理','','Let us organize the notes by topic.','organize 表示按某种方法安排或整理。'],
+ ['participate','参与','','Everyone is welcome to participate.','participate in 表示参加活动。'],
+ ['perspective','观点；视角','','Try looking at it from another perspective.','from a different perspective 表示从不同角度看。'],
+ ['practical','实用的；实际的','','Can you give me some practical advice?','practical advice 表示可实际采用的建议。'],
+ ['predict','预测','','It is difficult to predict the outcome.','predict 表示预先判断会发生什么。'],
+ ['prepare','准备','','Please prepare a short introduction.','prepare for 表示为某事作准备。'],
+ ['priority','优先事项','','Safety is our first priority.','first priority 表示最重要、应先处理的事情。'],
+ ['progress','进展','','You are making good progress.','make progress 表示取得进步。'],
+ ['provide','提供','','The guide provides useful information.','provide someone with something 表示向某人提供某物。'],
+ ['purpose','目的','','What is the purpose of this meeting?','the purpose of 表示某事的目的。'],
+ ['recognize','识别；认可','','I recognized her voice immediately.','recognize 强调凭已有印象辨认出来。'],
+ ['reflect','反映；反思','','Take time to reflect on what you learned.','reflect on 表示认真思考过去的经历。'],
+ ['relevant','相关的','','Please include only relevant information.','relevant to 表示与某事相关。'],
+ ['reliable','可靠的','','We need a reliable source of information.','reliable 表示可以信赖。'],
+ ['require','需要；要求','','This task requires careful planning.','require 表示某事必须具备某个条件。'],
+ ['resource','资源','','The library is a useful resource.','resource 可以指有助于完成某事的信息或材料。'],
+ ['respond','回应','','Please respond to the email today.','respond to 表示回应某人或某事。'],
+ ['review','复习；审查','','Review your notes before the meeting.','review 表示再次查看或思考已有内容。'],
+ ['schedule','日程；安排','','Let us schedule a meeting for Monday.','schedule a meeting 表示安排会议。'],
+ ['specific','具体的','','Can you give a specific example?','specific 表示明确且具体，而非笼统。'],
+ ['support','支持','','The data supports this conclusion.','support 表示支持某人、观点或结论。'],
+ ['sustainable','可持续的','','We need a sustainable solution.','sustainable 表示能够长期维持。'],
+ ['take into account','考虑到','','We should take the cost into account.','take something into account 表示作决定时考虑某因素。'],
+ ['thoughtful','考虑周到的','','Thank you for your thoughtful feedback.','thoughtful 表示经过认真思考或顾及他人。'],
+ ['transfer','转移；调动','','Please transfer the files to this folder.','transfer A to B 表示把某物移到另一个地方。'],
+ ['understand','理解','','I understand your point.','understand 表示明白含义或原因。'],
+ ['valuable','有价值的','','Your feedback is valuable to us.','valuable 表示很重要或很有用。'],
+ ['vary','变化；不同','','Results may vary from person to person.','vary from A to B 表示因情况而不同。']
+];
+const words = definitions.map(([term,meaning,ipa,example,note], index) => ({id:index,term,meaning,ipa,example,note,joined:index<52,status:index<14?'mastered':'learning',due:index>=14&&index<44,fresh:index>=44&&index<52,ready:index!==59}));
+const params = new URLSearchParams(location.search);
+const names = {A:'先学后查',B:'查学并行',C:'一步一页'};
+const listNames = {cet4:'四级',cet6:'六级',ielts:'雅思',none:'不指定'};
+const listIds = {cet4:words.filter(w=>w.id%5!==4).map(w=>w.id),cet6:words.map(w=>w.id),ielts:words.filter(w=>w.id%3!==0).map(w=>w.id)};
+const state = {
+ variant:names[params.get('variant')]?params.get('variant'):'A',
+ page:['words','profile','today','plan'].includes(params.get('page'))?params.get('page'):'words',
+ activeList:'cet6',batchSize:10,queries:{},browse:'personal',browseOpen:null,selectedWord:9,bPane:'detail',mobileDetail:false,cView:'home',profileView:'home',records:false,
+ profile:{purpose:'工作交流',minutes:20,target:'中高级',note:'在工作讨论中，更清楚地表达自己的想法。',interests:'科技、产品设计、日常交流'},
+ draft:null,dirty:false,saveError:false,failSave:false,round:null,answers:[],scenario:'normal'
+};
+let pendingNavigation=null,toastTimer=null,lastFocus=null,sourceDraft=null;
+const dueWords = () => words.filter(w=>w.joined&&w.due);
+const ownWords = () => words.filter(w=>w.joined);
+const roundWord = () => state.round?.items[state.round.index];
+const roundDone = () => state.round && state.round.items.length > 0 && state.round.index >= state.round.items.length;
+const roundAnswered = () => state.round && state.round.picked !== null;
+const profileDirty = () => state.draft && JSON.stringify(state.draft)!==JSON.stringify(state.profile);
+function buildRound(){
+ const due=dueWords();
+ const fresh=ownWords().filter(w=>w.fresh).sort((a,b)=>Number(listIds[state.activeList]?.includes(b.id))-Number(listIds[state.activeList]?.includes(a.id)));
+ const items=[...due,...fresh].slice(0,state.batchSize).map(w=>({...w}));
+ state.round={items,index:0,picked:null,correct:0,source:state.activeList,size:state.batchSize};
+}
+buildRound();
+const queryFor = () => state.queries[state.browse] ||= {search:'',filter:'all',page:1,size:50};
+function listData(){
+ const q=queryFor();const base=state.browse==='personal'?ownWords():words.filter(w=>listIds[state.browse].includes(w.id));
+ const filtered=base.filter(w=>(!q.search||`${w.term} ${w.meaning}`.toLowerCase().includes(q.search.trim().toLowerCase()))&&(q.filter==='all'||(q.filter==='joined'?w.joined:q.filter==='unjoined'?!w.joined:w.status===q.filter)));
+ const pages=Math.max(1,Math.ceil(filtered.length/q.size));q.page=Math.min(q.page,pages);
+ return {base,filtered,pages,items:filtered.slice((q.page-1)*q.size,q.page*q.size)};
+}
+function updateURL(){
+ const url=new URL(location.href);url.searchParams.set('variant',state.variant);url.searchParams.set('page',state.page);
+ try{history.replaceState(null,'',url);}catch{/* Some file viewers disallow history; the standalone file still runs. */}
+}
+function focusAction(action){requestAnimationFrame(()=>document.querySelector(`[data-action="${action}"]`)?.focus());}
+function navigate(change){
+ if(profileDirty()){
+  pendingNavigation=change;
+  showDialog('leave-dialog',`<div class="dialog-title"><h2 id="leave-title">修改还没有保存</h2></div><p class="muted">离开会放弃刚才修改的个人目标。你也可以留在这里继续编辑。</p><div class="dialog-actions">${btn('放弃修改并离开','discard-leave')}${btn('继续编辑','keep-editing','primary','autofocus')}</div>`);
+  return;
+ }
+ if(state.draft)state.draft=null;
+ change();render();
+}
+function announce(text){clearTimeout(toastTimer);const el=$('#toast');el.textContent=text;el.classList.add('visible');toastTimer=setTimeout(()=>el.classList.remove('visible'),4300);}
+function showDialog(id,html){lastFocus=document.activeElement;const dialog=$(`#${id}`);dialog.innerHTML=html;dialog.showModal();}
+function closeDialog(id){$(`#${id}`).close();if(lastFocus?.isConnected)lastFocus.focus();}
+function header(){
+ $('#header').innerHTML=`<div class="brand"><span class="brand-mark">${icon('book')}</span>英语教练</div><nav class="app-nav" aria-label="英语教练">${[['today','今天'],['words','单词'],['plan','大纲'],['profile','个人']].map(([id,label])=>`<button type="button" data-action="page" data-page="${id}" ${state.page===id?'aria-current="page"':''}>${label}</button>`).join('')}</nav><div class="header-meta"><span class="dot"></span>为自己的节奏而学</div>`;
+}
+function PrototypeSwitcher(){
+ // This switcher exists only in the excluded prototype artifact, never the production client bundle.
+ if(document.documentElement.dataset.prototype!=='true')return '';
+ return `<button type="button" data-action="prev-variant" aria-label="上一个方案">${icon('left')}</button><div class="variant-label"><small>比较设计 · ${['A','B','C'].indexOf(state.variant)+1} / 3</small><span class="variant-name">${state.variant}　${names[state.variant]}</span></div><button type="button" data-action="next-variant" aria-label="下一个方案">${icon('right')}</button><span class="control-divider"></span><button type="button" data-action="state">状态<span class="sr-only">与演示场景</span></button><button type="button" data-action="reset" title="还原全部示例数据">重置</button>`;
+}
+function studyCard(){
+ const round=state.round;const word=roundWord();
+ if(roundDone())return `<section class="study-card"><div class="empty"><span class="check-mark">${icon('check')}</span><h2>这一轮完成了</h2><p class="muted" style="margin-top:10px">练习 ${round.items.length} 项，答对 ${round.correct} 项。</p><p class="hint" style="margin-top:5px">${dueWords().length?`还有 ${dueWords().length} 项到期词，下一轮继续优先复习。`:'到期复习已完成，可以继续学习新词。'}</p>${btn(dueWords().length?'再复习一轮':'继续学习新词','new-round','primary')}<div style="margin-top:12px">${btn('先休息一下，看看词汇','finish-browse','text')}</div></div></section>`;
+ if(!word)return `<section class="study-card"><div class="empty"><span class="check-mark">${icon('check')}</span><h2>这次没有待练习的词</h2><p class="hint">${state.scenario==='unavailable'?'剩余词条暂不可练，不会自动改用其他来源。':state.activeList==='none'?'尚未指定新词来源，可以选一个主题词库。':'当前示例词条全部已加入；已加入不等于已掌握。'}</p>${btn('选择其他词库','choose-source','primary')}<div style="margin-top:12px">${btn('按画像补词','profile-supplement','text')}</div></div></section>`;
+ const picked=round.picked;const correctIndex=word.id%4;
+ const distractors=['分配；拨出','推迟；延期','保存；储存','忽略；不理会'].filter(v=>v!==word.meaning).slice(0,3);distractors.splice(correctIndex,0,word.meaning);
+ return `<section class="study-card" aria-label="本轮学习"><div class="study-top"><span>${word.fresh?'初次学习':'到期复习'}</span><span>本轮 <strong>${round.index+1}</strong> / ${round.items.length} 项</span></div><div class="progress-track" role="progressbar" aria-label="本轮完成进度" aria-valuemin="0" aria-valuemax="${round.items.length}" aria-valuenow="${round.index+(picked!==null?1:0)}"><span style="width:${(round.index+(picked!==null?1:0))/round.items.length*100}%"></span></div><div class="term-block"><div class="term-row"><h2 class="term" lang="en">${esc(word.term)}</h2>${audio(word.term)}</div><div class="pronunciation" lang="en">${esc(word.ipa || 'English expression')}</div></div><p class="question">选出正确的中文释义</p><div class="choices">${distractors.map((choice,i)=>{const result=picked===null?'':i===correctIndex?'correct':i===picked?'wrong':'dim';return `<button type="button" class="choice" data-action="answer" data-index="${i}" ${picked!==null?'disabled':''} data-result="${result}"><span class="choice-key">${i+1}</span><span>${esc(choice)}</span>${result==='correct'?'<span class="choice-status" aria-label="正确答案">✓</span>':result==='wrong'?'<span class="choice-status" aria-label="回答错误">×</span>':''}</button>`;}).join('')}</div>${picked!==null?`<div class="feedback" role="status"><div class="feedback-title ${picked===correctIndex?'':'wrong'}">${picked===correctIndex?'答对了':'再记一次'}：${esc(word.meaning)}</div><p class="example" lang="en">${esc(word.example)}</p><p class="hint">${esc(word.note)}</p><div class="feedback-action"><span class="hint">${word.fresh?'首次作答会进入后续复习。':'复习按间隔推进，不会一次答对就标记掌握。'}</span>${btn(round.index+1===round.items.length?'完成本轮':'下一项','next-word','primary')}</div></div>`:`<div class="study-bottom"><span>先复习旧词，再安排新词</span><span class="keyboard-hint"><kbd>1</kbd>–<kbd>4</kbd> 选择</span></div>`}</section>`;
+}
+function sourceAside(){return `<aside class="study-aside"><h3>按你的节奏</h3><div class="setting-line"><span class="label">全部待复习</span><b>${dueWords().length} 项</b></div><div class="setting-line"><label class="label" for="batch-size">每批学习</label><div class="batch-control"><input id="batch-size" type="number" min="3" max="30" value="${state.batchSize}" data-change="batch" aria-label="每批学习词数"><span class="small muted">项</span></div></div><div class="setting-source"><div class="label">新词优先来自</div><div class="row between"><b>${listNames[state.activeList]}${state.activeList==='cet6'?'词库':''}</b>${btn('更换','choose-source','text small')}</div><p class="hint" style="margin-top:10px">选库只影响下一批新词。<br>所有来源的到期词都优先复习。</p></div><p class="hint">一批学完还能继续，没有每日上限。</p></aside>`;}
+function sourceTabs(){return `<div class="source-tabs" role="group" aria-label="浏览词库">${['cet4','cet6','ielts'].map(id=>`<button type="button" data-action="browse-source" data-source="${id}" aria-pressed="${state.browse===id}">${listNames[id]}${id==='cet6'?'（含四级基础）':''}</button>`).join('')}</div>`;}
+function sourceSummary(){
+ if(state.browse==='personal')return '';
+ const all=words.filter(w=>listIds[state.browse].includes(w.id));const current=state.activeList===state.browse;
+ return `<div class="source-summary"><div><strong>${listNames[state.browse]}学习参考词库</strong><p class="hint">此处只浏览，不会加入个人学习。</p><p class="hint">示例目录 ${all.length} 项，可练 ${all.filter(w=>w.ready).length} 项</p></div>${current?`<span class="pill accent">${icon('check','small')} 当前词库</span>`:btn('设为当前词库','set-source','','data-source="'+state.browse+'"')}</div>`;
+}
+function listMarkup(){
+ const q=queryFor();const data=listData();const personal=state.browse==='personal';
+ const filters=personal?[['all','全部状态'],['learning','在学'],['mastered','已掌握']]:[['all','全部状态'],['joined','已加入'],['unjoined','未加入']];
+ return `${sourceSummary()}<div class="list-tools"><label class="search-box">${icon('search')}<span class="sr-only">搜索英文或中文释义</span><input type="search" data-input="search" placeholder="搜索英文或中文释义" value="${esc(q.search)}" autocomplete="off"></label><select class="filter-select" data-change="filter" aria-label="词汇状态筛选">${filters.map(([value,label])=>`<option value="${value}" ${q.filter===value?'selected':''}>${label}</option>`).join('')}</select></div><div class="list-caption"><span>共 ${data.filtered.length} 项${q.search||q.filter!=='all'?'符合条件':''}</span><span>按字母排序</span></div><div class="word-list" aria-label="${personal?'我的词汇':'主题词库'}列表">${data.items.length?data.items.map(w=>`<div class="word-row ${state.variant==='B'&&state.selectedWord===w.id&&state.bPane==='detail'?'selected':''}"><button type="button" class="word-main" data-action="word-detail" data-id="${w.id}" aria-label="查看 ${esc(w.term)} 详情"><span class="list-term" lang="en">${esc(w.term)}</span><span class="word-meaning">${esc(w.meaning)}</span><span class="word-state ${personal&&w.due?'due':''}">${personal?(w.status==='mastered'?'已掌握':w.due?'待复习':w.fresh?'未首次作答':'在学'):!w.ready?'暂不可练':w.joined?'已加入':'未加入'}</span></button>${audio(w.term)}</div>`).join(''):`<div class="empty"><h3>没有找到匹配的词</h3><p class="hint">试试更短的英文或中文释义，也可以清除筛选。</p>${btn('清除搜索与筛选','clear-search','text')}</div>`}</div><div class="pagination"><label>每页 <select data-change="page-size" aria-label="每页条数"><option value="50" ${q.size===50?'selected':''}>50 项</option><option value="20" ${q.size===20?'selected':''}>20 项</option></select></label><div class="row">${btn('上一页','previous-page','quiet small',q.page===1?'disabled':'')}<span>${q.page} / ${data.pages} 页</span>${btn('下一页','next-page','quiet small',q.page===data.pages?'disabled':'')}</div></div>${!personal?`<details class="source-footnote"><summary>词库来源与说明</summary><p>正式产品使用开源学习参考词库，不是官方考试全集。这里仅包含合成演示条目，数字不代表真实词库总量。已加入只表示进入个人学习，不代表已掌握。</p></details>`:''}`;
+}
+function detailMarkup(id){
+ const w=words.find(w=>w.id===id) || words[9];
+ return `<div class="row between"><span class="pill">${w.term.includes(' ')?'表达':'单词'}</span>${audio(w.term)}</div><h2 class="detail-term" id="detail-title" lang="en">${esc(w.term)}</h2>${w.ipa?`<div class="pronunciation">${esc(w.ipa)}</div>`:''}<p class="detail-meaning">${esc(w.meaning)}</p><div class="definition-example"><p class="example" lang="en">${esc(w.example)}</p><p class="hint" style="margin-top:12px">${esc(w.note)}</p></div><dl class="detail-facts"><dt>学习状态</dt><dd>${!w.joined?'未加入':w.status==='mastered'?'已掌握':w.due?'在学，今天待复习':w.fresh?'已加入，未首次作答':'在学'}</dd><dt>所属词库</dt><dd>${Object.entries(listIds).filter(([,ids])=>ids.includes(w.id)).map(([id])=>listNames[id]).join('、')}</dd><dt>练习状态</dt><dd>${w.ready?'已准备基础练习':'暂不可练：释义待复核'}</dd></dl><div class="detail-tip">${w.joined?'同一个词在不同词库共享学习进度。换词库不会重新开始。':'浏览不会加入学习；后续补词时，才会从当前词库选择合适的条目。'}</div>`;
+}
+function browseSection(title,withTabs=true){return `<section class="panel browse-expanded" id="browse-panel"><div class="section-head"><h2>${title}</h2>${state.variant==='A'?btn('收起','close-browse','quiet small'):''}</div>${state.browse!=='personal'&&withTabs?sourceTabs():''}${listMarkup()}</section>`;}
+function VariantA(){
+ if(state.page==='profile')return profileA();
+ return `<div class="page-head"><div><h1>单词</h1><p>先把熟悉的词记牢，再慢慢积累。</p></div>${btn('学习安排','round-settings','quiet small','style="font-weight:400"')}</div><div class="a-focus"><div>${studyCard()}</div>${sourceAside()}</div><div class="browse-gates"><button type="button" class="gate" data-action="open-personal" aria-expanded="${state.browseOpen==='personal'}"><span class="gate-icon">${icon('cards')}</span><span><strong>我的词汇</strong><small>${ownWords().length} 项已加入，随时查找</small></span><span class="chevron">${icon(state.browseOpen==='personal'?'down':'right','small')}</span></button><button type="button" class="gate" data-action="open-themed" aria-expanded="${state.browseOpen==='themed'}"><span class="gate-icon">${icon('layers')}</span><span><strong>主题词库</strong><small>浏览四级、六级和雅思词汇</small></span><span class="chevron">${icon(state.browseOpen==='themed'?'down':'right','small')}</span></button></div>${state.browseOpen?browseSection(state.browseOpen==='personal'?'我的词汇':'主题词库'):''}`;
+}
+function workspaceNav(){return `<aside class="workspace-nav" aria-label="词汇来源"><div class="label">我的学习</div><button type="button" data-action="browse-source" data-source="personal" aria-pressed="${state.browse==='personal'}">${icon('cards','small')}我的词汇</button><div class="label nav-separator">主题词库</div>${['cet4','cet6','ielts'].map(id=>`<button type="button" data-action="browse-source" data-source="${id}" aria-pressed="${state.browse===id}">${listNames[id]}${state.activeList===id?'<span aria-label="当前词库">•</span>':''}</button>`).join('')}</aside>`;}
+function VariantB(){
+ if(state.page==='profile')return profileB();
+ return `<div class="page-head"><div><h1>单词</h1><p>找到一个词，顺手弄懂它。</p></div>${btn('新词来源：'+listNames[state.activeList],'choose-source','quiet small')}</div><div class="review-strip"><div><strong>${dueWords().length ? `全部待复习 ${dueWords().length} 项` : '到期复习已完成'}</strong><p>${state.round.items.length ? `本轮 ${state.round.items.length} 项，查词不会打断进度。` : '选择一个新词来源，继续积累。'}</p></div>${btn(state.bPane==='study'&&state.mobileDetail?'正在练习':'继续本轮学习','b-study','primary',state.bPane==='study'&&state.mobileDetail?'disabled':'')}</div><div class="workspace" data-mobile-detail="${state.mobileDetail}">${workspaceNav()}<section class="workspace-list" aria-label="查找词汇"><h2>${state.browse==='personal'?'我的词汇':listNames[state.browse]+'词库'}${state.browse==='cet6'?'<span class="small muted">　含四级基础</span>':''}</h2>${listMarkup()}</section><section class="workspace-detail" aria-label="词汇详情与本轮学习"><div class="mobile-back">${btn(icon('left','small')+'返回词表','b-back','text')}</div><div class="pane-title"><span>${state.bPane==='study'?'本轮学习':'词汇详情'}</span>${state.bPane==='study'?btn('返回词义','b-detail','text small'):''}</div>${state.bPane==='study'?studyCard():detailMarkup(state.selectedWord)}</section></div>`;
+}
+function VariantC(){
+ if(state.page==='profile')return profileC();
+ let inner='';
+ if(state.cView==='home')inner=`<div class="page-head"><div><h1>单词</h1><p>今天也从一小轮开始。</p></div></div><section class="c-learn"><h2>先复习，再学新词</h2><p>${dueWords().length ? `${dueWords().length} 项到期词，分成小轮慢慢完成。` : '到期复习已完成，可以继续积累新词。'}</p>${btn(`继续本轮学习${icon('play','small')}`,'c-study','primary')}<div class="hint">每批 ${state.batchSize} 项，不设每日上限</div></section><div class="c-group"><button type="button" class="menu-row" data-action="open-personal">${icon('cards')}<span><strong>我的词汇</strong><small>${ownWords().length} 项已加入，可以搜索与查看</small></span>${icon('right','small')}</button><button type="button" class="menu-row" data-action="open-themed">${icon('layers')}<span><strong>主题词库</strong><small>四级、六级（含四级基础）、雅思</small></span>${icon('right','small')}</button></div><div class="c-foot"><span>新词优先来自：${listNames[state.activeList]}</span>${btn('调整学习安排','round-settings','text small')}</div>`;
+ else if(state.cView==='study')inner=`${backHeading('本轮学习','c-home')}${studyCard()}<div class="c-foot"><span>到期旧词优先，本轮题目不会随切库改变。</span>${btn('学习安排','round-settings','text small')}</div>`;
+ else if(state.cView==='word')inner=`${backHeading('词汇详情','c-list')}<section class="panel">${detailMarkup(state.selectedWord)}</section>`;
+ else inner=`${backHeading(state.browse==='personal'?'我的词汇':'主题词库','c-home')}<section class="panel">${state.browse!=='personal'?sourceTabs():''}${listMarkup()}</section>`;
+ return `<div class="compact-page">${inner}</div>`;
+}
+function backHeading(title,action){return `<div class="back-heading">${btn(icon('left'),action,'quiet','aria-label="返回"')}<h1>${title}</h1></div>`;}
+function goalSummary(compact=false){
+ const p=state.profile;const interests=p.interests.split(/[、,，]/).map(s=>s.trim()).filter(Boolean);
+ return `<section class="panel goal-summary"><div class="section-head"><h2>个人目标</h2>${btn(icon('edit','small')+'编辑','edit-goal','text small')}</div><p class="goal-phrase">${esc(p.note||'为自己设定一个具体目标。')}</p><div class="goal-facts"><div class="goal-fact"><span>学习用途</span><b>${esc(p.purpose)}</b></div><div class="goal-fact"><span>每天投入</span><b>${p.minutes} 分钟</b></div><div class="goal-fact"><span>目标档位</span><b>${esc(p.target)}</b></div></div><div class="interests"><span class="muted">兴趣</span>${interests.slice(0,compact?2:3).map(v=>`<span class="interest">${esc(v)}</span>`).join('')}${interests.length>(compact?2:3)?`<details><summary>查看全部 ${interests.length} 项</summary><p>${interests.map(esc).join('、')}</p></details>`:''}${!interests.length?'<span class="muted">暂未填写</span>':''}</div></section>`;
+}
+function levelPair(){return `<div class="level-pair"><div><span class="label">当前水平估计</span><b>中级</b></div>${icon('arrow')}<div><span class="label">目标档位</span><b>${esc(state.profile.target)}</b></div></div>`;}
+function metrics(){return `<div class="metric-line"><div><b>12<span class="sr-only">天</span></b><span>完成课程天数</span></div><div><b>4<span class="sr-only">天</span></b><span>连续学习天数</span></div><div><b>${words.filter(w=>w.status==='mastered').length}<span class="sr-only">项</span></b><span>已掌握词汇</span></div></div>`;}
+function curve(){return `<section class="curve-wrap"><div class="section-head"><h2>水平变化</h2><span class="small muted">最近 3 次测评</span></div><svg viewBox="0 0 530 180" role="img" aria-label="10月2日初级，10月12日中级，10月22日中级。水平估计，不是考试分数。"><path d="M68 35H503M68 85H503M68 135H503" stroke="#e5eaf1" stroke-width="1" fill="none"/><text x="8" y="39">中高级</text><text x="20" y="89">中级</text><text x="20" y="139">初级</text><path d="M88 135L286 85L484 85" stroke="#345bc0" stroke-width="2.5" fill="none"/><g fill="#fff" stroke="#345bc0" stroke-width="2"><circle cx="88" cy="135" r="4"/><circle cx="286" cy="85" r="4"/><circle cx="484" cy="85" r="4"/></g><text x="66" y="168">10月2日</text><text x="260" y="168">10月12日</text><text x="458" y="168">10月22日</text></svg><p class="hint">测评给出水平估计，不与考试分数等价。</p></section>`;}
+function records(){return `<div class="record-list"><div class="record-row"><time>10月22日</time><b>中级</b><span class="muted small">阅读更稳定</span></div><div class="record-row"><time>10月12日</time><b>中级</b><span class="muted small">建议加强听力</span></div><div class="record-row"><time>10月2日</time><b>初级</b><span class="muted small">首次测评</span></div></div>`;}
+function profileA(){return `<div class="page-head"><div><h1>个人</h1><p>知道自己为什么学，也看见走过的路。</p></div></div><div class="profile-a"><div>${goalSummary()}<section class="progress-summary"><div class="section-head"><h2>一点一点，已经积累了这些</h2>${btn(state.records?'收起记录':'查看记录','toggle-records','text small')}</div>${metrics()}</section>${state.records?curve()+`<section class="panel" style="margin-top:20px"><h2>测评记录</h2>${records()}</section>`:''}</div><aside class="level-box"><h2>现在与目标</h2>${levelPair()}<p>最近测评于 10月22日。<br>这是学习参考，不是考试分数。</p><div class="focus-suggestion"><h3>下一步，多练听力</h3><p>最近测评中，听力丢分较多。可以从听懂工作场景中的短对话开始。</p>${btn('查看测评记录','show-records','text small')}</div></aside></div>`;}
+function profileB(){return `<div class="page-head"><div><h1>个人</h1><p>先回顾学习变化，再调整方向。</p></div></div><div class="profile-b"><div><div class="row between"><div><span class="label">当前水平估计</span><h2 style="font-size:27px;margin-top:5px">中级</h2></div><span class="small muted">最近测评 10月22日</span></div>${curve()}<section class="progress-summary"><h2>学习积累</h2>${metrics()}</section><section style="margin-top:24px"><div class="section-head"><h2>测评记录</h2>${btn(state.records?'收起':'展开','toggle-records','text small')}</div>${state.records?records():'<p class="hint">3 次测评记录。展开可查看每次估计与建议。</p>'}</section></div><aside>${goalSummary(true)}<div class="focus-suggestion"><h3>值得多练：听力</h3><p>比起同时追踪很多数字，先照顾最近测评中最需要练习的部分。</p></div></aside></div>`;}
+function profileC(){
+ if(state.profileView==='goal')return `<div class="compact-page">${backHeading('个人目标','profile-home')}${goalSummary()}</div>`;
+ if(state.profileView==='records')return `<div class="compact-page">${backHeading('学习记录','profile-home')}${curve()}<section class="panel" style="margin-top:20px"><h2>测评记录</h2>${records()}</section></div>`;
+ return `<div class="compact-page"><div class="page-head"><div><h1>个人</h1><p>把注意力留给真正重要的事。</p></div></div><section class="profile-c-summary">${levelPair()}${metrics()}<p class="hint">最近测评 10月22日，估计仅作学习参考。</p></section><div class="c-group"><button type="button" class="menu-row" data-action="profile-goal">${icon('profile')}<span><strong>个人目标</strong><small>${esc(state.profile.purpose)}，每天 ${state.profile.minutes} 分钟</small></span>${icon('right','small')}</button><button type="button" class="menu-row" data-action="profile-records">${icon('chart')}<span><strong>学习记录</strong><small>水平变化与最近 3 次测评</small></span>${icon('right','small')}</button></div><p class="hint" style="margin:22px 4px">目标可以慢慢调整。修改目标不会重置已有学习进度。</p></div>`;
+}
+function editor(){
+ const d=state.draft;
+ return `<div class="editor">${backHeading('编辑个人目标','cancel-edit')}<form id="goal-form" class="panel"><p class="muted">让后续课程更贴近你。已有课程和学习进度不变。</p><div class="form-grid"><div class="field"><label for="purpose">主要用英语做什么</label><select id="purpose" name="purpose" data-draft="purpose">${['工作交流','学习研究','旅行交流','影音阅读','考试准备','其他'].map(v=>`<option ${v===d.purpose?'selected':''}>${v}</option>`).join('')}</select></div><div class="field"><label for="minutes">每天愿意投入多少分钟</label><input type="number" id="minutes" name="minutes" data-draft="minutes" min="5" max="180" required value="${d.minutes}"><span class="hint">用来安排课程，不是每日学习上限。</span></div><div class="field full"><label for="target">希望达到的档位</label><select id="target" name="target" data-draft="target">${['暂未设定','入门','初级','中级','中高级','高级','精通'].map(v=>`<option ${v===d.target?'selected':''}>${v}</option>`).join('')}</select></div><div class="field full"><label for="goal-note">具体想做到什么</label><textarea id="goal-note" name="note" data-draft="note" placeholder="例如：在工作讨论中清楚地表达想法">${esc(d.note)}</textarea></div><div class="field full"><label for="interests">喜欢哪些话题</label><input id="interests" name="interests" data-draft="interests" value="${esc(d.interests)}" placeholder="例如：科技、旅行、设计"><span class="hint">用顿号或逗号分隔，最多 12 项；保存时一并收录。</span></div></div><div id="form-error" ${state.saveError?'':'hidden'} class="form-error" role="alert">保存未完成（模拟失败），输入已保留。取消下方失败模拟后可以重试。</div><div class="form-actions"><span class="draft-indicator" id="draft-indicator">${profileDirty()?'有未保存的修改':'还没有修改'}</span>${btn('取消','cancel-edit')}<button type="submit" class="button primary">保存目标</button></div><div class="form-prototype-note"><label><input type="checkbox" data-change="fail-save" ${state.failSave?'checked':''}>原型演示：模拟保存失败，检查输入是否保留</label></div></form></div>`;
+}
+function contextPage(){return `<section class="context-only">${icon(state.page==='today'?'book':'layers')}<h1>${state.page==='today'?'今天':'大纲'}沿用现有设计</h1><p>这里保留原有导航上下文，没有重新设计这页。<br>本次只比较单词页和个人页，不会连接真实课程。</p><div class="row">${btn('查看单词页','page','primary','data-page="words"')}${btn('查看个人页','page','','data-page="profile"')}</div></section>`;}
+function visibleState(){
+ return {prototype:true,variant:state.variant,page:state.page,view:{browseOpen:state.browseOpen,browse:state.browse,cView:state.cView,profileView:state.profileView,bPane:state.bPane,mobileDetail:state.mobileDetail},activeWordList:state.activeList,batchSize:state.batchSize,dueCount:dueWords().length,personalCount:ownWords().length,masteredCount:words.filter(w=>w.status==='mastered').length,round:state.round?{sourceAtStart:state.round.source,configuredSizeAtStart:state.round.size,itemIds:state.round.items.map(w=>w.id),index:state.round.index,picked:state.round.picked,correct:state.round.correct}:null,queries:state.queries,selectedWord:state.selectedWord,profile:state.profile,draft:state.draft,dirty:!!profileDirty(),saveError:state.saveError,failSave:state.failSave,answers:state.answers,scenario:state.scenario,persistence:'none',hostCalls:0};
+}
+function renderState(){
+ $('#state-summary').textContent=`示例状态：当前词库 ${listNames[state.activeList]}；本轮开始时偏好 ${state.round?.source?listNames[state.round.source]:'无'}；数据仅在内存中。`;
+ const pre=$('#state-output');if(pre)pre.textContent=JSON.stringify(visibleState(),null,2);
+}
+function render(options={}){
+ const scroll=$('.word-list')?.scrollTop||0;
+ const active=document.activeElement;const inputFocus=active?.matches('[data-input="search"]');
+ const start=inputFocus?active.selectionStart:null,end=inputFocus?active.selectionEnd:null;
+ header();document.documentElement.dataset.variant=state.variant;
+ $('#app').innerHTML=state.draft?editor():!['words','profile'].includes(state.page)?contextPage():({A:VariantA,B:VariantB,C:VariantC}[state.variant])();
+ $('#switcher').innerHTML=PrototypeSwitcher();renderState();updateURL();
+ if(options.keepListScroll&&$('.word-list'))$('.word-list').scrollTop=scroll;
+ if(inputFocus&&$('[data-input="search"]')){const input=$('[data-input="search"]');input.focus({preventScroll:true});if(start!==null)input.setSelectionRange(start,end);}
+}
+function changeVariant(delta){navigate(()=>{const variants=['A','B','C'];state.variant=variants[(variants.indexOf(state.variant)+delta+3)%3];console.info('Prototype variant state',visibleState());});}
+function openSource(){
+ sourceDraft=state.activeList;
+ showDialog('source-dialog',`<div class="dialog-title"><h2 id="source-title">选择新词来源</h2><button type="button" class="icon-button" data-action="close-source" aria-label="关闭">${icon('close')}</button></div><p class="muted small">下一批生效。不会把整库加入学习，也不会重置已有进度。</p>${['cet4','cet6','ielts','none'].map(id=>`<button type="button" class="source-choice" data-action="source-option" data-source="${id}" aria-pressed="${state.activeList===id}"><strong>${id==='none'?'不指定词库':listNames[id]+'学习参考词库'}</strong><small>${id==='cet6'?'包含四级基础词汇':id==='none'?'后续按画像与课程补充新词':id==='ielts'?'优先参考雅思方向的词汇':'优先巩固基础词汇'}</small></button>`).join('')}<div class="dialog-actions">${btn('取消','close-source')}${btn('保存新词来源','save-source','primary')}</div>`);
+}
+function openSettings(){showDialog('source-dialog',`<div class="dialog-title"><h2 id="source-title">学习安排</h2><button type="button" class="icon-button" data-action="close-source" aria-label="关闭">${icon('close')}</button></div><p class="muted">本轮题目保持不变，调整从下一批生效。</p><div class="field" style="margin-top:24px"><label for="dialog-batch">每批学习词数</label><input type="number" min="3" max="30" id="dialog-batch" value="${state.batchSize}"><span class="hint">3–30 项，一批学完还能继续；不是每日额度。</span></div><div class="setting-line" style="margin-top:18px"><span class="label">新词优先来自</span><strong>${listNames[state.activeList]}</strong>${btn('更换','settings-source','text small')}</div><div class="dialog-actions">${btn('取消','close-source')}${btn('保存安排','save-batch','primary')}</div>`);}
+function showState(){
+ showDialog('state-dialog',`<div class="dialog-title"><h2 id="state-title">原型状态与场景</h2><button type="button" class="icon-button" data-action="close-state" aria-label="关闭状态">${icon('close')}</button></div><p class="small muted">全部是内存示例。切换方案保留状态，重置或刷新会还原。场景切换会重置本轮，不连接真实数据。</p><div class="scenario-buttons">${btn('常规：30 项待复习','scenario','','data-scenario="normal"')}${btn('无到期词，有新词','scenario','','data-scenario="fresh"')}${btn('全部已加入','scenario','','data-scenario="joined"')}${btn('剩余暂不可练','scenario','','data-scenario="unavailable"')}</div><pre id="state-output"></pre>`);renderState();
+}
+function setScenario(scenario){
+ words.forEach((w,i)=>{w.joined=i<52;w.status=i<14?'mastered':'learning';w.due=i>=14&&i<44;w.fresh=i>=44&&i<52;w.ready=i!==59;});
+ state.scenario=scenario;state.answers=[];
+ if(scenario==='fresh')words.forEach(w=>w.due=false);
+ if(['joined','unavailable'].includes(scenario)){words.forEach(w=>{w.due=false;w.fresh=false;w.joined=scenario==='joined'||w.id!==59;});state.activeList='cet6';}
+ buildRound();render();announce('已切换示例场景，不影响真实学习数据。');
+}
+function answer(index){
+ const word=roundWord();if(!word||roundAnswered())return;
+ state.round.picked=index;const correct=index===word.id%4;if(correct)state.round.correct++;
+ const actual=words.find(w=>w.id===word.id);actual.due=false;actual.fresh=false;
+ state.answers.push({id:word.id,term:word.term,correct});render({keepListScroll:true});focusAction('next-word');
+}
+function newRound(){
+ const fresh=words.some(w=>w.joined&&w.fresh);
+ if(!dueWords().length&&!fresh&&state.activeList!=='none'){
+  const available=words.filter(w=>listIds[state.activeList].includes(w.id)&&!w.joined&&w.ready);
+  available.slice(0,state.batchSize).forEach(w=>{w.joined=true;w.fresh=true;});
+ }
+ buildRound();render();
+}
+function saveGoal(){
+ const form=$('#goal-form');if(!form.reportValidity())return;
+ const interests=state.draft.interests.split(/[、,，]/).map(v=>v.trim()).filter(Boolean);
+ if(interests.length>12){const err=$('#form-error');err.hidden=false;err.textContent='兴趣最多 12 项。请减少后保存，其他输入已保留。';return;}
+ if(state.failSave){state.saveError=true;render();return;}
+ state.profile={...state.draft,minutes:Number(state.draft.minutes),interests:[...new Set(interests)].join('、')};
+ state.draft=null;state.dirty=false;state.saveError=false;render();announce('个人目标已保存到本次原型，刷新后还原。');focusAction('edit-goal');
+}
+document.addEventListener('submit',event=>{if(event.target.id==='goal-form'){event.preventDefault();saveGoal();}});
+document.addEventListener('input',event=>{
+ const el=event.target;
+ if(el.dataset.input==='search'){const q=queryFor();q.search=el.value;q.page=1;render();}
+ if(el.dataset.draft){state.draft[el.dataset.draft]=el.value;state.dirty=!!profileDirty();state.saveError=false;$('#form-error').hidden=true;$('#draft-indicator').textContent=state.dirty?'有未保存的修改':'还没有修改';renderState();}
+});
+document.addEventListener('change',event=>{
+ const el=event.target,action=el.dataset.change;
+ if(action==='filter'){queryFor().filter=el.value;queryFor().page=1;render();}
+ if(action==='page-size'){queryFor().size=Number(el.value);queryFor().page=1;render();}
+ if(action==='batch'){if(el.reportValidity()&&Number(el.value)>=3&&Number(el.value)<=30){state.batchSize=Number(el.value);renderState();announce('每批词数已调整，下一批生效。当前题目不变。');}}
+ if(action==='fail-save'){state.failSave=el.checked;renderState();}
+ if(el.dataset.draft){state.draft[el.dataset.draft]=el.value;state.dirty=!!profileDirty();$('#draft-indicator').textContent=state.dirty?'有未保存的修改':'还没有修改';renderState();}
+});
+document.addEventListener('click',event=>{
+ const target=event.target.closest('[data-action]');if(!target)return;
+ event.preventDefault();const action=target.dataset.action;
+ if(action==='page')navigate(()=>{state.page=target.dataset.page;state.cView='home';state.profileView='home';window.scrollTo(0,0);});
+ else if(action==='prev-variant')changeVariant(-1);
+ else if(action==='next-variant')changeVariant(1);
+ else if(action==='sound')announce(`朗读「${target.dataset.term}」：这里只演示操作反馈，不调用语音或外发文本。`);
+ else if(action==='answer')answer(Number(target.dataset.index));
+ else if(action==='next-word'){state.round.index++;state.round.picked=null;render({keepListScroll:true});focusAction(roundDone()?'new-round':'answer');}
+ else if(action==='new-round')newRound();
+ else if(action==='choose-source')openSource();
+ else if(action==='round-settings')openSettings();
+ else if(action==='close-source')closeDialog('source-dialog');
+ else if(action==='source-option'){sourceDraft=target.dataset.source;$$('.source-choice').forEach(b=>b.setAttribute('aria-pressed',b.dataset.source===sourceDraft));}
+ else if(action==='save-source'){state.activeList=sourceDraft;closeDialog('source-dialog');render({keepListScroll:true});announce('新词来源已保存，下一批生效。本轮题目与已有进度不变。');}
+ else if(action==='save-batch'){const input=$('#dialog-batch');if(input.reportValidity()&&Number(input.value)>=3&&Number(input.value)<=30){state.batchSize=Number(input.value);closeDialog('source-dialog');render({keepListScroll:true});announce('学习安排已保存，下一批生效。');}}
+ else if(action==='settings-source'){closeDialog('source-dialog');openSource();}
+ else if(action==='set-source'){state.activeList=target.dataset.source;render({keepListScroll:true});announce('已设为当前词库，下一批新词生效；没有加入整库。');}
+ else if(action==='open-personal'||action==='open-themed'||action==='finish-browse'){
+  const personal=action!=='open-themed';state.browse=personal?'personal':state.activeList==='none'?'cet6':state.activeList;state.browseOpen=personal?'personal':'themed';state.cView='list';state.mobileDetail=false;render();if(state.variant==='A')$('#browse-panel')?.scrollIntoView({behavior:'auto',block:'start'});
+ }
+ else if(action==='close-browse'){state.browseOpen=null;render();focusAction('open-personal');}
+ else if(action==='browse-source'){state.browse=target.dataset.source;state.mobileDetail=false;render();}
+ else if(action==='clear-search'){queryFor().search='';queryFor().filter='all';queryFor().page=1;render();}
+ else if(action==='previous-page'||action==='next-page'){queryFor().page+=action==='next-page'?1:-1;render();}
+ else if(action==='word-detail'){
+  state.selectedWord=Number(target.dataset.id);
+  if(state.variant==='B'){state.bPane='detail';state.mobileDetail=true;render({keepListScroll:true});}
+  else if(state.variant==='C'){state.cView='word';render();window.scrollTo(0,0);}
+  else showDialog('detail-dialog',`<div class="dialog-title"><span class="small muted">词汇详情</span><button type="button" class="icon-button" data-action="close-detail" aria-label="关闭词汇详情">${icon('close')}</button></div>${detailMarkup(state.selectedWord)}`);
+ }
+ else if(action==='close-detail')closeDialog('detail-dialog');
+ else if(action==='b-study'){state.bPane='study';state.mobileDetail=true;render({keepListScroll:true});}
+ else if(action==='b-detail'){state.bPane='detail';render({keepListScroll:true});}
+ else if(action==='b-back'){state.mobileDetail=false;render({keepListScroll:true});}
+ else if(action==='c-study'){state.cView='study';render();}
+ else if(action==='c-home'){state.cView='home';render();}
+ else if(action==='c-list'){state.cView='list';render();}
+ else if(action==='edit-goal'){state.draft={...state.profile};state.dirty=false;state.saveError=false;render();requestAnimationFrame(()=>$('#purpose')?.focus());}
+ else if(action==='cancel-edit'){state.draft=null;state.dirty=false;state.saveError=false;render();focusAction('edit-goal');announce('已取消，保存过的目标没有改变。');}
+ else if(action==='discard-leave'){closeDialog('leave-dialog');state.draft=null;state.dirty=false;state.saveError=false;const proceed=pendingNavigation;pendingNavigation=null;proceed?.();render();}
+ else if(action==='keep-editing'){closeDialog('leave-dialog');pendingNavigation=null;$('#goal-note')?.focus();}
+ else if(action==='toggle-records'){state.records=!state.records;render();}
+ else if(action==='show-records'){state.records=true;render();$('.curve-wrap')?.scrollIntoView({block:'center'});}
+ else if(action==='profile-goal'){state.profileView='goal';render();}
+ else if(action==='profile-records'){state.profileView='records';render();}
+ else if(action==='profile-home'){state.profileView='home';render();}
+ else if(action==='profile-supplement')announce('正式产品会请求按画像生成新词。本原型不调用模型，也不会自动更换词库。');
+ else if(action==='state')showState();
+ else if(action==='close-state')closeDialog('state-dialog');
+ else if(action==='scenario'){const scenario=target.dataset.scenario;closeDialog('state-dialog');navigate(()=>setScenario(scenario));}
+ else if(action==='reset')navigate(()=>{const url=new URL(location.href);url.searchParams.set('variant',state.variant);url.searchParams.set('page',state.page);location.href=url.href;location.reload();});
+ else if(action==='about')showDialog('about-dialog',`<div class="dialog-title"><h2 id="about-title">比较哪种方式更省力</h2><button type="button" class="icon-button" data-action="close-about" aria-label="关闭说明">${icon('close')}</button></div><p><strong>A 先学后查</strong><br><span class="muted">练习先出现，词表按需展开；个人页先看目标。</span></p><p><strong>B 查学并行</strong><br><span class="muted">在词表与详情间快速切换；个人页先看学习变化。</span></p><p><strong>C 一步一页</strong><br><span class="muted">每次只做一件事，适合窄面板与手机。</span></p><p class="small muted">底部箭头或键盘左右键切换方案。顶部“单词 / 个人”切页。“状态”可以查看完整内存状态并切换空态场景。朗读仅演示反馈。所有内容都是合成示例，刷新还原。</p><div class="dialog-actions">${btn('开始体验','close-about','primary')}</div>`);
+ else if(action==='close-about')closeDialog('about-dialog');
+});
+document.addEventListener('keydown',event=>{
+ if(event.defaultPrevented||event.isComposing||event.ctrlKey||event.metaKey||event.altKey)return;
+ if($('dialog[open]'))return;
+ const target=event.target;
+ if(target.closest('input,textarea,select,[contenteditable]'))return;
+ if(['ArrowLeft','ArrowRight'].includes(event.key)){event.preventDefault();changeVariant(event.key==='ArrowRight'?1:-1);return;}
+ if(target.closest('button,a,summary'))return;
+ const visible=state.page==='words'&&!state.draft&&(state.variant==='A'||state.variant==='B'&&state.bPane==='study'||state.variant==='C'&&state.cView==='study');
+ if(!visible)return;
+ if(['1','2','3','4'].includes(event.key)){event.preventDefault();answer(Number(event.key)-1);}
+ if(event.key==='Enter'&&roundAnswered()){event.preventDefault();state.round.index++;state.round.picked=null;render({keepListScroll:true});}
+});
+window.addEventListener('beforeunload',event=>{if(profileDirty()){event.preventDefault();event.returnValue='';}});
+$$('dialog').forEach(dialog=>dialog.addEventListener('click',event=>{if(event.target===dialog){const rect=dialog.getBoundingClientRect();if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)dialog.close();}}));
+render();console.info('Prototype initial state',visibleState());
+</script>
+</body>
+</html>
