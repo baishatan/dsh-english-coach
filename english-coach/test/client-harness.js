@@ -3,7 +3,8 @@ import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import vm from 'node:vm'
 
-// Use an existing test environment (NODE_PATH); do not install a second React in the plugin.
+// Resolve pinned repository devDependencies. Extracted-package audits provide
+// only this repository's node_modules through NODE_PATH; no sibling checkout.
 const require = createRequire(import.meta.url)
 const { JSDOM } = require('jsdom')
 const React = require('react')

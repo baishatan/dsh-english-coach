@@ -91,11 +91,14 @@ git pull
 
 ```bash
 cd english-coach
+node scripts/dev.mjs npm ci --ignore-scripts
+npm run check:environment -- --json
 npm test
 npm run check:package
+npm run source:search -- "speech.assets.status"
 ```
 
-插件由 [Host](<english-coach/index.js>)、[Client](<english-coach/client.js>) 和领域模块组成。完整测试包含 execute 隔离状态、Host 通信及真实 React DOM 交互；UI 测试需要可用的 React/ReactDOM 18 与 jsdom 29，环境和 `NODE_PATH` 示例见[插件开发说明](<english-coach/README.md>)。使用包声明的兼容 Node；真实包检查会解包并对产物再次执行测试、报告跳过项；未显式提供八件实际资源夹具时相关测试会跳过，不等于真实宿主试听。
+[开发工具入口](<english-coach/scripts/dev.mjs>)统一选择已有兼容 Node、监督隔离测试并保留真实退出码；本地测试依赖由锁文件固定，不依赖其它 checkout。只读预检核对实际宿主公开版本准入和安装源，源码搜索默认排除 vendor 与实验树，参数及结果说明见[插件开发说明](<english-coach/README.md#开发>)。插件由 [Host](<english-coach/index.js>)、[Client](<english-coach/client.js>) 和领域模块组成；完整测试包含 execute 隔离状态、Host 通信及真实 React DOM 交互。真实包检查会解包并对产物再次执行测试、核对临时目录、报告跳过项；未显式提供八件实际资源夹具时相关测试会跳过，不等于真实宿主试听。
 
 ```
 english-coach/

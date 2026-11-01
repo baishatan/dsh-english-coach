@@ -18,9 +18,16 @@ const env = {
   ...process.env,
   HOME: join(work, 'empty-home'),
   DSH_HOME: join(work, 'empty-home', 'dsh'),
+  DSH_AGENTS_HOME: join(work, 'empty-home', 'agents'),
+  TMPDIR: join(work, 'test-tmp'), TMP: join(work, 'test-tmp'), TEMP: join(work, 'test-tmp'),
+  NODE_PATH: join(root, 'node_modules'),
+  NODE_DISABLE_COMPILE_CACHE: '1',
   npm_config_cache: join(work, 'npm-cache'),
   npm_config_update_notifier: 'false'
 }
+delete env.NODE_OPTIONS
+delete env.NODE_COMPILE_CACHE
+await fs.mkdir(env.TMPDIR)
 const run = (command, args, cwd = root) => execFileSync(command, args, {
   cwd, env, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024
 })
@@ -133,8 +140,11 @@ for (const locale of ['en', 'zh']) {
 // core so their relative imports cannot accidentally exercise the source tree.
 await fs.mkdir(join(unpacked, 'test'))
 const tests = []
+// These public CLI tests exercise repository-only scripts, not plugin behavior.
+// They run in the source suite and must not pull scripts into a consumer archive.
+const developmentTests = new Set(['development-environment.test.js', 'development-tools.test.js', 'test-runner-cleanup.test.js'])
 for (const name of await fs.readdir(join(root, 'test'))) {
-  if (!name.endsWith('.js')) continue
+  if (!name.endsWith('.js') || developmentTests.has(name)) continue
   await fs.copyFile(join(root, 'test', name), join(unpacked, 'test', name))
   if (name.endsWith('.test.js')) tests.push(`test/${name}`)
 }
@@ -158,9 +168,17 @@ registerHooks({ resolve(specifier, context, next) {
 const speechOutput = run(process.execPath, ['--import', pathToFileURL(closureObserver).href, '--test', 'test/speech-runtime.test.js'], unpacked)
 await fs.writeFile(join(work, 'speech-runtime-tests.log'), speechOutput)
 console.log(speechOutput)
-const testOutput = run(process.execPath, ['--test', ...tests], unpacked)
+const runnerReport = join(work, 'test-runner.json')
+const testOutput = run(process.execPath, [join(root, 'scripts/run-tests.mjs'), '--root', unpacked,
+  '--tmp-parent', env.TMPDIR, '--report', runnerReport, '--', ...tests], unpacked)
 await fs.writeFile(join(work, 'core-tests.log'), testOutput)
 console.log(testOutput)
+const testRun = JSON.parse(await fs.readFile(runnerReport, 'utf8'))
+assert.equal(testRun.exitCode, 0)
+assert.equal(testRun.cleanup, 'removed', 'Extracted-package tests must remove their owned test roots')
+assert.deepEqual(testRun.residue, [], 'Extracted-package tests must not leave fixture files')
+assert.deepEqual(await fs.readdir(env.TMPDIR), [], 'Closure and package tests must leave no temporary files')
+await fs.rmdir(env.TMPDIR)
 const summary = {
   node: process.version,
   package: `${manifest.name}@${manifest.version}`,
@@ -170,6 +188,7 @@ const summary = {
   files: listed.size,
   compressedBytes: pack.size,
   unpackedBytes: pack.unpackedSize,
+  testRun: { cleanup: testRun.cleanup, residue: testRun.residue, developmentTestsExcluded: [...developmentTests] },
   speechVendor: { files: vendorExpected.size,
     bytes: vendorSource.inventory.reduce((sum, item) => sum + item.bytes, 0) + (await fs.stat(join(unpacked, 'speech/vendor/SOURCE.json'))).size,
     downloadedAssetsBundled: false, actualSynthesisRequested: Boolean(process.env.ENGLISH_COACH_TEST_ASSETS),

@@ -1,17 +1,17 @@
 import assert from 'node:assert/strict'
 import { promises as fs } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
 import { ANCHOR_HASH, ANCHOR_POOL } from '../core/anchors.js'
 import { execute } from '../core/index.js'
 import { answerFixture } from './answer-fixture.js'
+import { tempFixture } from './temp-fixture.js'
 
 // ------------------------------------------------------------------ fixtures
 
-async function makeRoot() {
-  return await fs.mkdtemp(join(tmpdir(), 'english-coach-test-'))
+async function makeRoot(t) {
+  return await tempFixture(t, 'english-coach-test-')
 }
 
 function at(dateText, hour = 9) {
@@ -144,8 +144,7 @@ async function fullAssessment(root, now, { kind = 'short', decide } = {}) {
 // --------------------------------------------------------------------- tests
 
 test('个人目标和兴趣保存后可读回，其他画像和学习进度不变', async (t) => {
-  const root = await makeRoot()
-  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  const root = await makeRoot(t)
   const now = at('2026-10-21')
   const profile = {
     goal: 'work', goalNote: '读懂技术文档', minutesPerDay: 30,
@@ -177,8 +176,8 @@ test('个人目标和兴趣保存后可读回，其他画像和学习进度不�
   assert.deepEqual(intact.data.profile, saved.data.profile)
 })
 
-test('同一日期提交两次，最终只有一课，内容是第二次的', async () => {
-  const root = await makeRoot()
+test('同一日期提交两次，最终只有一课，内容是第二次的', async (t) => {
+  const root = await makeRoot(t)
   const now = at('2026-10-20')
 
   const first = await run(root, 'lesson.save', lessonPayload('2026-10-20', { title: '第一版' }), now)
@@ -196,8 +195,8 @@ test('同一日期提交两次，最终只有一课，内容是第二次的', as
   assert.equal(queue.data.total, 1)
 })
 
-test('补充词当天就能学，第一次作答只排下一次复习', async () => {
-  const root = await makeRoot()
+test('补充词当天就能学，第一次作答只排下一次复习', async (t) => {
+  const root = await makeRoot(t)
   const day0 = at('2026-10-20')
   await run(root, 'lesson.save', lessonPayload('2026-10-20'), day0)
 
@@ -249,8 +248,8 @@ test('补充词当天就能学，第一次作答只排下一次复习', async ()
   assert.equal(second.data.dueAt, plusDays(day1, 7).toISOString())
 })
 
-test('补充词去重，选项不合法时报字段', async () => {
-  const root = await makeRoot()
+test('补充词去重，选项不合法时报字段', async (t) => {
+  const root = await makeRoot(t)
   const day0 = at('2026-10-20')
 
   const first = await run(
@@ -308,8 +307,8 @@ test('补充词去重，选项不合法时报字段', async () => {
   assert.equal(bad.field, 'items[0].choices')
 })
 
-test('每天学几个词可配置，旧设置文件补齐新字段', async () => {
-  const root = await makeRoot()
+test('每天学几个词可配置，旧设置文件补齐新字段', async (t) => {
+  const root = await makeRoot(t)
   const day0 = at('2026-10-20')
 
   const initial = await run(root, 'settings.get', {}, day0)
@@ -332,8 +331,8 @@ test('每天学几个词可配置，旧设置文件补齐新字段', async () =>
   assert.equal(legacy.data.automation.enabled, false)
 })
 
-test('词库给出全部词、到期标记和下一次到期', async () => {
-  const root = await makeRoot()
+test('词库给出全部词、到期标记和下一次到期', async (t) => {
+  const root = await makeRoot(t)
   const day0 = at('2026-10-20')
 
   await run(root, 'lesson.save', lessonPayload('2026-10-20'), day0)
@@ -368,8 +367,8 @@ test('词库给出全部词、到期标记和下一次到期', async () => {
   assert.equal(after.data.nextDueCount, 1)
 })
 
-test('当天第一批新词就是这节课的词，学完才轮到继续学习', async () => {
-  const root = await makeRoot()
+test('当天第一批新词就是这节课的词，学完才轮到继续学习', async (t) => {
+  const root = await makeRoot(t)
   const day0 = at('2026-10-20')
   await run(root, 'lesson.save', lessonPayload('2026-10-20'), day0)
 
@@ -383,8 +382,8 @@ test('当天第一批新词就是这节课的词，学完才轮到继续学习',
   assert.equal(finished.data.dueCount, 0, '这一批学完，面板才给出「继续学习」')
 })
 
-test('到期按自然日算：隔天一早就能复习，不必等上次作答的钟点', async () => {
-  const root = await makeRoot()
+test('到期按自然日算：隔天一早就能复习，不必等上次作答的钟点', async (t) => {
+  const root = await makeRoot(t)
   // 上午 11 点学完第一个词，1 天后的复习排在第二天 11:00
   const day0 = at('2026-10-20', 11)
   await run(root, 'lesson.save', lessonPayload('2026-10-20'), day0)
@@ -404,8 +403,8 @@ test('到期按自然日算：隔天一早就能复习，不必等上次作答�
   assert.equal(answered.data.dueCount, 0)
 })
 
-test('复习项在 1 / 7 / 30 天各答对一次后变为掌握', async () => {
-  const root = await makeRoot()
+test('复习项在 1 / 7 / 30 天各答对一次后变为掌握', async (t) => {
+  const root = await makeRoot(t)
   const day0 = at('2026-10-20')
 
   await run(root, 'lesson.save', lessonPayload('2026-10-20'), day0)
@@ -454,8 +453,8 @@ test('复习项在 1 / 7 / 30 天各答对一次后变为掌握', async () => {
   assert.equal(failed.data.dueCount, 1)
 })
 
-test('复习中途答错保留原盒及到期状态，正确纠正前不算掌握', async () => {
-  const root = await makeRoot()
+test('复习中途答错保留原盒及到期状态，正确纠正前不算掌握', async (t) => {
+  const root = await makeRoot(t)
   const day0 = at('2026-10-20')
   await run(root, 'lesson.save', lessonPayload('2026-10-20'), day0)
   await run(root, 'review.answer', { itemId: 'rv-1', choice: 0 }, day0)
@@ -475,8 +474,8 @@ test('复习中途答错保留原盒及到期状态，正确纠正前不算掌�
   assert.equal((await run(root, 'progress.get', {}, nextDay)).data.mastered, 0)
 })
 
-test('缺素材来源的课程被拒绝，错误指明字段，目录不变', async () => {
-  const root = await makeRoot()
+test('缺素材来源的课程被拒绝，错误指明字段，目录不变', async (t) => {
+  const root = await makeRoot(t)
   const now = at('2026-10-20')
 
   const noSources = await run(
@@ -506,8 +505,8 @@ test('缺素材来源的课程被拒绝，错误指明字段，目录不变', as
   assert.equal(state.data.todayLesson, null)
 })
 
-test('过去 7 天用过的素材会被拒绝，8 天前的可以再用', async () => {
-  const root = await makeRoot()
+test('过去 7 天用过的素材会被拒绝，8 天前的可以再用', async (t) => {
+  const root = await makeRoot(t)
   const day0 = at('2026-10-20')
   assert.equal((await run(root, 'lesson.save', lessonPayload('2026-10-20'), day0)).ok, true)
 
@@ -523,8 +522,8 @@ test('过去 7 天用过的素材会被拒绝，8 天前的可以再用', async 
   assert.equal((await run(root, 'lesson.save', later, day9)).ok, true)
 })
 
-test('测评结果追加为新点，旧点保留，曲线按时间排序', async () => {
-  const root = await makeRoot()
+test('测评结果追加为新点，旧点保留，曲线按时间排序', async (t) => {
+  const root = await makeRoot(t)
   const bankResult = await run(root, 'assessment.saveBank', bank(), at('2026-10-20'))
   assert.equal(bankResult.ok, true, JSON.stringify(bankResult))
 
@@ -543,9 +542,9 @@ test('测评结果追加为新点，旧点保留，曲线按时间排序', async
   )
 })
 
-test('测评按难度自适应：答对升档、答错降档，且不重复出题', async () => {
+test('测评按难度自适应：答对升档、答错降档，且不重复出题', async (t) => {
   async function collect(alwaysCorrect) {
-    const root = await makeRoot()
+    const root = await makeRoot(t)
     await run(root, 'assessment.saveBank', bank(), at('2026-10-20'))
     let response = await run(root, 'assessment.start', { kind: 'full' }, at('2026-10-20'))
     const attemptId = response.data.attemptId
@@ -588,8 +587,8 @@ test('测评按难度自适应：答对升档、答错降档，且不重复出�
   assert.ok(right.result.band !== wrong.result.band)
 })
 
-test('第一次测评会把冻结的锚题池落盘并记录哈希', async () => {
-  const root = await makeRoot()
+test('第一次测评会把冻结的锚题池落盘并记录哈希', async (t) => {
+  const root = await makeRoot(t)
   await run(root, 'assessment.saveBank', bank(), at('2026-10-20'))
   const started = await run(root, 'assessment.start', { kind: 'full' }, at('2026-10-20'))
   assert.equal(started.ok, true, JSON.stringify(started))
@@ -601,8 +600,8 @@ test('第一次测评会把冻结的锚题池落盘并记录哈希', async () =>
   assert.deepEqual(stored.retired, [])
 })
 
-test('没有选项的碎片卡会从同名复习项借来选项', async () => {
-  const root = await makeRoot()
+test('没有选项的碎片卡会从同名复习项借来选项', async (t) => {
+  const root = await makeRoot(t)
   const now = at('2026-10-20')
   const payload = lessonPayload('2026-10-20', {
     cards: [
@@ -629,8 +628,8 @@ test('没有选项的碎片卡会从同名复习项借来选项', async () => {
   )
 })
 
-test('已完成课程重新提交时保留已完成的学习项', async () => {
-  const root = await makeRoot()
+test('已完成课程重新提交时保留已完成的学习项', async (t) => {
+  const root = await makeRoot(t)
   const now = at('2026-10-20')
   await run(root, 'lesson.save', lessonPayload('2026-10-20'), now)
   for (const itemId of ['item-reading', 'item-listening', 'item-expressions', 'item-quiz']) {
@@ -653,8 +652,8 @@ test('已完成课程重新提交时保留已完成的学习项', async () => {
   assert.equal(after.data.lesson.summary, '补充了一句说明')
 })
 
-test('同一道锚题第二次遇到时被标记污染，不进入漂移统计', async () => {
-  const root = await makeRoot()
+test('同一道锚题第二次遇到时被标记污染，不进入漂移统计', async (t) => {
+  const root = await makeRoot(t)
   await run(root, 'assessment.saveBank', bank(), at('2026-10-20'))
 
   // 锚题池 12 道、每次取 3 道，第 5 次测评会再次抽到第 1 批
@@ -677,8 +676,8 @@ test('同一道锚题第二次遇到时被标记污染，不进入漂移统计',
   assert.equal(clean.length, 12, '只有每道锚题的首次暴露是干净样本')
 })
 
-test('锚题连续三次偏离基线后只加提示，不改分数', async () => {
-  const root = await makeRoot()
+test('锚题连续三次偏离基线后只加提示，不改分数', async (t) => {
+  const root = await makeRoot(t)
   await run(root, 'assessment.saveBank', bank(), at('2026-10-20'))
 
   // 第一次：锚题全对 → 基线 1.0
@@ -702,8 +701,8 @@ test('锚题连续三次偏离基线后只加提示，不改分数', async () =>
   assert.ok(estimates.every((value) => Number.isFinite(value)), '分数不应被自动改动或清空')
 })
 
-test('未到期的复习项不能推进盒子，到了才能答', async () => {
-  const root = await makeRoot()
+test('未到期的复习项不能推进盒子，到了才能答', async (t) => {
+  const root = await makeRoot(t)
   const day0 = at('2026-10-20')
   await run(root, 'lesson.save', lessonPayload('2026-10-20'), day0)
 
@@ -724,8 +723,8 @@ test('未到期的复习项不能推进盒子，到了才能答', async () => {
   assert.equal(ok.data.box, 2)
 })
 
-test('过期草稿不能被重新开始或完成', async () => {
-  const root = await makeRoot()
+test('过期草稿不能被重新开始或完成', async (t) => {
+  const root = await makeRoot(t)
   await run(root, 'lesson.save', lessonPayload('2026-10-20'), at('2026-10-20'))
 
   const nextDay = at('2026-10-21')
@@ -748,8 +747,8 @@ test('过期草稿不能被重新开始或完成', async () => {
   assert.equal(lesson.data.lesson.status, 'expired')
 })
 
-test('重复提交不再追加素材来源记录', async () => {
-  const root = await makeRoot()
+test('重复提交不再追加素材来源记录', async (t) => {
+  const root = await makeRoot(t)
   const now = at('2026-10-20')
   await run(root, 'lesson.save', lessonPayload('2026-10-20'), now)
   await run(root, 'lesson.save', lessonPayload('2026-10-20', { title: '改过的一版' }), now)
@@ -761,8 +760,8 @@ test('重复提交不再追加素材来源记录', async () => {
   assert.equal(JSON.parse(lines[0]).date, '2026-10-20')
 })
 
-test('两次测评不会出完全相同的题', async () => {
-  const root = await makeRoot()
+test('两次测评不会出完全相同的题', async (t) => {
+  const root = await makeRoot(t)
   await run(root, 'assessment.saveBank', bank(), at('2026-10-20'))
 
   const orders = []
@@ -786,8 +785,8 @@ test('两次测评不会出完全相同的题', async () => {
   assert.notDeepEqual(orders[0], orders[1], '第二次测评的题目顺序应轮换')
 })
 
-test('课程里的表达会自动进入复习队列', async () => {
-  const root = await makeRoot()
+test('课程里的表达会自动进入复习队列', async (t) => {
+  const root = await makeRoot(t)
   const now = at('2026-10-20')
   const payload = lessonPayload('2026-10-20', {
     items: [
@@ -822,8 +821,8 @@ test('课程里的表达会自动进入复习队列', async () => {
   }
 })
 
-test('被污染的锚题作答不进入漂移判断', async () => {
-  const root = await makeRoot()
+test('被污染的锚题作答不进入漂移判断', async (t) => {
+  const root = await makeRoot(t)
   await run(root, 'assessment.saveBank', bank(), at('2026-10-20'))
 
   // 前四次测评锚题全对，都是干净样本
@@ -849,8 +848,8 @@ test('被污染的锚题作答不进入漂移判断', async () => {
   assert.equal(level.points[level.points.length - 1].anchorAccuracy, null, '污染样本不产生锚题准确率')
 })
 
-test('数据文件被截断时回退到上一个可用版本并给出警告', async () => {
-  const root = await makeRoot()
+test('数据文件被截断时回退到上一个可用版本并给出警告', async (t) => {
+  const root = await makeRoot(t)
   const now = at('2026-10-20')
   await run(root, 'profile.save', { goal: 'work', minutesPerDay: 30, interests: ['工程'] }, now)
   await run(root, 'profile.save', { goal: 'travel', minutesPerDay: 45, interests: ['旅行'] }, now)
@@ -870,8 +869,8 @@ test('数据文件被截断时回退到上一个可用版本并给出警告', as
   )
 })
 
-test('过期草稿转为 expired，不进入已完成统计', async () => {
-  const root = await makeRoot()
+test('过期草稿转为 expired，不进入已完成统计', async (t) => {
+  const root = await makeRoot(t)
   await run(root, 'lesson.save', lessonPayload('2026-10-20'), at('2026-10-20'))
 
   const nextDay = at('2026-10-21')
@@ -886,8 +885,8 @@ test('过期草稿转为 expired，不进入已完成统计', async () => {
   assert.equal(progress.data.expiredDrafts, 1)
 })
 
-test('逐项完成四类学习项后课程转为已完成，才计入进度', async () => {
-  const root = await makeRoot()
+test('逐项完成四类学习项后课程转为已完成，才计入进度', async (t) => {
+  const root = await makeRoot(t)
   const now = at('2026-10-20')
   await run(root, 'lesson.save', lessonPayload('2026-10-20'), now)
 
@@ -907,8 +906,8 @@ test('逐项完成四类学习项后课程转为已完成，才计入进度', as
   assert.deepEqual((await run(root, 'progress.get', {}, now)).data.completions, ['2026-10-20'])
 })
 
-test('选词排序的打散顺序永远不等于正确顺序', async () => {
-  const root = await makeRoot()
+test('选词排序的打散顺序永远不等于正确顺序', async (t) => {
+  const root = await makeRoot(t)
   const now = at('2026-10-20')
   const payload = lessonPayload('2026-10-20', {
     items: [
@@ -931,8 +930,8 @@ test('选词排序的打散顺序永远不等于正确顺序', async () => {
   assert.deepEqual([...ordering.words].sort(), [...ordering.answer.split(' ')].sort())
 })
 
-test('测评中途退出再进来，已答的题不丢', async () => {
-  const root = await makeRoot()
+test('测评中途退出再进来，已答的题不丢', async (t) => {
+  const root = await makeRoot(t)
   await run(root, 'assessment.saveBank', bank(), at('2026-10-20'))
   const started = await run(root, 'assessment.start', { kind: 'full' }, at('2026-10-20'))
   const attemptId = started.data.attemptId
@@ -951,8 +950,8 @@ test('测评中途退出再进来，已答的题不丢', async () => {
   assert.notEqual(resumed.data.question.id, firstId, '应接着出下一题')
 })
 
-test('第一次测评完成后自动生成一份不含日期的大纲', async () => {
-  const root = await makeRoot()
+test('第一次测评完成后自动生成一份不含日期的大纲', async (t) => {
+  const root = await makeRoot(t)
   await run(root, 'assessment.saveBank', bank(), at('2026-10-20'))
   await fullAssessment(root, at('2026-10-20'))
 
@@ -968,8 +967,8 @@ test('第一次测评完成后自动生成一份不含日期的大纲', async ()
   assert.equal(state.data.syllabus.currentPhase.id, 'phase-1')
 })
 
-test('重新生成大纲不丢失本周已勾选的目标', async () => {
-  const root = await makeRoot()
+test('重新生成大纲不丢失本周已勾选的目标', async (t) => {
+  const root = await makeRoot(t)
   await run(root, 'assessment.saveBank', bank(), at('2026-10-20'))
   await fullAssessment(root, at('2026-10-20'))
 
@@ -984,8 +983,8 @@ test('重新生成大纲不丢失本周已勾选的目标', async () => {
   assert.equal(after.data.syllabus.phases.length, 3)
 })
 
-test('大纲拒绝写入具体日期', async () => {
-  const root = await makeRoot()
+test('大纲拒绝写入具体日期', async (t) => {
+  const root = await makeRoot(t)
   const now = at('2026-10-20')
   const bad = await run(
     root,
@@ -1014,8 +1013,8 @@ test('大纲拒绝写入具体日期', async () => {
   assert.equal(state.data.syllabus.weekly.totalGoals, 2)
 })
 
-test('连续天数允许跳过一天而不断签', async () => {
-  const root = await makeRoot()
+test('连续天数允许跳过一天而不断签', async (t) => {
+  const root = await makeRoot(t)
   const dates = ['2026-10-01', '2026-10-02', '2026-10-04', '2026-10-05']
 
   for (const date of dates) {
@@ -1032,9 +1031,9 @@ test('连续天数允许跳过一天而不断签', async () => {
   assert.equal(progress.data.completions.length, 4)
 })
 
-test('数据目录可迁移，迁移后读写指向新位置', async () => {
-  const root = await makeRoot()
-  const target = await makeRoot()
+test('数据目录可迁移，迁移后读写指向新位置', async (t) => {
+  const root = await makeRoot(t)
+  const target = await makeRoot(t)
   const now = at('2026-10-20')
   await run(root, 'profile.save', { goal: 'work', minutesPerDay: 30 }, now)
 
@@ -1049,8 +1048,8 @@ test('数据目录可迁移，迁移后读写指向新位置', async () => {
   assert.equal(inside.ok, false)
 })
 
-test('工具失败统一返回错误码与字段名，成功返回数据与警告列表', async () => {
-  const root = await makeRoot()
+test('工具失败统一返回错误码与字段名，成功返回数据与警告列表', async (t) => {
+  const root = await makeRoot(t)
   const now = at('2026-10-20')
 
   const failure = await run(root, 'lesson.save', { date: 'not-a-date' }, now)
@@ -1069,8 +1068,8 @@ test('工具失败统一返回错误码与字段名，成功返回数据与警�
   assert.equal(unknown.code, 'unknown_command')
 })
 
-test('重复触发同一日期的生成只保留一份草稿', async () => {
-  const root = await makeRoot()
+test('重复触发同一日期的生成只保留一份草稿', async (t) => {
+  const root = await makeRoot(t)
   const now = at('2026-10-20')
   await run(root, 'lesson.save', lessonPayload('2026-10-20'), now)
   await run(root, 'lesson.save', lessonPayload('2026-10-20'), now)

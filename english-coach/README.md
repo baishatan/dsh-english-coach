@@ -253,20 +253,33 @@ Agent 会换源并把换了什么写进课程备注；连续失败可以在面�
 
 ## 开发
 
+从源码仓库的插件目录开始。先安装锁定的开发依赖，再预检；不会改系统 `PATH` 或安装全局包：
+
 ```bash
+node scripts/dev.mjs npm ci --ignore-scripts
+npm run check:environment -- --json
 npm run test:core
 npm run test:ui
 npm test
 npm run check:package
+npm run source:search -- "speech.assets.status"
 ```
+
+统一入口为 `node scripts/dev.mjs <environment|test|package|search|node|npm>`，`--help` 列出命令。测试与打包先检查当前 Node；不兼容时只尝试已有 DSH 随包或受管的 Node 24，也可设置 `ENGLISH_COACH_NODE` 为兼容可执行文件。显式指定的 Node 不兼容就失败，不静默换一个，不安装运行时。`node` 和 `npm` 子命令用于以同一运行时执行额外维护命令；子进程失败码原样传回，不通过成功的日志管道掩盖失败。保存日志的 shell 管道须启用 `set -o pipefail`。
+
+`check:environment` 是只读检查，不卸载、不安装、不启动 GUI，也不读取凭据或学习目录。它分别报告启动器 Node、选中的兼容 Node、本地测试依赖、实际 DSH 版本与公开版本准入结果，以及安装源是否就是当前工作树。macOS 默认检查标准应用位置；其它位置用 `--dsh-root` / `--dsh-executable` 指定，Profile 用 `--profile` 指定，参数见 `npm run check:environment -- --help`。宿主不兼容或无法核验时非零退出；安装源不同默认警告，要求部署后核验时加 `--require-install-match`。输出路径脱敏，预检通过不等于实际播放通过。
+
+测试默认由父进程为本轮创建独占临时根，并在子测试完成后核对夹具清理；领域和 Host 夹具使用同一生命周期机制，先停服务和请求再删除自己的目录。通过和普通断言失败都移除本轮正常释放的目录；信号中断或未证明安全释放时保留本轮目录并报告归属，不扫描或清理系统中同前缀目录。正常退出仍遗留文件也会被标记为清理失败，不能用父进程删除掩盖测试泄漏。输出末尾的 `TEST_RUNNER_RESULT` 给出真实退出码、清理结果和有界残留清单；直接运行底层 `node --test` 不包含父进程监督。`npm test -- --test-name-pattern=... test/core.test.js` 可定向验证。
+
+`source:search` 默认做字面查找，只输出相对路径与行号，排除 vendor、依赖、隐藏目录、实验、原型及符号链接。支持 `--regex`、`--ignore-case`、`--json` 和 `--limit`；返回码 0 表示命中、1 表示无结果、2 表示输入或读取错误。需要审查 vendor 或历史工件时应显式选择目标，不放宽默认源码搜索。
 
 源码仓库还保留不随插件包发布的开发原型：`npm run prototype:words-profile -- --print` 只输出合成单词／个人页原型的本地文件地址；历史三方向主页原型见 [prototype](prototype/README.md)。它们使用合成内存数据，不连接真实学习目录，布局及示例进度不代表当前产品规则。
 
 历史语音准入探针位于 `scripts/check-speech-{transport,worker,electron}.mjs`，可先查看各自 `--help`；它们不是插件启动命令，也不等同当前产品验收。transport 需要显式提供旧宿主快照与非个人 WAV，worker 依赖历史候选包布局；Electron 仅保留实验机制，默认拒绝未实现的完整准入，要求操作者准备隔离策略、非个人 sentinel、独立开发 Electron 和固定输入校验，不应使用已安装的 DSH 应用。不要在真实 Profile、凭据或学习目录上运行这些探针。
 
-UI 测试需要开发环境已提供 React 18.3 / React DOM 18.3 / jsdom 29，可通过 `NODE_PATH` 指向已有环境；插件本身不分发这些开发依赖。使用声明兼容的 Node 24.21.x。缺少 UI 测试环境会明确失败，不静默跳过。
+UI 测试依赖由本仓库 `devDependencies` 与锁文件固定，`npm ci` 后在本地解析，不再需要另一个 checkout 的 `NODE_PATH`；这些依赖不随插件包分发。缺少或版本不符时环境预检明确失败，不静默跳过 UI 测试。
 
-`check:package` 需要开发机提供 npm 和 tar；它使用 `npm pack --ignore-scripts --offline` 生成真实压缩包，检查发布文件、许可证、入口及模块导入，并针对解包后的代码执行领域、Host Adapter 与 React DOM 测试，逐项报告通过、失败与跳过，核对词库校验和与必要许可。依赖八件真实朗读资源的测试需显式设置 `ENGLISH_COACH_TEST_ASSETS` 为已核验夹具；默认未设置时这些项会明确跳过，不代表真实资源和 CPU 合成已通过。产物和日志保存在仓库忽略的 `.scratch/package-check/`，不安装插件、不激活真实 Host、不访问真实学习数据。也可直接运行 `node scripts/check-package.mjs`。
+`check:package` 需要开发机提供 npm 和 tar；它使用 `npm pack --ignore-scripts --offline` 生成真实压缩包，检查发布文件、许可证、入口及模块导入，并通过同一父进程监督入口针对解包后的代码执行领域、Host Adapter 与 React DOM 测试，核对临时目录为空，逐项报告通过、失败与跳过。测试依赖仅来自当前仓库，仓库工具命令测试在源码套件中执行，不为它们把开发脚本塞进发布包。依赖八件真实朗读资源的测试需显式设置 `ENGLISH_COACH_TEST_ASSETS` 为已核验夹具；默认未设置时这些项明确跳过，不代表真实资源和 CPU 合成已通过。产物和日志保存在仓库忽略的 `.scratch/package-check/`，不安装插件、不激活真实 Host、不访问真实学习数据；直接调用 `node scripts/check-package.mjs` 时需已使用兼容 Node。
 
 兼容性声明以本机已知环境为边界：本版针对 `0.2.1-rc.5`，2026-10-31 核对内置 DSH 为该版本、内置 Node 为 `24.21.0`。旧版仅声明 `rc.3` 时会被当前宿主拒绝，必须更新到本版，不使用版本豁免。已核对工具注册、会话／调度、HTTP 路由和客户端槽位契约；macOS 主面板通过宿主的 `--dsh-frame-top-clearance` 避让顶部窗口控件。兼容回归与自动测试覆盖隔离状态，真实打包检查使用 pack → 解包 → 执行并报告测试及其跳过项；另已通过该 macOS 桌面版本的官方插件管理器安装，确认单音色菜单、原模型复用及 Heart 短句实际播放正常；未覆盖完整冷启动、卸载回滚、全部声音或其它平台，亦不代表商城审核通过。历史版本的验证不扩展本包兼容范围，其他 DSH 版本及跨平台矩阵尚未验证。
 

@@ -11,10 +11,13 @@
     "dsh": "0.2.1-rc.5"
   },
   "scripts": {
-    "test": "node --test test/*.test.js",
-    "test:core": "node --test test/core.test.js test/due-review-correction.test.js test/durable-round-recovery.test.js test/host-preference.test.js test/learning-experience.test.js test/new-word-correction.test.js test/round-outcome.test.js test/shared-effective-result.test.js test/translation.test.js test/word-retry-acceptance.test.js",
-    "test:ui": "node --test test/*-ui.test.js",
-    "check:package": "node scripts/check-package.mjs",
+    "dev": "node scripts/dev.mjs",
+    "check:environment": "node scripts/check-environment.mjs",
+    "source:search": "node scripts/source-search.mjs",
+    "test": "node scripts/dev.mjs test",
+    "test:core": "node scripts/dev.mjs test --core",
+    "test:ui": "node scripts/dev.mjs test --ui",
+    "check:package": "node scripts/dev.mjs package",
     "prototype:words-profile": "node prototypes/open-words-profile.mjs",
     "check:speech-transport": "node scripts/check-speech-transport.mjs",
     "check:speech-worker": "node scripts/check-speech-worker.mjs"
@@ -51,5 +54,10 @@
         "@deepseek-ai/dsh-client-ui-conversation"
       ]
     }
+  },
+  "devDependencies": {
+    "jsdom": "29.1.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
   }
 }

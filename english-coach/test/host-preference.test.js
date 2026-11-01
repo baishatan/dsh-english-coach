@@ -1,6 +1,4 @@
 import assert from 'node:assert/strict'
-import { promises as fs } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import test from 'node:test'
@@ -8,13 +6,43 @@ import test from 'node:test'
 import { apply } from '../index.js'
 import { execute } from '../core/index.js'
 import { getWordCatalog } from '../core/catalog.js'
+import { tempFixture, disposeFixture } from './temp-fixture.js'
 
 // External Host adapters only. Tests call the registered HTTP handler and public
 // tools; no prompt helper, private dispatch export, or learner-data injection.
-async function host({ beforeSession } = {}) {
-  const root = await fs.mkdtemp(join(tmpdir(), 'english-coach-host-preference-'))
+async function host(t, { beforeSession } = {}) {
+  const root = await tempFixture(t, 'english-coach-host-preference-')
   const tools = new Map(), intervals = [], records = [], createdSessions = []
-  let route, context, failSchedule = false, sessionEvents = []
+  const effects = [], events = new Map(), pending = new Set()
+  let route, context, startup, closing = false, disposal, failSchedule = false, sessionEvents = []
+  function track(operation) {
+    assert.equal(closing, false, 'Cannot send a new request after Host shutdown')
+    const task = Promise.resolve().then(operation)
+    pending.add(task)
+    task.then(() => pending.delete(task), () => pending.delete(task))
+    return task
+  }
+  async function drain() {
+    const errors = []
+    while (pending.size) {
+      for (const result of await Promise.allSettled([...pending])) if (result.status === 'rejected') errors.push(result.reason)
+    }
+    if (errors.length) throw new AggregateError(errors, 'Host requests did not finish')
+  }
+  function dispose() {
+    return disposal ??= (async () => {
+      closing = true
+      for (const row of intervals) row.stopped = true
+      const errors = []
+      for (const shutdown of [() => startup, drain, ...effects.toReversed(), ...(events.get('dispose') ?? []), drain]) {
+        try { await shutdown() } catch (cause) { errors.push(cause) }
+      }
+      if (errors.length) throw new AggregateError(errors, 'Host fixture shutdown failed')
+    })()
+  }
+  // Register before startup so even an assertion during setup shuts the Host
+  // down before tempFixture removes the owned learning and speech directories.
+  disposeFixture(t, dispose)
   const services = {
     sessionController: {
       async create(request) { createdSessions.push(request); await beforeSession?.(); return { sessionId: 'isolated-session' } },
@@ -30,31 +58,38 @@ async function host({ beforeSession } = {}) {
       },
       async delete() { return { deleted: true } }
     },
-    webServer: { register(value) { route = value; return () => {} } },
-    systemPrompt: { context(value) { context = value; return () => {} } }
+    webServer: { register(value) { route = value; return () => { route = null } } },
+    systemPrompt: { context(value) { context = value; return () => { context = null } } }
   }
   apply({
     get: name => services[name],
-    tools: { register(definition) { tools.set(definition.name, definition); return () => {} } },
+    tools: { register(definition) {
+      tools.set(definition.name, { ...definition, execute: args => track(() => definition.execute(args)) })
+      return () => { tools.delete(definition.name) }
+    } },
     timer: { interval(callback, delay) { const row = { callback, delay, stopped: false }; intervals.push(row); return () => { row.stopped = true } } },
-    effect: fn => fn(), on() {}
-  }, { dataRoot: root })
+    effect(fn) { const cleanup = fn(); if (typeof cleanup === 'function') effects.push(cleanup) },
+    on(name, callback) { if (!events.has(name)) events.set(name, []); events.get(name).push(callback) }
+  }, { dataRoot: root, speechRoot: join(root, 'speech') })
   for (const row of intervals.filter(row => row.delay === 500)) row.callback()
-  // Await the existing async startup through its visible prompt context. No real
-  // scheduler, timer polling job, profile installation or service is started.
-  for (let n = 0; n < 100 && !context?.text(); n++) await new Promise(resolve => setTimeout(resolve, 5))
-  assert.ok(context?.text(), 'startup completed in isolated root')
-  assert.ok(route)
-  const request = async (command, payload = {}) => {
+  // The visible context is set at the end of startup's awaited automation and
+  // state writes. Do not launch the fire-and-forget periodic watcher in tests.
+  startup = (async () => {
+    for (let n = 0; n < 1000 && !context?.text(); n++) await new Promise(resolve => setTimeout(resolve, 5))
+    assert.ok(context?.text(), 'startup completed in isolated root')
+    assert.ok(route)
+  })()
+  await startup
+  const request = (command, payload = {}) => track(async () => {
     const req = Readable.from([JSON.stringify(payload)])
     req.url = `/english-coach/api/${command}`
     req.method = 'POST'
     let result
     await route.handler(req, { setHeader() {}, end(body) { result = JSON.parse(body) } })
     return result
-  }
+  })
   return {
-    root, tools, records, createdSessions, request,
+    root, tools, records, createdSessions, request, dispose,
     tool: args => tools.get('english_vocabulary').execute(args),
     failSchedule: () => { failSchedule = true },
     endSession: (reason = { kind: 'completed' }) => { sessionEvents = [{ type: 'turn/end', time: Date.now() + 1, data: { reason } }] }
@@ -74,8 +109,8 @@ function lesson(date) {
   }
 }
 
-test('lesson tool declares optional paragraph translations and shares domain validation', async () => {
-  const h = await host()
+test('lesson tool declares optional paragraph translations and shares domain validation', async t => {
+  const h = await host(t)
   const tool = h.tools.get('english_save_lesson')
   const itemSchema = tool.parameters.properties.items.items
   const translations = itemSchema.properties.translations
@@ -98,8 +133,8 @@ test('lesson tool declares optional paragraph translations and shares domain val
   assert.equal(failure.field, 'items[1].translations')
 })
 
-test('record tool requires stable vocabulary identity and preserves lesson-only completion', async () => {
-  const h = await host()
+test('record tool requires stable vocabulary identity and preserves lesson-only completion', async t => {
+  const h = await host(t)
   const tool = h.tools.get('english_record')
   const properties = tool.parameters.properties.reviewAnswers.items.properties
   for (const name of ['roundId', 'revision', 'presentationId', 'attemptId']) assert.ok(properties[name], name)
@@ -120,8 +155,8 @@ test('record tool requires stable vocabulary identity and preserves lesson-only 
   assert.equal((await execute(h.root, 'lesson.get', { date: today })).data.lesson.items[0].done, true)
 })
 
-test('manual lesson request contains actual full-catalog candidates and non-fabrication rules', async () => {
-  const h = await host()
+test('manual lesson request contains actual full-catalog candidates and non-fabrication rules', async t => {
+  const h = await host(t)
   assert.equal((await h.request('wordlists.select', { id: 'cet6' })).ok, true)
   await h.request('wordlists.query', { id: 'cet6', search: 'zzzz', page: 999, pageSize: 20 })
   const preference = await execute(h.root, 'study.preference')
@@ -143,8 +178,8 @@ test('manual lesson request contains actual full-catalog candidates and non-fabr
   assert.deepEqual((await execute(h.root, 'review.list')).data, before.data)
 })
 
-test('a stored daily reminder refreshes current preference at delivery through a public tool', async () => {
-  const h = await host()
+test('a stored daily reminder refreshes current preference at delivery through a public tool', async t => {
+  const h = await host(t)
   await h.tool({ action: 'select', id: 'cet4' })
   const enabled = await h.request('settings.save', { automation: { enabled: true, time: '08:00', timeZone: 'Asia/Shanghai' } })
   assert.equal(enabled.ok, true)
@@ -175,8 +210,8 @@ test('a stored daily reminder refreshes current preference at delivery through a
   assert.equal(h.records.filter(record => record.daily).length, 1)
 })
 
-test('active-list supplement uses the shared domain operation without a model job', async () => {
-  const h = await host()
+test('active-list supplement uses the shared domain operation without a model job', async t => {
+  const h = await host(t)
   await h.tool({ action: 'select', id: 'cet4' })
   const before = (await execute(h.root, 'review.list')).data.items.length
   const result = await h.tool({ action: 'supplement' })
@@ -197,8 +232,8 @@ test('active-list supplement uses the shared domain operation without a model jo
   assert.equal((await execute(h.root, 'study.preference')).data.activeWordList.id, 'cet4')
 })
 
-test('without a list, ordinary supplementation reuses due items before requesting a model', async () => {
-  const h = await host()
+test('without a list, ordinary supplementation reuses due items before requesting a model', async t => {
+  const h = await host(t)
   await execute(h.root, 'review.add', { items: [{ term: 'existing', meaning: '已有', choices: ['已有', '将来', '过去', '现在'], answerIndex: 0 }] })
   const result = await h.tool({ action: 'supplement' })
   assert.equal(result.ok, true)
@@ -206,8 +241,8 @@ test('without a list, ordinary supplementation reuses due items before requestin
   assert.equal(h.records.length, 0)
 })
 
-test('unfinished durable round blocks static and explicit profile generation at every Host entry', async () => {
-  const h = await host()
+test('unfinished durable round blocks static and explicit profile generation at every Host entry', async t => {
+  const h = await host(t)
   await execute(h.root, 'review.add', { items: [{ term: 'pending', meaning: '待完成', choices: ['待完成', '将来', '过去', '现在'], answerIndex: 0 }] })
   const original = (await h.request('study.batch')).data
   await h.tool({ action: 'select', id: 'ielts' })
@@ -226,8 +261,8 @@ test('unfinished durable round blocks static and explicit profile generation at 
   }
 })
 
-test('only explicit continuation may fill an empty round from a completed generation', async () => {
-  const h = await host()
+test('only explicit continuation may fill an empty round from a completed generation', async t => {
+  const h = await host(t)
   const empty = (await h.request('study.batch')).data
   const untouched = await h.request('generate.vocab', { profile: true })
   assert.deepEqual(untouched.data.round, empty.round)
@@ -246,8 +281,8 @@ test('only explicit continuation may fill an empty round from a completed genera
   assert.deepEqual((await h.request('study.batch')).data.items, loaded.items, '生成结束后的读取也不能替换进行中原批')
 })
 
-test('concurrent continuation token starts only one vocabulary schedule and stale token never restarts it', async () => {
-  const h = await host()
+test('concurrent continuation token starts only one vocabulary schedule and stale token never restarts it', async t => {
+  const h = await host(t)
   const empty = (await h.request('study.batch')).data
   const token = { continue: true, profile: true, roundId: empty.round.id, revision: empty.round.revision }
   const results = await Promise.all([h.request('generate.vocab', token), h.request('generate.vocab', token)])
@@ -263,11 +298,11 @@ test('concurrent continuation token starts only one vocabulary schedule and stal
   assert.equal(h.records.length, 1)
 })
 
-test('vocabulary scheduling revalidates the saved round after asynchronous session creation', async () => {
+test('vocabulary scheduling revalidates the saved round after asynchronous session creation', async t => {
   let entered, release
   const started = new Promise(resolve => { entered = resolve })
   const blocked = new Promise(resolve => { release = resolve })
-  const h = await host({ beforeSession: async () => { entered(); await blocked } })
+  const h = await host(t, { beforeSession: async () => { entered(); await blocked } })
   const empty = (await h.request('study.batch')).data
   const generation = h.request('generate.vocab', { continue: true, profile: true, roundId: empty.round.id, revision: empty.round.revision })
   await started
@@ -283,8 +318,8 @@ test('vocabulary scheduling revalidates the saved round after asynchronous sessi
   } finally { release(); await generation }
 })
 
-test('no preference keeps model supplementation; generation failures remain visible', async () => {
-  const h = await host()
+test('no preference keeps model supplementation; generation failures remain visible', async t => {
+  const h = await host(t)
   const empty = (await h.request('study.batch')).data
   const initial = await h.tool({ action: 'supplement' })
   assert.equal(initial.ok, true)
@@ -299,8 +334,8 @@ test('no preference keeps model supplementation; generation failures remain visi
   assert.equal((await execute(h.root, 'state.get')).data.todayLesson, null)
 })
 
-test('unselected-list HTTP continuation reports vocabulary scheduling failure without a false batch', async () => {
-  const h = await host()
+test('unselected-list HTTP continuation reports vocabulary scheduling failure without a false batch', async t => {
+  const h = await host(t)
   h.failSchedule()
   const result = await h.request('generate.vocab', {})
   assert.equal(result.ok, false)
@@ -310,8 +345,8 @@ test('unselected-list HTTP continuation reports vocabulary scheduling failure wi
   assert.equal(h.records.length, 0)
 })
 
-test('a completed agent turn without a saved lesson is not reported as generation success', async () => {
-  const h = await host()
+test('a completed agent turn without a saved lesson is not reported as generation success', async t => {
+  const h = await host(t)
   assert.equal((await h.request('generate')).ok, true)
   h.endSession()
   const failed = await h.request('job.status', { kind: 'lesson' })
@@ -326,8 +361,8 @@ test('a completed agent turn without a saved lesson is not reported as generatio
   assert.equal(done.data.failure, null)
 })
 
-test('tool and HTTP share query/select semantics and reject arbitrary command dispatch', async () => {
-  const h = await host()
+test('tool and HTTP share query/select semantics and reject arbitrary command dispatch', async t => {
+  const h = await host(t)
   const selected = await h.tool({ action: 'select', id: 'ielts' })
   assert.deepEqual(selected, await h.request('wordlists.select', { id: 'ielts' }))
   const query = { id: 'ielts', search: '火山', page: 1, pageSize: 20, filter: 'unjoined' }
@@ -340,8 +375,8 @@ test('tool and HTTP share query/select semantics and reject arbitrary command di
   assert.deepEqual((await execute(h.root, 'review.list')).data, stateBefore.data)
 })
 
-test('course submission protects a duplicate beyond the 60-term prompt summary', async () => {
-  const h = await host()
+test('course submission protects a duplicate beyond the 60-term prompt summary', async t => {
+  const h = await host(t)
   const items = Array.from({ length: 65 }, (_, index) => ({
     term: `fixture term ${index}`, meaning: '原有释义', choices: ['原有释义', '其他', '不同', '未知'], answerIndex: 0
   }))
@@ -360,8 +395,8 @@ test('course submission protects a duplicate beyond the 60-term prompt summary',
   for (const field of ['meaning', 'choices', 'box', 'status', 'dueAt', 'answerCount', 'fresh']) assert.deepEqual(after[field], before[field])
 })
 
-test('preference requests do not rewrite existing courses or require material matches', async () => {
-  const h = await host()
+test('preference requests do not rewrite existing courses or require material matches', async t => {
+  const h = await host(t)
   const today = (await execute(h.root, 'state.get')).data.today
   assert.equal((await h.tools.get('english_save_lesson').execute(lesson(today))).ok, true)
   const before = (await execute(h.root, 'lesson.get', { date: today })).data
