@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import test from 'node:test'
@@ -10,11 +11,13 @@ import { tempFixture, disposeFixture } from './temp-fixture.js'
 
 // External Host adapters only. Tests call the registered HTTP handler and public
 // tools; no prompt helper, private dispatch export, or learner-data injection.
-async function host(t, { beforeSession } = {}) {
-  const root = await tempFixture(t, 'english-coach-host-preference-')
-  const tools = new Map(), intervals = [], records = [], createdSessions = []
+async function host(t, { beforeSession, directory, prepare, savedTasks = [], history } = {}) {
+  const root = await tempFixture(t, 'english-coach-host-preference-', directory)
+  await prepare?.(root)
+  const tools = new Map(), intervals = [], records = [], createdSessions = [], edits = [], historyReads = []
+  const tasks = new Map(savedTasks.map(task => [task.id, structuredClone(task)]))
   const effects = [], events = new Map(), pending = new Set()
-  let route, context, startup, closing = false, disposal, failSchedule = false, sessionEvents = []
+  let route, context, startup, closing = false, disposal, failSchedule = false, failEdit = null, sessionEvents = []
   function track(operation) {
     assert.equal(closing, false, 'Cannot send a new request after Host shutdown')
     const task = Promise.resolve().then(operation)
@@ -46,17 +49,47 @@ async function host(t, { beforeSession } = {}) {
   const services = {
     sessionController: {
       async create(request) { createdSessions.push(request); await beforeSession?.(); return { sessionId: 'isolated-session' } },
-      async inspect() { return { events: sessionEvents } }
+      async events(request, signal) {
+        assert.deepEqual(request.address, { kind: 'session', sessionId: 'isolated-session' })
+        assert.ok(signal instanceof AbortSignal, 'Passive Host history requires an explicit cancellation signal')
+        historyReads.push(structuredClone(request))
+        if (history) return history(request, signal)
+        const cursor = request.throughSeq ?? sessionEvents.at(-1)?.seq ?? -1
+        const page = sessionEvents.filter(event => event.seq <= cursor && (request.beforeSeq === undefined || event.seq < request.beforeSeq))
+        return { cursor, records: page.map(event => ({ type: 'event', event })), hasMore: false }
+      }
     },
     schedule: {
-      async create(sessionId, request) {
-        assert.equal(typeof request.prompt, 'string', 'Host schedule receives a resolved string')
+      async create(request) {
+        assert.equal(typeof request?.prompt, 'string', 'Host schedule receives a request object and resolved prompt')
+        assert.deepEqual(Object.keys(request).sort(), ['prompt', 'target', 'timing', 'title'])
+        assert.deepEqual(request.target, { kind: 'session', sessionId: 'isolated-session' })
+        assert.ok(['after', 'daily'].includes(request.timing.kind))
         if (failSchedule) throw new Error('isolated schedule unavailable')
-        const record = { id: `schedule-${records.length + 1}`, sessionId, ...request }
-        records.push(record)
+        const { timing, ...fields } = request
+        const record = { id: `schedule-${records.length + 1}`, ...fields, ...timing, status: 'active', scheduledAt: '2099-01-01T00:00:00.000Z' }
+        records.push(structuredClone(record))
+        tasks.set(record.id, record)
         return record
       },
-      async delete() { return { deleted: true } }
+      async view({ id }) { return structuredClone(tasks.get(id) ?? { id, code: 'schedule_not_found' }) },
+      async edit(request) {
+        edits.push(structuredClone(request))
+        if (failEdit === 'throw') throw new Error('isolated schedule edit unavailable')
+        if (failEdit) return { id: request.id, code: failEdit }
+        const current = tasks.get(request.id)
+        if (!current) return { id: request.id, code: 'schedule_not_found' }
+        if (request.action === 'delete') {
+          tasks.delete(request.id)
+          return { id: request.id, deleted: true }
+        }
+        assert.equal(request.action, 'update')
+        assert.ok(!Object.hasOwn(request.patch, 'active'), 'Changing the rule must not implicitly resume a paused task')
+        const { timing, ...patch } = request.patch
+        const next = { ...current, ...patch, ...timing }
+        tasks.set(request.id, next)
+        return structuredClone(next)
+      }
     },
     webServer: { register(value) { route = value; return () => { route = null } } },
     systemPrompt: { context(value) { context = value; return () => { context = null } } }
@@ -89,10 +122,22 @@ async function host(t, { beforeSession } = {}) {
     return result
   })
   return {
-    root, tools, records, createdSessions, request, dispose,
+    root, tools, records, createdSessions, request, dispose, tasks, edits, historyReads,
     tool: args => tools.get('english_vocabulary').execute(args),
     failSchedule: () => { failSchedule = true },
-    endSession: (reason = { kind: 'completed' }) => { sessionEvents = [{ type: 'turn/end', time: Date.now() + 1, data: { reason } }] }
+    failEdits: code => { failEdit = code },
+    setSessionEvents: value => { sessionEvents = value },
+    endSession: (reason = { kind: 'completed' }, id = records.at(-1)?.id) => {
+      const task = tasks.get(id)
+      const turn = sessionEvents.filter(event => event.type === 'turn/start').length + 1
+      const messageId = `delivery-${id}`
+      task.lastDelivery = { messageId, targetSessionId: 'isolated-session', deliveredAt: new Date().toISOString(), scheduledAt: task.scheduledAt }
+      for (const [type, data] of [
+        ['turn/start', { turn }],
+        ['user/message', { id: messageId, source: { kind: 'schedule' }, content: [{ type: 'text', text: `schedule_id_json: ${JSON.stringify(id)}` }] }],
+        ['turn/end', { turn, reason }]
+      ]) sessionEvents.push({ type, seq: sessionEvents.length, time: Date.now() + 1, data })
+    }
   }
 }
 
@@ -208,6 +253,181 @@ test('a stored daily reminder refreshes current preference at delivery through a
   assert.match(noPreference.data.prompt, /当前词库：不指定/)
   assert.doesNotMatch(noPreference.data.prompt, /id=ielts/)
   assert.equal(h.records.filter(record => record.daily).length, 1)
+})
+
+test('manual generation uses typed Host timing and explicitly reuses the saved Session', async t => {
+  const h = await host(t)
+  for (const command of ['generate', 'generate.assessment']) assert.equal((await h.request(command)).ok, true)
+  assert.equal(h.createdSessions.length, 1)
+  assert.equal(h.records.length, 2)
+  for (const record of h.records) {
+    assert.equal(record.kind, 'after')
+    assert.equal(record.after_seconds, 2)
+    assert.deepEqual(record.target, { kind: 'session', sessionId: 'isolated-session' })
+  }
+})
+
+test('daily edits and disabling use the Host-wide API without replacing the task identity', async t => {
+  const h = await host(t)
+  assert.equal((await h.request('settings.save', { automation: { enabled: true, time: '08:00', timeZone: 'Asia/Shanghai' } })).warnings.length, 0)
+  const daily = h.records.at(-1)
+  assert.deepEqual(daily.daily, { time: '08:00:00', time_zone: 'Asia/Shanghai' })
+  assert.equal((await h.request('settings.save', { automation: { enabled: true, time: '09:30', timeZone: 'America/New_York' } })).warnings.length, 0)
+  assert.equal(h.records.length, 1, 'Editing preserves task identity and history')
+  assert.equal(h.edits.at(-1).id, daily.id)
+  assert.equal(h.edits.at(-1).action, 'update')
+  assert.deepEqual(h.tasks.get(daily.id).daily, { time: '09:30:00', time_zone: 'America/New_York' })
+  assert.equal((await h.request('settings.save', { automation: { enabled: false } })).warnings.length, 0)
+  assert.deepEqual(h.edits.at(-1), { id: daily.id, action: 'delete' })
+  assert.equal(h.tasks.size, 0)
+  assert.equal(JSON.parse(await fs.readFile(join(h.root, 'jobs.json'), 'utf8')).dailyScheduleId, null)
+})
+
+test('an existing migrated daily rule survives restart without duplicate creation or rearming', async t => {
+  const saved = { id: 'migrated-daily', kind: 'daily', title: '英语教练 · 每日一课', prompt: 'saved live context',
+    daily: { time: '08:00:00', time_zone: 'Asia/Shanghai' }, target: { kind: 'session', sessionId: 'isolated-session' },
+    status: 'active', scheduledAt: '2026-10-31T00:00:00.000Z' }
+  const h = await host(t, { savedTasks: [saved], prepare: async root => {
+    await execute(root, 'settings.save', { automation: { enabled: true, time: '08:00', timeZone: 'Asia/Shanghai' } })
+    await fs.writeFile(join(root, 'jobs.json'), JSON.stringify({ dailySessionId: 'isolated-session', dailyScheduleId: saved.id,
+      dailyScheduleKey: 'live-lesson-context-v1|08:00|Asia/Shanghai', jobs: {} }))
+  } })
+  assert.equal(h.records.length, 0)
+  assert.equal(h.edits.length, 0)
+  assert.deepEqual(h.tasks.get(saved.id), saved, 'The Host owns migration and the committed occurrence')
+  await h.dispose()
+  const reboot = await host(t, { directory: h.root, savedTasks: [saved] })
+  assert.equal(reboot.records.length, 0)
+  assert.equal(reboot.edits.length, 0)
+  assert.deepEqual(reboot.tasks.get(saved.id), saved)
+  assert.equal((await reboot.request('settings.save', { automation: { enabled: false } })).warnings.length, 0)
+  assert.equal(reboot.tasks.size, 0)
+})
+
+test('daily edit failures keep the binding visible and allow retry without a duplicate rule', async t => {
+  const h = await host(t)
+  await h.request('settings.save', { automation: { enabled: true, time: '08:00', timeZone: 'Asia/Shanghai' } })
+  const id = h.records.at(-1).id
+  h.failEdits('schedule_conflict')
+  const changed = await h.request('settings.save', { automation: { enabled: true, time: '09:00' } })
+  assert.equal(changed.ok, true)
+  assert.ok(changed.warnings.some(message => /schedule_conflict/.test(message)))
+  assert.equal(h.records.length, 1)
+  assert.equal(JSON.parse(await fs.readFile(join(h.root, 'jobs.json'), 'utf8')).dailyScheduleId, id)
+  h.failEdits('throw')
+  const disabled = await h.request('settings.save', { automation: { enabled: false } })
+  assert.ok(disabled.warnings.some(message => /isolated schedule edit unavailable/.test(message)))
+  assert.equal(h.tasks.size, 1)
+  h.failEdits(null)
+  assert.equal((await h.request('settings.save', { automation: { enabled: false } })).warnings.length, 0)
+  assert.equal(h.tasks.size, 0)
+})
+
+test('an already removed daily rule can be disabled idempotently without an active Session', async t => {
+  const h = await host(t, { prepare: root => fs.writeFile(join(root, 'jobs.json'), JSON.stringify({
+    dailyScheduleId: 'removed-rule', dailyScheduleKey: 'old-key', jobs: {}
+  })) })
+  const result = await h.request('settings.save', { automation: { enabled: false } })
+  assert.equal(result.warnings.length, 0)
+  assert.equal(JSON.parse(await fs.readFile(join(h.root, 'jobs.json'), 'utf8')).dailyScheduleId, null)
+})
+
+test('a missing daily rule is recreated on an explicit settings change, not mistaken for a valid binding', async t => {
+  const h = await host(t)
+  await h.request('settings.save', { automation: { enabled: true, time: '08:00', timeZone: 'Asia/Shanghai' } })
+  h.tasks.clear()
+  const result = await h.request('settings.save', { automation: { enabled: true, time: '09:00' } })
+  assert.equal(result.warnings.length, 0)
+  assert.equal(h.records.length, 2)
+  assert.equal(h.tasks.size, 1)
+})
+
+test('job completion follows its delivery message instead of a different task ending in the shared Session', async t => {
+  const h = await host(t)
+  const assessment = await h.request('generate.assessment')
+  const vocabulary = await h.tool({ action: 'supplement' })
+  h.endSession({ kind: 'completed' }, assessment.data.id)
+  assert.equal((await h.request('job.status', { kind: 'assessment' })).data.status, 'done')
+  assert.equal((await h.request('job.status', { kind: 'vocab' })).data.status, 'pending')
+  h.endSession({ kind: 'aborted' }, vocabulary.data.id)
+  const failed = await h.request('job.status', { kind: 'vocab' })
+  assert.equal(failed.data.status, 'failed')
+  assert.match(failed.data.failure, /中断/)
+})
+
+test('passive event history pages keep a fixed cut and find the matching delivery across page boundaries', async t => {
+  const h = await host(t, { history: request => request.beforeSeq === undefined
+    ? { cursor: 9, records: [{ type: 'event', event: { seq: 9, type: 'turn/end', time: 1, data: { turn: 4, reason: { kind: 'completed' } } } }], hasMore: true }
+    : { cursor: 9, records: [
+      { type: 'event', event: { seq: 7, type: 'turn/start', time: 1, data: { turn: 4 } } },
+      { type: 'event', event: { seq: 8, type: 'user/message', time: 1, data: { id: 'page-delivery', source: { kind: 'schedule' } } } }
+    ], hasMore: true } })
+  const generated = await h.request('generate.assessment')
+  h.tasks.get(generated.data.id).lastDelivery = { messageId: 'page-delivery', targetSessionId: 'isolated-session' }
+  assert.equal((await h.request('job.status', { kind: 'assessment' })).data.status, 'done', 'Clock rollback does not hide the matched turn')
+  assert.equal(h.historyReads.length, 2)
+  assert.equal(h.historyReads[1].throughSeq, 9)
+  assert.equal(h.historyReads[1].beforeSeq, 9)
+})
+
+test('a delivered but unfinished turn remains pending without inferring completion from idle state', async t => {
+  const h = await host(t)
+  const generated = await h.request('generate.assessment')
+  h.tasks.get(generated.data.id).lastDelivery = { messageId: 'unfinished', targetSessionId: 'isolated-session' }
+  h.setSessionEvents([
+    { seq: 0, type: 'turn/start', time: Date.now(), data: { turn: 1 } },
+    { seq: 1, type: 'user/message', time: Date.now(), data: { id: 'unfinished', source: { kind: 'schedule' } } }
+  ])
+  assert.equal((await h.request('job.status', { kind: 'assessment' })).data.status, 'pending')
+  assert.equal(h.historyReads.length, 1)
+})
+
+test('legacy pending jobs without a saved receipt use exact Host framing after restart', async t => {
+  const h = await host(t)
+  const generated = await h.request('generate.assessment')
+  h.endSession()
+  const task = h.tasks.get(generated.data.id)
+  delete task.lastDelivery
+  assert.equal((await h.request('job.status', { kind: 'assessment' })).data.status, 'done')
+})
+
+test('history read failures keep a pending job retryable and a matching error turn is never success', async t => {
+  let readable = false
+  const h = await host(t, { history: () => {
+    if (!readable) throw new Error('isolated history unavailable')
+    return { cursor: 2, records: [
+      { type: 'event', event: { seq: 0, type: 'turn/start', data: { turn: 1 } } },
+      { type: 'event', event: { seq: 1, type: 'user/message', data: { id: 'failed-delivery', source: { kind: 'schedule' } } } },
+      { type: 'event', event: { seq: 2, type: 'turn/end', data: { turn: 1, reason: { kind: 'error', error: { message: 'isolated model failure' } } } } }
+    ], hasMore: false }
+  } })
+  const generated = await h.request('generate.assessment')
+  h.tasks.get(generated.data.id).lastDelivery = { messageId: 'failed-delivery', targetSessionId: 'isolated-session' }
+  assert.equal((await h.request('job.status', { kind: 'assessment' })).data.status, 'pending')
+  readable = true
+  const failed = await h.request('job.status', { kind: 'assessment' })
+  assert.equal(failed.data.status, 'failed')
+  assert.equal(failed.data.failure, 'isolated model failure')
+})
+
+test('malformed or non-progressing Host history cannot settle a generation or loop indefinitely', async t => {
+  const h = await host(t, { history: () => ({ cursor: 9, records: [
+    { type: 'event', event: { seq: 9, type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } } }
+  ], hasMore: true }) })
+  await h.request('generate.assessment')
+  assert.equal((await h.request('job.status', { kind: 'assessment' })).data.status, 'pending')
+  assert.equal(h.historyReads.length, 2, 'A repeated page must not be followed again')
+})
+
+test('editing the time of a Host-paused daily task preserves its paused state', async t => {
+  const h = await host(t)
+  await h.request('settings.save', { automation: { enabled: true, time: '08:00', timeZone: 'Asia/Shanghai' } })
+  const id = h.records.at(-1).id
+  h.tasks.get(id).status = 'paused'
+  const result = await h.request('settings.save', { automation: { enabled: true, time: '09:00' } })
+  assert.equal(result.warnings.length, 0)
+  assert.equal(h.records.length, 1)
+  assert.equal(h.tasks.get(id).status, 'paused')
 })
 
 test('active-list supplement uses the shared domain operation without a model job', async t => {

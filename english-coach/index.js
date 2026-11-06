@@ -25,6 +25,8 @@ const POINTER_FILE = join(DSH_HOME, 'english-coach', 'root.json')
 const API_PREFIX = '/english-coach/api'
 const WATCH_INTERVAL_MS = 5_000
 const JOB_TIMEOUT_MS = 15 * 60_000
+const HISTORY_TIMEOUT_MS = 10_000
+const HISTORY_MAX_PAGES = 20
 
 function resolveDefaultRoot() {
   return join(homedir(), 'DeepSeek-English')
@@ -217,7 +219,7 @@ export function apply(ctx, config) {
     try {
       const sessionController = ctx.get('sessionController')
       if (sessionController) {
-        const listing = await sessionController.list({}, undefined)
+        const listing = await sessionController.list({}, AbortSignal.timeout(HISTORY_TIMEOUT_MS))
         const cwd = (listing.items ?? [])
           .map((item) => item.cwd)
           .find((candidate) => typeof candidate === 'string' && candidate && candidate !== root)
@@ -358,10 +360,11 @@ export function apply(ctx, config) {
         if (!claim.ok) return claim
         if (!claim.data.claimed) return { ...claim, data: { ...claim.data, mode: 'static' } }
       }
-      const record = await schedule.create(sessionId, {
+      const record = await schedule.create({
         title: spec.title,
         prompt,
-        after_seconds: 2
+        timing: { kind: 'after', after_seconds: 2 },
+        target: { kind: 'session', sessionId }
       })
       const job = {
         id: String(record.id),
@@ -388,6 +391,48 @@ export function apply(ctx, config) {
     }
   }
 
+  // 0.2.2 exposes passive, paged events instead of inspect(). Match the
+  // delivered message, not another job's turn/end in the shared Session. Pin
+  // the first cut and use seq for pagination; wall clocks can move backwards.
+  async function jobTurnEnd(sessionController, schedule, job) {
+    const task = await schedule.view({ id: job.id })
+    const delivery = task.lastDelivery
+    const messageId = delivery?.targetSessionId === job.sessionId ? delivery.messageId : null
+    const signal = AbortSignal.timeout(HISTORY_TIMEOUT_MS)
+    const ends = new Map()
+    let throughSeq, beforeSeq, matched = false
+    for (let pageNumber = 0; pageNumber < HISTORY_MAX_PAGES; pageNumber++) {
+      signal.throwIfAborted()
+      const page = await sessionController.events({
+        address: { kind: 'session', sessionId: job.sessionId },
+        maxMessages: 100,
+        ...(throughSeq === undefined ? {} : { throughSeq }),
+        ...(beforeSeq === undefined ? {} : { beforeSeq })
+      }, signal)
+      if (!Number.isSafeInteger(page.cursor) || page.cursor < -1 || !Array.isArray(page.records)
+        || typeof page.hasMore !== 'boolean' || (throughSeq !== undefined && page.cursor !== throughSeq)) return null
+      throughSeq ??= page.cursor
+      let firstSeq = beforeSeq ?? throughSeq + 1
+      for (const record of page.records.toReversed()) {
+        const event = record?.type === 'event' ? record.event : null
+        if (!event || !Number.isSafeInteger(event.seq) || event.seq < 0 || event.seq >= firstSeq) return null
+        firstSeq = event.seq
+        if (event.type === 'turn/end') ends.set(event.data?.turn, event)
+        if (event.type === 'user/message' && event.data?.source?.kind === 'schedule') {
+          // Legacy task rows may have no receipt. The Host's one-shot framing
+          // still names the exact task; do not infer delivery from timestamps.
+          const exactTask = `schedule_id_json: ${JSON.stringify(job.id)}`
+          const framed = !messageId && event.data.content?.some(block => block.type === 'text' && typeof block.text === 'string' && block.text.split('\n').includes(exactTask))
+          if (messageId ? event.data.id === messageId : framed) matched = true
+        }
+        if (matched && event.type === 'turn/start') return ends.get(event.data?.turn) ?? null
+      }
+      if (!page.hasMore || firstSeq === 0 || !page.records.length) return null
+      beforeSeq = firstSeq
+    }
+    return null
+  }
+
   async function jobStatus(kind) {
     const jobs = await readJobs()
     const job = jobs.jobs?.[kind] ?? null
@@ -398,14 +443,12 @@ export function apply(ctx, config) {
       writeJobs({ ...jobs, jobs: { ...(jobs.jobs ?? {}), [kind]: next } })
 
     const sessionController = ctx.get('sessionController')
-    if (!sessionController) return { ok: true, data: job, warnings: [] }
+    const schedule = ctx.get('schedule')
+    if (!sessionController || !schedule) return { ok: true, data: job, warnings: [] }
     try {
-      const inspection = await sessionController.inspect(job.sessionId)
-      const ended = inspection.events.filter(
-        (event) => event.type === 'turn/end' && Number(event.time) >= job.createdAt
-      )
-      if (ended.length) {
-        const reason = ended[ended.length - 1].data?.reason ?? { kind: 'completed' }
+      const ended = await jobTurnEnd(sessionController, schedule, job)
+      if (ended) {
+        const reason = ended.data?.reason ?? { kind: 'unknown' }
         let failed = reason.kind !== 'completed'
         let missingLesson = false
         if (!failed && kind === 'lesson') {
@@ -430,7 +473,7 @@ export function apply(ctx, config) {
         return { ok: true, data: next, warnings: [] }
       }
     } catch {
-      /* a session that cannot be inspected yet stays pending */
+      /* A failed passive read cannot establish completion. Keep it retryable. */
     }
     if (Date.now() - job.createdAt > JOB_TIMEOUT_MS) {
       const next = {
@@ -463,9 +506,11 @@ export function apply(ctx, config) {
     const jobs = await readJobs()
 
     if (!automation.enabled) {
-      if (jobs.dailyScheduleId && schedule && jobs.dailySessionId) {
+      if (jobs.dailyScheduleId && schedule) {
         try {
-          await schedule.delete({ sessionId: jobs.dailySessionId, id: jobs.dailyScheduleId })
+          const removed = await schedule.edit({ id: jobs.dailyScheduleId, action: 'delete' })
+          if (removed.code && removed.code !== 'schedule_not_found') throw new Error(removed.code)
+          if (!removed.deleted && removed.code !== 'schedule_not_found') throw new Error('未确认任务已删除')
           await writeJobs({ ...jobs, dailyScheduleId: null, dailyScheduleKey: null })
         } catch (error) {
           warnings.push(`关闭每日任务失败：${error?.message ?? error}`)
@@ -480,27 +525,27 @@ export function apply(ctx, config) {
 
     const key = `live-lesson-context-v1|${automation.time}|${automation.timeZone}`
     if (jobs.dailyScheduleId && jobs.dailyScheduleKey === key) return warnings
-    // A changed time means the stored rule is stale: drop it and make a new one
-    // rather than leaving the learner with yesterday's schedule.
-    if (jobs.dailyScheduleId && jobs.dailySessionId) {
-      try {
-        await schedule.delete({ sessionId: jobs.dailySessionId, id: jobs.dailyScheduleId })
-      } catch (error) {
-        warnings.push(`删除旧每日任务失败：${error?.message ?? error}`)
-      }
-    }
-
+    // Update the existing Host task in place. Keep its identity, history and
+    // paused state; do not delete first or create duplicates after a failure.
     try {
       let sessionId = jobs.dailySessionId
       if (!sessionId) {
         const created = await sessionController.create({ cwd: root })
         sessionId = created.sessionId
       }
-      const record = await schedule.create(sessionId, {
+      const request = {
         title: '英语教练 · 每日一课',
         prompt: LESSON_REFRESH_PROMPT,
-        daily: { time: clockTime(automation.time), time_zone: automation.timeZone }
-      })
+        timing: { kind: 'daily', daily: { time: clockTime(automation.time), time_zone: automation.timeZone } },
+        target: { kind: 'session', sessionId }
+      }
+      let record
+      if (jobs.dailyScheduleId) {
+        record = await schedule.edit({ id: jobs.dailyScheduleId, action: 'update', patch: request })
+        if (record.code === 'schedule_not_found') record = null
+        else if (record.code) throw new Error(record.code)
+      }
+      record ??= await schedule.create(request)
       await writeJobs({
         ...jobs,
         dailySessionId: sessionId,
@@ -966,7 +1011,7 @@ export function apply(ctx, config) {
     }, WATCH_INTERVAL_MS)
   )
 
-  ctx.on('dispose', () => {
+  ctx.effect(() => () => {
     state.promptLine = ''
   })
 }

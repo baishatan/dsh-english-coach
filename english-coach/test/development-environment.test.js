@@ -87,23 +87,32 @@ const hostOptions = { skip: !hostRoot || !hostExecutable ? 'Set ENGLISH_COACH_TE
 
 test('actual Host gate rejects an rc.3 manifest without exemptions before installation', hostOptions, async t => {
   const root = await tempFixture(t, 'coach-environment-')
-  await fs.writeFile(join(root, 'package.json'), JSON.stringify({ name: '@lijingtong/dsh-english-coach', version: '0.1.2',
+  await fs.writeFile(join(root, 'package.json'), JSON.stringify({ name: '@lijingtong/dsh-english-coach', version: '0.1.3',
     engines: { node: '>=24.21.0 <25', dsh: '0.2.1-rc.3' } }))
   const result = run(['--json', '--workspace', root, '--dsh-root', hostRoot, '--dsh-executable', hostExecutable])
   assert.equal(result.status, 1)
   const report = JSON.parse(result.stdout)
-  assert.equal(report.host.version, '0.2.1-rc.5')
+  assert.equal(report.host.version, '0.2.2-rc.1')
   assert.equal(report.host.compatible, false)
   assert.ok(report.checks.some(check => check.code === 'HOST_INCOMPATIBLE' && /before uninstalling or installing/.test(check.message)))
 })
 
-test('actual Host gate accepts an rc.5 candidate manifest without exemptions', hostOptions, async t => {
+test('actual Host gate rejects the previously supported rc.5 manifest without exemptions', hostOptions, async t => {
   const root = await tempFixture(t, 'coach-environment-')
-  await fs.writeFile(join(root, 'package.json'), JSON.stringify({ name: '@lijingtong/dsh-english-coach', version: '0.1.2',
+  await fs.writeFile(join(root, 'package.json'), JSON.stringify({ name: '@lijingtong/dsh-english-coach', version: '0.1.3',
     engines: { node: '>=24.21.0 <25', dsh: '0.2.1-rc.5' } }))
+  const report = JSON.parse(run(['--json', '--workspace', root, '--dsh-root', hostRoot, '--dsh-executable', hostExecutable]).stdout)
+  assert.equal(report.host.version, '0.2.2-rc.1')
+  assert.equal(report.host.compatible, false)
+  assert.ok(report.checks.some(check => check.code === 'HOST_INCOMPATIBLE'))
+})
+
+test('actual Host gate accepts the current workspace manifest without exemptions', hostOptions, async t => {
+  const root = await tempFixture(t, 'coach-environment-')
+  await fs.copyFile(join(packageRoot, 'package.json'), join(root, 'package.json'))
   const result = run(['--json', '--workspace', root, '--dsh-root', hostRoot, '--dsh-executable', hostExecutable])
   const report = JSON.parse(result.stdout)
-  assert.equal(report.host.version, '0.2.1-rc.5')
+  assert.equal(report.host.version, '0.2.2-rc.1')
   assert.equal(report.host.compatible, true)
   assert.ok(report.checks.some(check => check.code === 'HOST_COMPATIBLE' && check.status === 'pass'))
 })
