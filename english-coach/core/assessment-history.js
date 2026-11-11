@@ -9,6 +9,7 @@ import { listDir, writeJson } from './store.js'
 
 const journalName = 'assessment-history.json'
 const attemptName = /^\d{4}-.*\.json$/
+const isRecord = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 
 async function original(root, path) {
   try {
@@ -85,9 +86,16 @@ export async function recoverAssessmentHistory(ctx, defaults) {
     const candidates = originals.filter(record => attemptName.test(record.path.slice('assessments/'.length)))
     const legacy = candidates.filter(record => !record.value ||
       ![record.value.scoringRule, record.value.result?.scoringRule, record.value.finalization?.point?.scoringRule].includes(SCORING_RULE))
-    const hasLegacy = legacy.length || (level.value?.points ?? []).some(point => point.scoringRule !== SCORING_RULE)
+    const sourcePoints = Array.isArray(level.value?.points) ? level.value.points : []
+    const levelPoints = sourcePoints.filter(isRecord)
+    const malformedPoints = level.text !== null && (!Array.isArray(level.value?.points) || levelPoints.length !== sourcePoints.length)
+    if (malformedPoints && (level.value?.scoringRule === SCORING_RULE || level.value?.current?.scoringRule === SCORING_RULE ||
+      levelPoints.some(point => point.scoringRule === SCORING_RULE) || candidates.some(record => !legacy.includes(record)))) {
+      fail('assessment_recovery_failed', '新测评结果记录损坏，不能按旧历史替换', 'level')
+    }
+    const hasLegacy = legacy.length || levelPoints.some(point => point.scoringRule !== SCORING_RULE)
       || (route.value?.phases?.length && !route.value.generationId)
-    const levelUncertain = (level.text !== null && !Array.isArray(level.value?.points)) ||
+    const levelUncertain = malformedPoints ||
       (level.text === null && (levelBackup.text !== null || levelBackup.type))
     const routeInvalid = (route.text !== null && (!Array.isArray(route.value?.phases) || !Array.isArray(route.value?.weekly?.goals))) ||
       (route.text === null && (routeBackup.text !== null || routeBackup.type))
@@ -102,24 +110,35 @@ export async function recoverAssessmentHistory(ctx, defaults) {
       const modern = candidates.filter(record => !legacy.includes(record))
       for (const record of modern) {
         const attempt = record.value
-        if (attempt.status !== 'done') continue
-        const point = convertedPoint(attempt, record.path)
-        const linked = (level.value?.points ?? []).filter(entry => entry.id === point.id || entry.attemptId === attempt.id)
+        if (!['done', 'finalizing'].includes(attempt.status)) continue
+        const savedPoint = attempt.status === 'finalizing' ? attempt.finalization?.point : attempt.result
+        const point = convertedPoint({ ...attempt, result: savedPoint }, record.path)
+        const linked = levelPoints.filter(entry => entry.id === point.id || entry.attemptId === attempt.id)
         if (linked.length > 1 || linked.some(entry => entry.id !== point.id || entry.at !== point.at)) {
           fail('assessment_recovery_failed', '新测评完成关联损坏，不能覆盖原始结果', 'attemptId')
         }
-        points.push(attempt.result)
-        completed.push({ at: point.at, point: attempt.result })
+        points.push(savedPoint)
+        completed.push({ at: point.at, point: savedPoint })
+        if (attempt.status === 'finalizing') {
+          // The cutover route accounts for every frozen completed intent. Let 02
+          // finish its original response commit, not overwrite this route with
+          // an earlier generation after the cutover snapshot is published.
+          attempts.push({ path: record.path, value: { ...attempt, finalization: { ...attempt.finalization, syllabus: null } } })
+        }
       }
       for (const record of legacy) {
-        if (!record.value) {
-          const backup = originals.find(other => other.path === `${record.path}.bak`)
-          const id = record.path.slice('assessments/'.length, -5)
-          if (/-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id) ||
-            (level.value?.points ?? []).some(point => point?.attemptId === id && point.scoringRule === SCORING_RULE) ||
-            [backup?.value?.scoringRule, backup?.value?.result?.scoringRule, backup?.value?.finalization?.point?.scoringRule].includes(SCORING_RULE)) fail('assessment_recovery_failed', '新测评主记录损坏，不能从旧备份恢复作答', 'attemptId')
+        const backup = originals.find(other => other.path === `${record.path}.bak`)
+        const id = record.path.slice('assessments/'.length, -5)
+        const validIdentity = isRecord(record.value) && record.value.id === id &&
+          ['done', 'in_progress', 'finalizing', 'abandoned', 'terminated', 'invalidated'].includes(record.value.status) && Array.isArray(record.value.answers)
+        if ((/-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id) && !validIdentity) ||
+          levelPoints.some(point => point.attemptId === id && point.scoringRule === SCORING_RULE) ||
+          [backup?.value?.scoringRule, backup?.value?.result?.scoringRule, backup?.value?.finalization?.point?.scoringRule].includes(SCORING_RULE)) {
+          fail('assessment_recovery_failed', '新测评主记录损坏，不能从旧备份恢复作答', 'attemptId')
+        }
+        if (!isRecord(record.value) || !['done', 'in_progress', 'finalizing', 'abandoned', 'terminated', 'invalidated'].includes(record.value.status)) {
           if (!record.type) attempts.push({ path: record.path, value: { id, status: 'invalidated', answers: [], historyConversion: SCORING_RULE } })
-          if (!(level.value?.points ?? []).some(point => point.attemptId === id || point.id === backup?.value?.result?.id)) completed.push({ at: null, point: null })
+          if (!levelPoints.some(point => point.attemptId === id || point.id === backup?.value?.result?.id)) completed.push({ at: null, point: null })
           continue
         }
         const attempt = structuredClone(record.value)
@@ -128,7 +147,7 @@ export async function recoverAssessmentHistory(ctx, defaults) {
           .filter(answer => answer?.anchor === true && typeof answer.itemId === 'string' && answer.itemId.trim()).map(answer => answer.itemId)
         if (attempt.status === 'done') {
           let point = null
-          const linked = (level.value?.points ?? []).filter(point => point?.id === attempt.result?.id || point?.attemptId === attempt.id)
+          const linked = levelPoints.filter(point => point?.id === attempt.result?.id || point?.attemptId === attempt.id)
           const shared = candidates.filter(other => other.value?.status === 'done' && other.value.result?.id === attempt.result?.id)
           const associationValid = shared.length === 1 && linked.length <= 1 && linked.every(point =>
             point.id === attempt.result?.id && point.at === attempt.result?.at && point.kind === attempt.kind &&
@@ -147,12 +166,19 @@ export async function recoverAssessmentHistory(ctx, defaults) {
           delete attempt.result
           delete attempt.finalization
           attempts.push({ path: record.path, value: attempt })
+        } else {
+          // Closed old rounds retain their raw answers too. Their confirmed
+          // anchor projection prevents malformed containers becoming runtime input.
+          attempts.push({ path: record.path, value: attempt })
         }
       }
-      for (const oldPoint of level.value?.points ?? []) {
-        const match = candidates.find(record => record.value?.status === 'done' && record.value.result?.id === oldPoint?.id &&
-          oldPoint.at === record.value.result.at && oldPoint.kind === record.value.kind &&
-          (oldPoint?.attemptId === undefined || oldPoint.attemptId === record.value.id))
+      for (const oldPoint of levelPoints) {
+        const match = candidates.find(record => {
+          const attempt = record.value
+          const result = attempt?.status === 'finalizing' ? attempt.finalization?.point : attempt?.status === 'done' ? attempt.result : null
+          return result?.id === oldPoint.id && oldPoint.at === result?.at && oldPoint.kind === attempt?.kind &&
+            (oldPoint.attemptId === undefined || oldPoint.attemptId === attempt?.id)
+        })
         if (!match) completed.push({ at: oldPoint?.at, point: null })
       }
       points.sort((a, b) => Date.parse(a.at) - Date.parse(b.at))

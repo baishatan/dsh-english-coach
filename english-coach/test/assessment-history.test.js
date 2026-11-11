@@ -262,6 +262,74 @@ test('bad old route and level files are preserved for recovery and replaced once
   }
 })
 
+test('confirmed old history with an object-shaped level points container becomes unassessed without losing usable raw history', async t => {
+  const setup = await fixture(t)
+  const attempt = legacy()
+  await seed(setup, [attempt])
+  const value = { version: 1, points: {}, drift: { baseline: 0.5, streak: 2, note: null } }
+  await setup.put('level.json', value)
+  const bytes = await fs.readFile(join(setup.root, 'level.json'), 'utf8')
+  const state = await setup.run('state.get')
+  assert.equal(state.ok, true, JSON.stringify(state))
+  assert.equal(state.data.level.latest, null, 'unreadable completion identities must not become a best-raw current fallback')
+  assert.equal(state.data.needsAssessment, true)
+  assert.deepEqual(state.data.level.points.map(point => point.id), [attempt.result.id])
+  assert.equal(state.data.syllabus.currentPhase.targetBand, '入门')
+  assert.equal((await setup.run('progress.get')).data.curve.length, 1)
+  const journal = await setup.read('assessment-history.json')
+  assert.equal(journal.originals.find(record => record.path === 'level.json').text, bytes)
+  assert.deepEqual((await setup.read(`assessments/${attempt.id}.json`)).answers, attempt.answers)
+})
+
+test('confirmed old history with a null level point becomes unassessed while preserving the raw curve and original bytes', async t => {
+  const setup = await fixture(t)
+  const attempt = legacy()
+  await seed(setup, [attempt], [null])
+  await fs.writeFile(join(setup.root, 'assessments', '2026-11-03-short-damaged.json'), '{torn-original')
+  const bytes = await fs.readFile(join(setup.root, 'level.json'), 'utf8')
+  const state = await setup.run('state.get')
+  assert.equal(state.ok, true, JSON.stringify(state))
+  assert.equal(state.data.level.latest, null)
+  assert.equal(state.data.needsAssessment, true)
+  assert.deepEqual(state.data.level.points.map(point => point.id), [attempt.result.id])
+  assert.equal((await setup.run('assessment.resume')).ok, true)
+  const journal = await setup.read('assessment-history.json')
+  assert.equal(journal.originals.find(record => record.path === 'level.json').text, bytes)
+  assert.deepEqual(journal.originals.find(record => record.path === 'level.json').value.points, [null])
+})
+
+test('a malformed modern level point container is not consumed as convertible old history', async t => {
+  for (const points of [{}, [null]]) {
+    const setup = await fixture(t)
+    await seed(setup, [legacy()])
+    await setup.put('level.json', { version: 1, scoringRule: 'six-band-grid-v1', current: null, points })
+    const bytes = await fs.readFile(join(setup.root, 'level.json'), 'utf8')
+    const result = await setup.run('state.get')
+    assert.equal(result.ok, false)
+    assert.equal(result.code, 'assessment_recovery_failed')
+    assert.equal(await fs.readFile(join(setup.root, 'level.json'), 'utf8'), bytes)
+    await assert.rejects(fs.access(join(setup.root, 'assessment-history.json')), { code: 'ENOENT' })
+  }
+})
+
+test('mixed confirmed modern raw and legacy evidence cannot turn an unmarked damaged level container into a legacy replacement', async t => {
+  const source = await fixture(t)
+  await source.run('assessment.saveBank', assessmentBank('modern-level-proof'))
+  let response = await source.run('assessment.start', { kind: 'short' })
+  while (!response.data.done) response = await source.run('assessment.answer', { attemptId: response.data.attemptId, itemId: response.data.question.id, responseType: 'unable' })
+  const modern = await source.read(`assessments/${response.data.attemptId}.json`)
+  const setup = await fixture(t)
+  await seed(setup, [legacy()])
+  await setup.put(`assessments/${modern.id}.json`, modern)
+  await setup.put('level.json', { version: 1, points: {} })
+  const bytes = await fs.readFile(join(setup.root, 'level.json'), 'utf8')
+  const result = await setup.run('state.get')
+  assert.equal(result.ok, false)
+  assert.equal(result.code, 'assessment_recovery_failed')
+  assert.equal(await fs.readFile(join(setup.root, 'level.json'), 'utf8'), bytes)
+  await assert.rejects(fs.access(join(setup.root, 'assessment-history.json')), { code: 'ENOENT' })
+})
+
 test('an unreadable legacy directory or original fails closed before any conversion marker or derived publication', async t => {
   for (const boundary of ['directory', 'raw', 'level', 'route', 'backup']) {
     await t.test(boundary, async t => {
@@ -468,6 +536,58 @@ test('conversion preserves all lesson statuses, vocabulary answers and schedules
   assert.deepEqual(await Promise.all(paths.map(path => fs.readFile(join(setup.root, path), 'utf8'))), bytes)
 })
 
+test('modern UUID raw object cannot be silently classified as empty old data during cutover', async t => {
+  const setup = await fixture(t)
+  await seed(setup, [legacy()])
+  const path = 'assessments/2026-11-11-short-mwbw1pc0-12345678-1234-4123-8123-123456789012.json'
+  await setup.put(path, { status: 'abandoned' })
+  const bytes = await fs.readFile(join(setup.root, path), 'utf8')
+  const result = await setup.run('state.get')
+  assert.equal(result.ok, false)
+  assert.equal(result.code, 'assessment_recovery_failed')
+  assert.equal(await fs.readFile(join(setup.root, path), 'utf8'), bytes)
+  await assert.rejects(fs.access(join(setup.root, 'assessment-history.json')), { code: 'ENOENT' })
+})
+
+test('primitive and array old originals are preserved as invalidated evidence rather than crashing or restoring an earlier current', async t => {
+  for (const value of [true, 'broken', [], {}, false, 0]) {
+    await t.test(JSON.stringify(value), async t => {
+      const setup = await fixture(t)
+      const good = legacy()
+      await seed(setup, [good])
+      const path = 'assessments/2026-11-03-short-unknown.json'
+      await setup.put(path, value)
+      const bytes = await fs.readFile(join(setup.root, path), 'utf8')
+      const result = await setup.run('state.get')
+      assert.equal(result.ok, true, JSON.stringify(result))
+      assert.equal(result.data.level.latest, null)
+      assert.deepEqual(result.data.level.points.map(point => point.id), [good.result.id])
+      assert.equal((await setup.read(path)).status, 'invalidated')
+      const journal = await setup.read('assessment-history.json')
+      assert.equal(journal.originals.find(record => record.path === path).text, bytes)
+      assert.equal((await setup.run('assessment.resume')).ok, true)
+    })
+  }
+})
+
+test('an abandoned old round with a damaged answer container stays preserved without permanently locking new assessment starts', async t => {
+  const setup = await fixture(t)
+  const old = legacy()
+  old.status = 'abandoned'
+  old.answers = {}
+  delete old.result
+  await seed(setup, [], [])
+  await setup.put(`assessments/${old.id}.json`, old)
+  const state = await setup.run('state.get')
+  assert.equal(state.ok, true, JSON.stringify(state))
+  assert.equal(state.data.level.latest, null)
+  await setup.run('assessment.saveBank', assessmentBank('abandoned-old'))
+  const started = await setup.run('assessment.start', { kind: 'short' })
+  assert.equal(started.ok, true, JSON.stringify(started))
+  assert.deepEqual((await setup.read(`assessments/${old.id}.json`)).answers, {})
+  assert.equal((await setup.read(`assessments/${old.id}.json`)).status, 'abandoned')
+})
+
 test('structurally damaged old responses remain recoverable without poisoning new anchor selection or ordinary learning', async t => {
   for (const answers of [null, {}, [null], ['invalid']]) {
     const setup = await fixture(t)
@@ -494,6 +614,62 @@ test('a later unmatched level completion time still overrides a newer usable raw
   assert.equal(state.ok, true, JSON.stringify(state))
   assert.equal(state.data.level.latest, null)
   assert.deepEqual(state.data.level.points.map(point => point.id), [good.result.id])
+})
+
+test('cutover and a same-band modern finalization keep one consistent assessed current curve and route', async t => {
+  const source = await fixture(t)
+  const complete = async (at = now) => {
+    await source.run('assessment.saveBank', assessmentBank('pending-history'))
+    let response = await source.run('assessment.start', { kind: 'short' }, at)
+    while (!response.data.done) {
+      const raw = await source.read(`assessments/${response.data.attemptId}.json`)
+      const item = [...raw.pool, ...raw.anchors].find(item => item.id === response.data.question.id)
+      response = await source.run('assessment.answer', { attemptId: raw.id, itemId: item.id, choice: item.answerIndex }, at)
+      if (!response.ok) return response
+    }
+    return response
+  }
+  const first = await complete()
+  assert.equal(first.ok, true, JSON.stringify(first))
+  const firstRaw = await source.read(`assessments/${first.data.attemptId}.json`)
+  const priorRoute = await source.read('syllabus.json')
+  assert.notEqual(priorRoute.generatedFrom.finalBandIndex, 1)
+  const rename = fs.rename
+  let blocked = true
+  t.mock.method(fs, 'rename', async (from, target) => {
+    if (blocked && target.startsWith(join(source.root, 'assessments'))) {
+      const incoming = JSON.parse(await fs.readFile(from, 'utf8'))
+      if (incoming.status === 'done' && incoming.id !== firstRaw.id) throw Object.assign(new Error('synthetic pending modern done'), { code: 'EIO' })
+    }
+    return rename.call(fs, from, target)
+  })
+  const second = await complete(new Date(now.getTime() + 1000))
+  assert.equal(second.ok, false)
+  blocked = false
+  const level = await source.read('level.json')
+  const pendingPoint = level.points.at(-1)
+  const pending = await source.read(`assessments/${pendingPoint.attemptId}.json`)
+  assert.equal(pending.status, 'finalizing')
+  assert.equal(pending.finalization.syllabus, null, 'a same-band completion reuses the route rather than rebuilding it')
+  for (const intentRoute of [null, firstRaw.finalization.syllabus]) {
+    const setup = await fixture(t)
+    const old = legacy()
+    const pendingInput = { ...pending, finalization: { ...pending.finalization, syllabus: intentRoute } }
+    await seed(setup, [old], [old.result, ...level.points])
+    await setup.put(`assessments/${firstRaw.id}.json`, firstRaw)
+    await setup.put(`assessments/${pending.id}.json`, pendingInput)
+    await setup.put('syllabus.json', priorRoute)
+    const state = await setup.run('state.get')
+    assert.equal(state.ok, true, JSON.stringify(state))
+    assert.equal(state.data.level.latest?.attemptId, pending.id)
+    assert.equal(state.data.level.latest.at, pending.finalization.point.at)
+    assert.equal(state.data.syllabus.currentPhase.targetBand, state.data.level.latest.band)
+    assert.deepEqual(state.data.level.points.map(point => point.id), [old.result.id, ...level.points.map(point => point.id)])
+    assert.equal((await setup.read(`assessments/${pending.id}.json`)).status, 'done')
+    const journal = await setup.read('assessment-history.json')
+    assert.equal((await setup.read('syllabus.json')).generationId, journal.syllabus.generationId, 'neither a null nor an older saved intent route may overwrite the cutover generation')
+    assert.deepEqual(journal.originals.find(record => record.path === `assessments/${pending.id}.json`).value.finalization, pendingInput.finalization)
+  }
 })
 
 test('legacy done is not proof of a complete valid response set and invalid fields are never guessed or coerced', async t => {
