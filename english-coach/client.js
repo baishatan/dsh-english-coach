@@ -3338,18 +3338,29 @@ window.__ModuleLoader__.load({
 
     function AssessmentPanel({ onExit, onFinished }) {
       const [attempt, setAttempt] = useState(null)
-      const [feedback, setFeedback] = useState(null)
       const [result, setResult] = useState(null)
       const [notice, setNotice] = useState(null)
       const [busy, setBusy] = useState(false)
       const [bankJob, setBankJob] = useState(null)
+      const submitting = useRef(false)
+      const pendingAnswer = useRef(null)
+      const [recovery, setRecovery] = useState('loading')
 
-      useEffect(() => {
-        void (async () => {
-          const resumed = await call('assessment.resume')
-          if (resumed.ok && resumed.data) setAttempt(resumed.data)
-        })()
-      }, [])
+      const resume = async () => {
+        setRecovery('loading')
+        setNotice(null)
+        const resumed = await call('assessment.resume')
+        if (!resumed.ok) {
+          setNotice({ tone: 'error', text: resumed.message })
+          setRecovery('failed')
+          return
+        }
+        pendingAnswer.current = null
+        setAttempt(resumed.data)
+        setResult(resumed.data?.done ? resumed.data.result : null)
+        setRecovery('ready')
+      }
+      useEffect(() => { void resume() }, [])
 
       useEffect(() => {
         if (!bankJob || bankJob.status !== 'pending') return
@@ -3376,7 +3387,6 @@ window.__ModuleLoader__.load({
           return
         }
         setResult(null)
-        setFeedback(null)
         setAttempt(started.data)
       }
 
@@ -3392,28 +3402,34 @@ window.__ModuleLoader__.load({
         setNotice(null)
       }
 
-      const answer = async (choice) => {
-        if (!attempt || !attempt.question) return
-        setBusy(true)
-        const answered = await call('assessment.answer', {
+      const answer = async (response) => {
+        if (submitting.current || !attempt?.question) return
+        submitting.current = true
+        pendingAnswer.current ??= {
           attemptId: attempt.attemptId,
           itemId: attempt.question.id,
-          choice
-        })
+          ...response
+        }
+        setBusy(true)
+        const answered = await call('assessment.answer', pendingAnswer.current)
+        submitting.current = false
         setBusy(false)
         if (!answered.ok) {
           setNotice({ tone: 'error', text: answered.message })
           return
         }
-        setFeedback({ choice, answerIndex: answered.data.answerIndex, explanation: answered.data.explanation })
-        if (answered.data.done) {
-          setResult(answered.data.result)
-          return
-        }
-        setTimeout(() => {
-          setFeedback(null)
-          setAttempt({ ...attempt, question: answered.data.question, progress: answered.data.progress })
-        }, 900)
+        pendingAnswer.current = null
+        setNotice(null)
+        setAttempt(answered.data)
+        if (answered.data.done) setResult(answered.data.result)
+      }
+
+      if (recovery !== 'ready') {
+        return h('div', { className: 'ec-card' },
+          h('div', { role: 'status' }, recovery === 'loading' ? '正在恢复测评…' : '测评尚未恢复'),
+          notice ? h(Notice, { tone: notice.tone }, notice.text) : null,
+          recovery === 'failed' ? h(Btn, { onClick: resume }, t('retry')) : null,
+          h(Btn, { ghost: true, onClick: onExit }, '稍后继续'))
       }
 
       if (result) {
@@ -3422,6 +3438,7 @@ window.__ModuleLoader__.load({
           { className: 'ec-card' },
           h('div', { className: 'ec-stat-label' }, t('resultTitle')),
           h('div', { className: 'ec-big', style: { fontSize: 38 } }, result.band),
+          notice ? h(Notice, { tone: notice.tone }, notice.text) : null,
           h('div', { className: 'ec-muted', style: { margin: '10px 0 4px' } },
             `${t('resultRef')}：${result.reference}`),
           h('div', { className: 'ec-section-title' }, t('resultWeak')),
@@ -3437,7 +3454,18 @@ window.__ModuleLoader__.load({
               Btn,
               {
                 primary: true,
+                disabled: busy,
                 onClick: async () => {
+                  if (submitting.current) return
+                  submitting.current = true
+                  setBusy(true)
+                  const acknowledged = await call('assessment.acknowledge', { attemptId: attempt.attemptId })
+                  submitting.current = false
+                  setBusy(false)
+                  if (!acknowledged.ok) {
+                    setNotice({ tone: 'error', text: acknowledged.message })
+                    return
+                  }
                   await onFinished()
                   onExit()
                 }
@@ -3458,7 +3486,7 @@ window.__ModuleLoader__.load({
             { className: 'ec-row' },
             h('span', { className: 'ec-muted' },
               t('question', { n: (attempt.progress ?? 0) + 1, total: attempt.total ?? 20 })),
-            h(Btn, { ghost: true, style: { marginLeft: 'auto' }, onClick: onExit }, t('exiting'))
+            h(Btn, { ghost: true, disabled: busy, style: { marginLeft: 'auto' }, onClick: onExit }, '稍后继续')
           ),
           h('div', { className: 'ec-progress' },
             h('i', { style: { width: `${(((attempt.progress ?? 0) + 1) / (attempt.total ?? 20)) * 100}%` } })),
@@ -3468,19 +3496,15 @@ window.__ModuleLoader__.load({
           h('div', { style: { fontSize: 14.5, marginBottom: 4 } }, question.prompt),
           h(ChoiceList, {
             choices: question.choices,
-            answerIndex: feedback ? feedback.answerIndex : -1,
-            picked: feedback ? feedback.choice : null,
-            disabled: busy,
-            onPick: answer
+            picked: null,
+            disabled: busy || Boolean(pendingAnswer.current),
+            onPick: choice => answer({ responseType: 'choice', choice })
           }),
-          feedback
-            ? h(
-                'div',
-                { className: 'ec-feedback' },
-                `${feedback.choice === feedback.answerIndex ? t('correct') : t('wrong')}　${feedback.explanation ?? ''}`
-              )
-            : null,
-          notice ? h(Notice, { tone: notice.tone }, notice.text) : null
+          h(Btn, { disabled: busy || Boolean(pendingAnswer.current), onClick: () => answer({ responseType: 'unable' }) }, '不会，继续'),
+          notice ? h(Notice, { tone: notice.tone }, notice.text) : null,
+          notice && pendingAnswer.current ? h('div', { className: 'ec-row' },
+            h(Btn, { disabled: busy, onClick: () => answer() }, t('retry')),
+            h(Btn, { disabled: busy, onClick: resume }, '恢复已保存进度')) : null
         )
       }
 
