@@ -421,9 +421,14 @@ test('every last-answer publication boundary recovers in a fresh process with on
       assert.equal(recovered.data.result.at, completeAt)
       const state = (await run('state.get')).data
       assert.equal(state.level.points.length, 1)
-      const { drift, ...point } = recovered.data.result
-      assert.deepEqual(state.level.latest, point)
-      assert.deepEqual(state.level.drift, drift)
+      // Recovery preserves the observable completion, not an internal scored
+      // point shape. Raw scoring and anchor diagnostics are intentionally private.
+      for (const field of ['id', 'attemptId', 'at', 'band', 'finalBandIndex', 'counts', 'accuracy']) {
+        assert.deepEqual(state.level.latest[field], recovered.data.result[field], field)
+      }
+      assert.equal(state.level.latest.attemptId, identity.attemptId)
+      assert.equal(state.level.latest.band, '入门')
+      assert.deepEqual(state.level.latest.counts, { correct: 0, incorrect: 0, unable: 10 })
       assert.equal(state.syllabus.phases.length, 3)
       assert.deepEqual((await run('assessment.finish', { attemptId: identity.attemptId })).data.result, recovered.data.result)
     })

@@ -4,18 +4,19 @@
  * grading framework appears here, in the UI, in prompts, or in errors.
  */
 export const BANDS = ['入门', '初级', '中级', '中高级', '高级', '精通']
+export const ASSESSMENT_SCOPE = '根据词汇与语法短题估计，仅供安排学习'
 
 /**
  * One descriptive sentence per band. It helps the learner judge whether the
  * result looks like them. It is deliberately not an equivalence claim.
  */
 export const BAND_REFERENCES = {
-  入门: '大致能认出常见词、读懂很短的句子。',
-  初级: '大致能读懂简单短文，长句子常常要回读一遍。',
-  中级: '大致相当于大学四级水平，能读新闻标题和短讯。',
-  中高级: '大致相当于大学六级水平，能读一般性的英文长文。',
-  高级: '大致能读专业领域的英文长文与评论。',
-  精通: '大致能像读中文一样读英文长文，几乎不需要停。'
+  入门: '可从常见基础词汇和简单句式开始练习。',
+  初级: '对常用词汇和基础语法已有一些掌握，可继续练习日常搭配。',
+  中级: '能处理常见词汇搭配和语法选择，可巩固易混表达与句式。',
+  中高级: '对较丰富的词汇搭配和较复杂句式有一定掌握，可练习细微区别。',
+  高级: '能较好处理较难词汇与复杂语法短题，可继续辨析语境和搭配。',
+  精通: '在本轮较高难度词汇与语法短题中表现熟练，可继续拓展精细用法。'
 }
 
 /** Box index → days until the item is due again. Box 4 is `mastered`. */

@@ -5,6 +5,7 @@ import { join, resolve, sep } from 'node:path'
 import {
   ANCHORS_PER_ASSESSMENT,
   ASSESSMENT_LENGTH,
+  ASSESSMENT_SCOPE,
   BANDS,
   KOKORO_VOICES,
   READING_RATES,
@@ -406,10 +407,29 @@ function latestPoint(level) {
   return level.points[level.points.length - 1]
 }
 
-/** Preserve saved drift facts, but only a fresh-anchor result has a current note. */
+/** Keep observations internal; expose only a scope-safe current caution. */
 function currentDrift(drift, point) {
-  return { ...(drift ?? { baseline: null, streak: 0, note: null }),
-    note: Number.isFinite(point?.anchorAccuracy) ? drift?.note ?? null : null }
+  return { note: Number.isFinite(point?.anchorAccuracy) && drift?.note
+    ? '近期短题表现波动较大，结果仍仅供安排学习。' : null }
+}
+
+/** All assessment read paths share this allow-list, never an internal spread. */
+function publicLevelPoint(point) {
+  if (!point) return null
+  return {
+    id: point.id,
+    attemptId: point.attemptId,
+    at: point.at,
+    kind: point.kind,
+    band: point.band,
+    finalBandIndex: point.finalBandIndex,
+    accuracy: point.accuracy,
+    counts: point.counts,
+    weaknesses: (point.weaknesses ?? []).filter(item => ['grammar', 'vocab'].includes(item.skill)),
+    reference: point.reference,
+    scope: ASSESSMENT_SCOPE,
+    coverageNote: point.coverageNote ?? null
+  }
 }
 
 function weeklyView(syllabus, progress, todayText) {
@@ -499,7 +519,7 @@ async function regenerateSyllabus(ctx) {
   const previous = await load(ctx, 'syllabus')
   const latest = (level.points ?? [])[level.points.length - 1]
   const store = buildSyllabus({
-    estimate: latest?.estimate ?? 1,
+    estimate: latest?.finalBandIndex ?? 1,
     targetBand: profileStore.profile?.targetBand ?? null,
     todayText: today(ctx),
     previous
@@ -782,8 +802,8 @@ const handlers = {
       onboarded: Boolean(profileStore.profile?.confirmedAt),
       settings,
       level: {
-        latest: latestPoint(level),
-        points: level.points ?? [],
+        latest: publicLevelPoint(latestPoint(level)),
+        points: (level.points ?? []).map(publicLevelPoint),
         drift: currentDrift(level.drift, latestPoint(level))
       },
       syllabus: {
@@ -1459,13 +1479,7 @@ const handlers = {
       streak: computeStreak(progress.completions ?? [], todayText),
       completions: progress.completions ?? [],
       expiredDrafts: progress.expiredDrafts ?? 0,
-      curve: (level.points ?? []).map((point) => ({
-        at: point.at,
-        band: point.band,
-        estimate: point.estimate,
-        accuracy: point.accuracy,
-        kind: point.kind
-      })),
+      curve: (level.points ?? []).map(publicLevelPoint),
       drift: currentDrift(level.drift, latestPoint(level)),
       weekly: weeklyView(syllabus, progress, todayText)
     }
@@ -1644,7 +1658,7 @@ function questionOf(attempt, itemId) {
 
 function publicAttempt(attempt) {
   const view = { attemptId: attempt.id, total: attempt.items, progress: attempt.answers.length }
-  if (attempt.status === 'done') return { ...view, done: true, result: { ...attempt.result, drift: currentDrift(attempt.result.drift, attempt.result) } }
+  if (attempt.status === 'done') return { ...view, done: true, result: publicLevelPoint(attempt.result) }
   return { ...view, question: publicQuestion(questionOf(attempt, attempt.current)) }
 }
 
@@ -1774,15 +1788,20 @@ async function finishAttempt(ctx, attempt) {
   }
   if (attempt.status === 'done') return publicAttempt(attempt)
   if (!['in_progress', 'finalizing'].includes(attempt.status)) fail('attempt_finished', '这次测评已终止，不能结算', 'attemptId')
-  await projectAnchorResponses(ctx, attempt)
   if (!attempt.finalization) {
-    const evidence = attempt.answers.filter(answer => !(answer.anchor && answer.contaminated))
-    const scored = scoreAssessment(
-      [...attempt.pool, ...attempt.anchors],
-      evidence
-    )
-    // Preserve the scoring formula while excluding remembered anchors. Journal
-    // the resulting evidence projection so recovery never recalculates it.
+    // New response metadata is part of formal completion, not an inference
+    // default. Historical conversion validates the original response schema.
+    if (attempt.answers.some(answer =>
+      !isIsoTimestamp(answer.at) || !['grammar', 'vocab'].includes(answer.skill) ||
+      answer.responseId !== JSON.stringify([attempt.id, answer.itemId]) ||
+      !['choice', 'unable'].includes(answer.responseType) ||
+      (answer.responseType === 'unable' ? answer.choice !== null : !Number.isInteger(answer.choice) || answer.choice < 0 || answer.choice > 3)
+    )) fail('invalid_assessment_evidence', '测评响应记录不完整或损坏，不能正式结算', 'answers')
+    // Score only saved at-time facts; neither an overwritten bank nor a later
+    // projection can supply or rejudge a missing response. Validate before I/O.
+    const scored = scoreAssessment(attempt.answers)
+    await projectAnchorResponses(ctx, attempt)
+    // Journal the one rule's exact result so recovery never recalculates it.
     const cleanAnchors = attempt.answers.filter((answer) => answer.anchor && !answer.contaminated)
     const anchorAccuracy = cleanAnchors.length
       ? cleanAnchors.filter((answer) => answer.correct).length / cleanAnchors.length
@@ -1796,7 +1815,10 @@ async function finishAttempt(ctx, attempt) {
       at,
       kind: attempt.kind,
       band: scored.band,
-      estimate: scored.estimate,
+      finalBandIndex: scored.finalBandIndex,
+      coverageNote: scored.coverageNote,
+      scoringRule: scored.scoringRule,
+      scoring: scored.scoring,
       accuracy: Number((attempt.answers.filter(answer => answer.correct).length / attempt.answers.length).toFixed(3)),
       counts: {
         correct: attempt.answers.filter(answer => answer.correct).length,
@@ -1811,7 +1833,7 @@ async function finishAttempt(ctx, attempt) {
     const previous = await loadCompletionProjection(ctx, 'syllabus')
     const profile = await load(ctx, 'profile')
     const syllabus = !(previous.phases ?? []).length ? {
-      ...buildSyllabus({ estimate: point.estimate, targetBand: profile.profile?.targetBand, todayText: dateOf(new Date(at)), previous }),
+      ...buildSyllabus({ estimate: point.finalBandIndex, targetBand: profile.profile?.targetBand, todayText: dateOf(new Date(at)), previous }),
       regeneratedAt: at
     } : null
     // Durable intent precedes every derived write. The response and this exact

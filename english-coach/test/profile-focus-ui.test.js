@@ -11,7 +11,7 @@ function fixture() {
     onboarded: true,
     profile: { updatedAt: '2026-10-22T00:00:00Z', goal: 'work', minutesPerDay: 20, targetBand: '中高级', goalNote: '在工作讨论中清楚地表达想法', interests: ['科技', '产品设计', '日常交流'] },
     now: '2026-10-23T00:00:00Z', settings: { study: { wordsPerDay: 10 } }, review: { dueCount: 0 }, streak: { current: 4 },
-    level: { latest: { at: '2026-10-22T08:00:00Z', band: '中级', reference: '能处理熟悉的话题', weaknesses: [{ skill: 'listening', missed: 3 }, { skill: 'reading', missed: 1 }] } }
+    level: { latest: { at: '2026-10-22T08:00:00Z', band: '中级', reference: '能处理熟悉的话题', weaknesses: [{ skill: 'grammar', missed: 3 }, { skill: 'vocab', missed: 1 }] } }
   }
   const progress = { completions: ['2026-10-20', '2026-10-21'], streak: { current: 4, best: 6 }, mastered: 14, learning: 38, curve: [], drift: null, expiredDrafts: 0 }
   const api = {
@@ -154,16 +154,16 @@ test('进度首次读取失败可重试，轮询失败保留旧概况、记录�
 
 test('下一步提示来自最近测评的真实薄弱项，不固定复制原型听力建议', async (t) => {
   const api = fixture()
-  api.state.level.latest.weaknesses = [{ skill: 'reading', missed: 5 }, { skill: 'listening', missed: 2 }]
+  api.state.level.latest.weaknesses = [{ skill: 'vocab', missed: 5 }, { skill: 'grammar', missed: 2 }]
   const { ui } = await openProfile(t, api)
   const suggestion = ui.container.querySelector('[aria-label="下一步建议"]')
   assert.ok(suggestion)
-  assert.match(suggestion.textContent, /最近测评.*阅读/)
+  assert.match(suggestion.textContent, /最近测评.*词汇/)
   assert.doesNotMatch(suggestion.textContent, /多练听力/)
   await ui.click('查看记录')
   const details = ui.container.querySelector('[aria-label="学习记录详情"]')
-  assert.match(details.textContent, /阅读：错 5/)
-  assert.match(details.textContent, /听力：错 2/)
+  assert.match(details.textContent, /词汇：错 5/)
+  assert.match(details.textContent, /语法：错 2/)
 })
 
 test('未测评未设目标不伪造结果，个人页仍能进入测评', async (t) => {
@@ -180,11 +180,11 @@ test('未测评未设目标不伪造结果，个人页仍能进入测评', async
 
 test('测评并列薄弱项和无薄弱项提示有依据，全部详情保留可达', async (t) => {
   const api = fixture()
-  api.state.level.latest.weaknesses = [{ skill: 'reading', missed: 4 }, { skill: 'listening', missed: 4 }]
+  api.state.level.latest.weaknesses = [{ skill: 'vocab', missed: 4 }, { skill: 'grammar', missed: 4 }]
   api.progress.drift = { note: '本次难度可能偏低' }
   api.progress.expiredDrafts = 2
   const { ui } = await openProfile(t, api)
-  assert.match(ui.container.querySelector('[aria-label="下一步建议"]').textContent, /阅读、听力并列/)
+  assert.match(ui.container.querySelector('[aria-label="下一步建议"]').textContent, /词汇、语法并列/)
   await ui.click('查看记录')
   assert.match(ui.container.querySelector('[aria-label="学习记录详情"]').textContent, /能处理熟悉的话题.*本次难度可能偏低/)
   await ui.click('诊断数据')

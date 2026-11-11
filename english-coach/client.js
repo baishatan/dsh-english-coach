@@ -2950,20 +2950,14 @@ window.__ModuleLoader__.load({
 
     // -------------------------------------------------------------- progress
 
-    const SKILL_LABEL = {
-      grammar: '语法',
-      vocab: '词汇',
-      reading: '阅读',
-      listening: '听力',
-      inference: '推断'
-    }
+    const SKILL_LABEL = { grammar: '语法', vocab: '词汇' }
 
     function Curve({ points }) {
       const records = (points ?? []).map((point, index) => ({ ...point, order: index }))
         .sort((a, b) => String(a.at).localeCompare(String(b.at)) || a.order - b.order)
       if (!records.length) return h('p', { className: 'ec-muted' }, '还没有测评记录，完成一次测评后可在这里回顾。')
       const width = 600, height = 200, left = 68, right = 24, top = 18, bottom = 36
-      const valueOf = point => Number.isFinite(point.estimate) ? Math.min(6, Math.max(1, point.estimate)) : Math.max(1, BANDS.indexOf(point.band) + 1)
+      const valueOf = point => Math.max(1, BANDS.indexOf(point.band) + 1)
       const xs = records.map((_, index) => records.length === 1 ? (left + width - right) / 2 : left + index * (width - left - right) / (records.length - 1))
       const yOf = value => height - bottom - ((value - 1) / 5) * (height - top - bottom)
       const d = xs.map((x, index) => `${index ? 'L' : 'M'}${x.toFixed(1)},${yOf(valueOf(records[index])).toFixed(1)}`).join(' ')
@@ -3300,7 +3294,7 @@ window.__ModuleLoader__.load({
       if (!progress) return h('section', { className: 'ec-card' }, failure || h('div', { className: 'ec-empty', role: 'status' }, '正在读取学习进度…'))
 
       const latest = data.level?.latest
-      const weaknesses = latest?.weaknesses ?? []
+      const weaknesses = (latest?.weaknesses ?? []).filter(item => SKILL_LABEL[item.skill])
       const knownWeaknesses = weaknesses.filter(item => SKILL_LABEL[item.skill] && Number(item.missed) > 0)
       const mostMissed = Math.max(0, ...knownWeaknesses.map(item => Number(item.missed)))
       const focusSkills = knownWeaknesses.filter(item => Number(item.missed) === mostMissed).map(item => SKILL_LABEL[item.skill])
@@ -3319,7 +3313,7 @@ window.__ModuleLoader__.load({
           h('p', { className: 'ec-profile-suggestion', 'aria-label': '下一步建议' }, suggestion)),
         showRecords ? h('section', { className: 'ec-card ec-profile-records', 'aria-label': '学习记录详情' },
           h('h2', null, t('curve')), h(Curve, { points: progress.curve }),
-          h('p', { className: 'ec-muted' }, '水平估计只作学习参考，不与考试分数等价。'),
+          h('p', { className: 'ec-muted' }, '根据词汇与语法短题估计，仅供安排学习'),
           h('dl', { className: 'ec-profile-detail-facts' },
             h('div', null, h('dt', null, t('learningWords')), h('dd', null, `${progress.learning} 项`)),
             h('div', null, h('dt', null, '最长连续'), h('dd', null, `${progress.streak.best} 天`))),
@@ -3439,12 +3433,16 @@ window.__ModuleLoader__.load({
           h('div', { className: 'ec-stat-label' }, t('resultTitle')),
           h('div', { className: 'ec-big', style: { fontSize: 38 } }, result.band),
           notice ? h(Notice, { tone: notice.tone }, notice.text) : null,
+          h('p', { className: 'ec-muted' }, result.scope),
           h('div', { className: 'ec-muted', style: { margin: '10px 0 4px' } },
             `${t('resultRef')}：${result.reference}`),
+          h('p', null, `正确 ${result.counts?.correct ?? 0}　错误 ${result.counts?.incorrect ?? 0}　不会 ${result.counts?.unable ?? 0}`),
+          h('p', null, `本轮答对率 ${Math.round((result.accuracy ?? 0) * 100)}%（包括不会的响应）`),
+          result.coverageNote ? h('p', { className: 'ec-muted' }, result.coverageNote) : null,
           h('div', { className: 'ec-section-title' }, t('resultWeak')),
-          (result.weaknesses ?? []).length
-            ? result.weaknesses.map((weakness, index) =>
-                h('div', { key: index, className: 'ec-muted' }, `· ${weakness.skill}（错 ${weakness.missed} 题）`)
+          (result.weaknesses ?? []).some(weakness => SKILL_LABEL[weakness.skill])
+            ? result.weaknesses.filter(weakness => SKILL_LABEL[weakness.skill]).map((weakness, index) =>
+                h('div', { key: index, className: 'ec-muted' }, `· ${SKILL_LABEL[weakness.skill]}（错误或不会 ${weakness.missed} 题）`)
               )
             : h('div', { className: 'ec-muted' }, t('resultWeakNone')),
           h(
