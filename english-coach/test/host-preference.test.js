@@ -8,6 +8,7 @@ import { apply } from '../index.js'
 import { execute } from '../core/index.js'
 import { getWordCatalog } from '../core/catalog.js'
 import { tempFixture, disposeFixture } from './temp-fixture.js'
+import { assessmentBank } from './assessment-bank-fixture.js'
 
 // External Host adapters only. Tests call the registered HTTP handler and public
 // tools; no prompt helper, private dispatch export, or learner-data injection.
@@ -153,6 +154,50 @@ function lesson(date) {
     ]
   }
 }
+
+test('assessment preparation and submission tool declare the same short-bank admission contract', async t => {
+  const h = await host(t)
+  const tool = h.tools.get('english_save_assessment')
+  const schema = tool.parameters.properties.items
+  assert.equal(schema.minItems, 24)
+  assert.deepEqual(schema.items.properties.skill.enum, ['grammar', 'vocab'])
+  assert.ok(schema.items.required.includes('skill'))
+  assert.equal(schema.items.properties.prompt.minLength, 1)
+  assert.equal(schema.items.properties.choices.items.minLength, 1)
+  assert.match(schema.items.properties.passage.description, /必须.*空|禁止/)
+  const generated = await h.request('generate.assessment')
+  assert.equal(generated.ok, true, JSON.stringify(generated))
+  const prompt = h.records.at(-1).prompt
+  for (const contract of [tool.description, prompt]) {
+    assert.match(contract, /至少 24/)
+    assert.match(contract, /1.*6.*各至少 4/)
+    assert.match(contract, /grammar.*vocab/)
+    assert.match(contract, /两类.*覆盖|同时.*包含/)
+    assert.match(contract, /不.*比例/)
+    assert.match(contract, /独立单句/)
+    assert.match(contract, /30.*英文词/)
+    assert.match(contract, /12.*英文词/)
+    assert.match(contract, /缩写.*一词/)
+    assert.match(contract, /填空.*不计/)
+    assert.match(contract, /文章.*对话.*音频.*外部材料/)
+    assert.match(contract, /passage.*空/)
+    assert.match(contract, /ID.*唯一.*锚题/)
+    assert.match(contract, /不.*截断/)
+  }
+  const payload = assessmentBank()
+  payload.items[0].skill = 'reading'
+  const rejected = await tool.execute(payload)
+  assert.equal(rejected.ok, false)
+  assert.equal(rejected.field, 'items[0].skill')
+  assert.match(rejected.message, /重新准备/)
+  assert.equal((await h.request('assessment.start', { kind: 'short' })).ok, false)
+  payload.items[0].skill = 'grammar'
+  assert.equal((await tool.execute(payload)).ok, true)
+  const started = await h.request('assessment.start', { kind: 'short' })
+  assert.equal(started.ok, true, JSON.stringify(started))
+  assert.equal(started.data.total, 10)
+  assert.equal(started.data.question.passage, '')
+})
 
 test('lesson tool declares optional paragraph translations and shares domain validation', async t => {
   const h = await host(t)
