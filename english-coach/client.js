@@ -3356,6 +3356,7 @@ window.__ModuleLoader__.load({
         pendingAnswer.current = null
         setAttempt(resumed.data)
         setResult(resumed.data?.done ? resumed.data.result : null)
+        if (resumed.data?.restartRequired) setNotice({ tone: 'info', text: resumed.data.message })
         setRecovery('ready')
       }
       useEffect(() => { void resume() }, [])
