@@ -16,8 +16,8 @@ function bank() {
     explanation: 'This explanation must stay on the Host.'
   })) }
 }
-async function fixture(t, kind = 'short') {
-  const root = await tempFixture(t, 'coach-assessment-response-')
+async function fixture(t, kind = 'short', directory) {
+  const root = directory ?? await tempFixture(t, 'coach-assessment-response-')
   const run = (command, payload = {}, date = now) => execute(root, command, payload, { now: date })
   assert.equal((await run('assessment.saveBank', bank())).ok, true)
   const started = await run('assessment.start', { kind })
@@ -25,6 +25,58 @@ async function fixture(t, kind = 'short') {
   const identity = { attemptId: started.data.attemptId, itemId: started.data.question.id }
   return { root, run, started: started.data, identity }
 }
+
+test('an acknowledgement cannot cross learner roots or dismiss a sibling completion', async t => {
+  const parent = await tempFixture(t, 'coach-assessment-response-')
+  const sibling = await fixture(t, 'short', join(parent, 'learner-b'))
+  let current = sibling.started
+  for (let index = 0; index < 10; index++) {
+    const result = await sibling.run('assessment.answer', { attemptId: sibling.identity.attemptId, itemId: current.question.id, responseType: 'unable' })
+    assert.equal(result.ok, true, JSON.stringify(result))
+    current = result.data
+  }
+  const target = join(sibling.root, 'assessments', `${sibling.identity.attemptId}.json`)
+  const before = await fs.readFile(target, 'utf8')
+  assert.equal(JSON.parse(before).completionPending, true)
+  const caller = join(parent, 'learner-a')
+  const result = await execute(caller, 'assessment.acknowledge', { attemptId: `../../learner-b/assessments/${sibling.identity.attemptId}` }, { now })
+  assert.equal(await fs.readFile(target, 'utf8'), before, 'a refused acknowledgement must preserve the sibling response authority')
+  assert.equal(result.ok, false, JSON.stringify(result))
+  assert.equal(result.code, 'invalid_field')
+  assert.equal(result.field, 'attemptId')
+  const resumed = await sibling.run('assessment.resume')
+  assert.equal(resumed.data.attemptId, sibling.identity.attemptId)
+  assert.equal(resumed.data.done, true)
+  assert.equal((await sibling.run('assessment.acknowledge', { attemptId: sibling.identity.attemptId })).ok, true)
+  assert.equal((await sibling.run('assessment.resume')).data, null)
+})
+
+test('every dynamic assessment command requires a string basename identity without paths or coercion', async t => {
+  for (const command of ['assessment.answer', 'assessment.finish', 'assessment.acknowledge', 'assessment.abandon']) {
+    await t.test(command, async t => {
+      const { root, run, identity } = await fixture(t)
+      const path = join(root, 'assessments', `${identity.attemptId}.json`)
+      const before = await fs.readFile(path, 'utf8')
+      const entries = await fs.readdir(join(root, 'assessments'))
+      const invalidIds = [
+        undefined, null, true, 2026, {}, [], [identity.attemptId], '', ' ', '.', '..',
+        `../${identity.attemptId}`, `nested/${identity.attemptId}`, `2026-nested\\${identity.attemptId}`,
+        join(root, 'assessments', identity.attemptId), 'C:\\synthetic\\2026-assessment', '2026-invalid\u0000'
+      ]
+      for (const attemptId of invalidIds) {
+        const result = await run(command, { ...identity, attemptId, responseType: 'unable' })
+        assert.equal(result.ok, false, `${command}: ${JSON.stringify(attemptId)}`)
+        assert.equal(result.code, 'invalid_field', `${command}: ${JSON.stringify(attemptId)}`)
+        assert.equal(result.field, 'attemptId')
+        assert.equal(await fs.readFile(path, 'utf8'), before)
+        assert.deepEqual(await fs.readdir(join(root, 'assessments')), entries)
+      }
+      const resumed = await run('assessment.resume')
+      assert.equal(resumed.data.attemptId, identity.attemptId)
+      assert.equal(resumed.data.progress, 0)
+    })
+  }
+})
 
 test('assessment choices accept integers only and invalid inputs leave the current question unanswered', async t => {
   const { run, identity, started } = await fixture(t)

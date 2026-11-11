@@ -11,8 +11,8 @@ import { tempFixture } from './temp-fixture.js'
 
 const now = new Date('2026-11-11T09:00:00.000Z')
 const difficulties = [1, 1, 2, 2, 3, 3, 4, 4, 5, 6]
-async function fixture(t) {
-  const root = await tempFixture(t, 'coach-assessment-history-')
+async function fixture(t, directory) {
+  const root = directory ?? await tempFixture(t, 'coach-assessment-history-')
   const run = (command, payload = {}, at = now) => execute(root, command, payload, { now: at })
   const read = async path => JSON.parse(await fs.readFile(join(root, path), 'utf8'))
   const put = async (path, value) => {
@@ -79,6 +79,52 @@ test('the latest invalid completed record leaves current unassessed while earlie
   assert.equal(state.data.syllabus.currentPhase.targetBand, '入门')
   assert.equal((await setup.run('progress.get')).data.curve.length, 1)
   assert.equal((await setup.read(`assessments/${bad.id}.json`)).result, undefined)
+})
+
+test('an earlier unusable completion with an explicitly linked level time cannot invalidate a newer usable current', async t => {
+  const setup = await fixture(t)
+  const earlier = legacy(1)
+  const earlierPoint = { ...earlier.result, attemptId: earlier.id }
+  delete earlier.result
+  const newer = legacy(2)
+  await seed(setup, [earlier, newer], [earlierPoint, { ...newer.result, attemptId: newer.id }])
+  const path = `assessments/${earlier.id}.json`
+  const bytes = await fs.readFile(join(setup.root, path), 'utf8')
+  const state = await setup.run('state.get')
+  assert.equal(state.ok, true, JSON.stringify(state))
+  assert.equal(state.data.level.latest?.attemptId, newer.id)
+  assert.equal(state.data.level.latest?.band, '中级')
+  assert.equal(state.data.needsAssessment, false)
+  assert.equal(state.data.syllabus.currentPhase.targetBand, '中级')
+  assert.deepEqual(state.data.level.points.map(point => point.id), [newer.result.id])
+  const journal = await setup.read('assessment-history.json')
+  assert.equal(journal.originals.find(record => record.path === path).text, bytes)
+  assert.deepEqual((await setup.read(path)).answers, earlier.answers)
+  assert.equal((await setup.read(path)).result, undefined, 'a confirmed completion time does not restore missing scoring evidence')
+})
+
+test('a latest unusable completion or an unconfirmed completion time remains unassessed without guessing an older current', async t => {
+  for (const state of ['latest-linked', 'unknown', 'ambiguous-link', 'wrong-kind']) {
+    await t.test(state, async t => {
+      const setup = await fixture(t)
+      const unusable = legacy(state === 'latest-linked' ? 2 : 1)
+      const good = legacy(state === 'latest-linked' ? 1 : 2)
+      const linked = { ...unusable.result, attemptId: unusable.id }
+      delete unusable.result
+      const points = [good.result]
+      if (state !== 'unknown') points.push(linked)
+      if (state === 'ambiguous-link') points.push({ ...linked, id: 'other-unconfirmed-time', at: '2026-11-10T09:00:00.000Z' })
+      if (state === 'wrong-kind') linked.kind = 'full'
+      await seed(setup, [unusable, good], points)
+      const result = await setup.run('state.get')
+      assert.equal(result.ok, true, JSON.stringify(result))
+      assert.equal(result.data.level.latest, null)
+      assert.equal(result.data.needsAssessment, true)
+      assert.equal(result.data.syllabus.currentPhase.targetBand, '入门')
+      assert.deepEqual(result.data.level.points.map(point => point.id), [good.result.id])
+      assert.deepEqual((await setup.read(`assessments/${unusable.id}.json`)).answers, unusable.answers)
+    })
+  }
 })
 
 test('a missing latest original is still a completed-history authority and cannot silently restore an earlier result', async t => {
@@ -238,6 +284,70 @@ test('a missing or malformed cutover journal is not a fresh root or a successful
     assert.equal(result.ok, false, state)
     assert.equal(result.code, 'assessment_recovery_failed')
     assert.equal(await fs.readFile(join(setup.root, 'level.json'), 'utf8'), before)
+  }
+})
+
+test('pending history recovery rejects an escaped attempt output before changing any saved facts', async t => {
+  const parent = await tempFixture(t, 'coach-assessment-history-')
+  const setup = await fixture(t, join(parent, 'learner'))
+  const attempts = [legacy(1), legacy(2)]
+  await seed(setup, attempts)
+  const rename = fs.rename
+  const interruption = t.mock.method(fs, 'rename', async (from, target) => {
+    if (target === join(setup.root, `assessments/${attempts[0].id}.json`)) {
+      throw Object.assign(new Error('synthetic pending history publication'), { code: 'EIO' })
+    }
+    return rename.call(fs, from, target)
+  })
+  assert.equal((await setup.run('state.get')).ok, false)
+  interruption.mock.restore()
+  const journal = await setup.read('assessment-history.json')
+  assert.equal(journal.status, 'pending')
+  journal.attempts[1].path = '../synthetic-keep.json'
+  await setup.put('assessment-history.json', journal)
+  const keep = join(parent, 'synthetic-keep.json')
+  await fs.writeFile(keep, '{"synthetic":"keep these original bytes"}\n')
+  const paths = [keep, ...['assessment-history.json', 'level.json', 'syllabus.json', ...attempts.map(attempt => `assessments/${attempt.id}.json`)].map(path => join(setup.root, path))]
+  const before = await Promise.all(paths.map(path => fs.readFile(path, 'utf8')))
+  const result = await setup.run('profile.get')
+  assert.deepEqual(await Promise.all(paths.map(path => fs.readFile(path, 'utf8'))), before, 'reject every output before writing the valid first attempt, sibling, current, route or journal')
+  assert.equal(result.ok, false, JSON.stringify(result))
+  assert.equal(result.code, 'assessment_recovery_failed')
+})
+
+test('pending history recovery validates every canonical attempt path and rejects duplicates before publication', async t => {
+  const source = await fixture(t)
+  const attempts = [legacy(1), legacy(2)]
+  await seed(source, attempts)
+  assert.equal((await source.run('state.get')).ok, true)
+  const snapshot = await source.read('assessment-history.json')
+  const invalidPaths = [
+    ['duplicate', snapshot.attempts[0].path],
+    ['absolute', join(source.root, snapshot.attempts[1].path)],
+    ['nested', 'assessments/nested/2026-11-01-short-old-2.json'],
+    ['normalized traversal', 'assessments/../assessments/2026-11-01-short-old-2.json'],
+    ['backslash', 'assessments/2026-11-01-short\\nested.json'],
+    ['foreign file', 'level.json'],
+    ['backup', 'assessments/2026-11-01-short-old-2.json.bak'],
+    ['control character', 'assessments/2026-11-01-short-\u0000.json'],
+    ['number', 1], ['null', null], ['object', {}], ['empty', '']
+  ]
+  for (const [name, path] of invalidPaths) {
+    await t.test(name, async t => {
+      const setup = await fixture(t)
+      await seed(setup, attempts)
+      const journal = structuredClone(snapshot)
+      journal.status = 'pending'
+      journal.attempts[1].path = path
+      await setup.put('assessment-history.json', journal)
+      const paths = ['assessment-history.json', 'level.json', 'syllabus.json', ...attempts.map(attempt => `assessments/${attempt.id}.json`)]
+      const before = await Promise.all(paths.map(path => fs.readFile(join(setup.root, path), 'utf8')))
+      const result = await setup.run('profile.get')
+      assert.equal(result.ok, false, JSON.stringify(result))
+      assert.equal(result.code, 'assessment_recovery_failed')
+      assert.deepEqual(await Promise.all(paths.map(path => fs.readFile(join(setup.root, path), 'utf8'))), before)
+      assert.deepEqual((await fs.readdir(join(setup.root, 'assessments'))).sort(), attempts.map(attempt => `${attempt.id}.json`).sort())
+    })
   }
 })
 

@@ -84,6 +84,9 @@ function lessonFile(ctx, date) {
 }
 
 function assessmentFile(ctx, id) {
+  if (typeof id !== 'string' || !/^\d{4}-[^/\\\u0000-\u001f]+$/.test(id)) {
+    fail('invalid_field', 'attemptId 必须是有效的测评标识，不能包含路径', 'attemptId')
+  }
   return join(ctx.root, FILES.assessments, `${id}.json`)
 }
 
@@ -864,15 +867,15 @@ const handlers = {
       )
     }
     const { value: current, warning: currentWarning } = await readJson(join(ctx.root, FILES.assessments, 'current-bank.json'), null)
-    if (currentWarning) ctx.warn(currentWarning)
-    if (current && !banks.includes(current.file)) {
+    if (currentWarning || (current ? !banks.includes(current.file) :
+      entries.some(entry => ['current-bank.json', 'current-bank.json.bak'].includes(entry.name)))) {
       fail('no_question_bank', '当前题库读不出来，请重新准备至少 24 道独立词汇/语法短题', 'items')
     }
     const { value: bank, warning } = await readJson(
       join(ctx.root, FILES.assessments, current?.file ?? banks[banks.length - 1]),
       null
     )
-    if (warning) ctx.warn(warning)
+    if (warning) fail('no_question_bank', '当前题库主记录读不出来，请重新准备至少 24 道独立词汇/语法短题', 'items')
     const admitted = validateAssessmentBank(bank)
 
     const anchors = await loadAnchors(ctx)
@@ -938,7 +941,7 @@ const handlers = {
   },
 
   async 'assessment.answer'(ctx, payload) {
-    const attemptId = String(payload?.attemptId ?? '')
+    const attemptId = payload?.attemptId
     const itemId = String(payload?.itemId ?? '')
     const responseType = payload?.responseType === undefined ? 'choice' : payload.responseType
     if (!['choice', 'unable'].includes(responseType)) fail('invalid_field', 'responseType 必须是 choice 或 unable', 'responseType')
@@ -1005,14 +1008,14 @@ const handlers = {
   },
 
   async 'assessment.finish'(ctx, payload) {
-    const attemptId = String(payload?.attemptId ?? '')
+    const attemptId = payload?.attemptId
     const { value: attempt } = await readJson(assessmentFile(ctx, attemptId), null)
     if (!attempt) fail('attempt_not_found', `找不到测评 ${attemptId}`, 'attemptId')
     return await finishAttempt(ctx, attempt)
   },
 
   async 'assessment.acknowledge'(ctx, payload) {
-    const attemptId = String(payload?.attemptId ?? '')
+    const attemptId = payload?.attemptId
     const { value: attempt } = await readJson(assessmentFile(ctx, attemptId), null)
     if (!attempt) fail('attempt_not_found', `找不到测评 ${attemptId}`, 'attemptId')
     if (attempt.status !== 'done') fail('assessment_incomplete', '测评尚未完成，请继续作答', 'attemptId')
@@ -1024,7 +1027,7 @@ const handlers = {
   },
 
   async 'assessment.abandon'(ctx, payload) {
-    const attemptId = String(payload?.attemptId ?? '')
+    const attemptId = payload?.attemptId
     const { value: attempt } = await readJson(assessmentFile(ctx, attemptId), null)
     if (!attempt) fail('attempt_not_found', `找不到测评 ${attemptId}`, 'attemptId')
     if (attempt.status === 'in_progress') {
@@ -1786,12 +1789,8 @@ async function finishAttempt(ctx, attempt) {
       coverageNote: scored.coverageNote,
       scoringRule: scored.scoringRule,
       scoring: scored.scoring,
-      accuracy: Number((attempt.answers.filter(answer => answer.correct).length / attempt.answers.length).toFixed(3)),
-      counts: {
-        correct: attempt.answers.filter(answer => answer.correct).length,
-        incorrect: attempt.answers.filter(answer => !answer.correct && answer.responseType !== 'unable').length,
-        unable: attempt.answers.filter(answer => answer.responseType === 'unable').length
-      },
+      accuracy: scored.accuracy,
+      counts: scored.counts,
       weaknesses: scored.weaknesses,
       reference: scored.reference,
       anchorAccuracy: anchorAccuracy === null ? null : Number(anchorAccuracy.toFixed(2)),

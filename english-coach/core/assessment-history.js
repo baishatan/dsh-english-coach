@@ -49,11 +49,7 @@ function convertedPoint(attempt, path) {
     id: attempt.result.id, attemptId: attempt.id, at: attempt.result.at, kind: attempt.kind,
     band: scored.band, finalBandIndex: scored.finalBandIndex, scoringRule: scored.scoringRule,
     scoring: scored.scoring, coverageNote: scored.coverageNote, accuracy: scored.accuracy,
-    counts: {
-      correct: attempt.answers.filter(answer => answer.correct).length,
-      incorrect: attempt.answers.filter(answer => !answer.correct && answer.responseType !== 'unable').length,
-      unable: attempt.answers.filter(answer => answer.responseType === 'unable').length
-    },
+    counts: scored.counts,
     weaknesses: scored.weaknesses, reference: scored.reference
   }
 }
@@ -155,7 +151,12 @@ export async function recoverAssessmentHistory(ctx, defaults) {
           try { if (associationValid) point = convertedPoint(attempt, record.path) } catch (error) {
             if (error?.code !== 'invalid_assessment_evidence') throw error
           }
-          completed.push({ at: attempt.result?.at, point })
+          let completedAt = attempt.result?.at
+          if (!isIsoTimestamp(completedAt)) {
+            const dated = levelPoints.filter(entry => entry.attemptId === id)
+            if (attempt.id === id && dated.length === 1 && dated[0].kind === attempt.kind && isIsoTimestamp(dated[0].at)) completedAt = dated[0].at
+          }
+          completed.push({ at: completedAt, point })
           if (point) points.push(point)
           if (point) attempt.result = point
           else delete attempt.result
@@ -198,6 +199,11 @@ export async function recoverAssessmentHistory(ctx, defaults) {
     await writeJson(path, journal)
   }
   if (journal.status === 'pending') {
+    const attemptPaths = journal.attempts.map(attempt => attempt?.path)
+    if (attemptPaths.some(path => typeof path !== 'string' || !/^assessments\/\d{4}-[^/\\\u0000-\u001f]+\.json$/.test(path)) ||
+      new Set(attemptPaths).size !== attemptPaths.length) {
+      fail('assessment_recovery_failed', '测评历史切换输出路径损坏，请检查存储后重试')
+    }
     for (const attempt of journal.attempts) await writeJson(join(ctx.root, attempt.path), attempt.value)
     await writeJson(join(ctx.root, 'level.json'), journal.level)
     if (journal.routeInvalid) {
