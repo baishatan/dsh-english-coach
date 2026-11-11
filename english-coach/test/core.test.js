@@ -964,7 +964,7 @@ test('第一次测评完成后自动生成一份不含日期的大纲', async (t
   assert.equal(state.data.syllabus.currentPhase.id, 'phase-1')
 })
 
-test('重新生成大纲不丢失本周已勾选的目标', async (t) => {
+test('重新生成大纲重置本周目标勾选并拒绝旧目标身份', async (t) => {
   const root = await makeRoot(t)
   await run(root, 'assessment.saveBank', bank(), at('2026-10-20'))
   await fullAssessment(root, at('2026-10-20'))
@@ -976,8 +976,10 @@ test('重新生成大纲不丢失本周已勾选的目标', async (t) => {
   const regenerated = await run(root, 'syllabus.generate', {}, at('2026-10-20'))
   assert.equal(regenerated.ok, true, JSON.stringify(regenerated))
   const after = await run(root, 'state.get', {}, at('2026-10-20'))
-  assert.equal(after.data.syllabus.weekly.goals[0].done, true)
+  assert.equal(after.data.syllabus.weekly.goals[0].done, false)
+  assert.notEqual(after.data.syllabus.weekly.goals[0].id, goalId)
   assert.equal(after.data.syllabus.phases.length, 3)
+  assert.equal((await run(root, 'syllabus.toggleGoal', { goalId, done: true }, at('2026-10-20'))).ok, false)
 })
 
 test('大纲拒绝写入具体日期', async (t) => {

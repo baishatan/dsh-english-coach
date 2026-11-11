@@ -29,6 +29,7 @@ import { advance, countMastered, dueItems, hasAnswered, isDue } from './review.j
 import { enrol, termKey } from './vocabulary.js'
 import { getWordCatalog } from './catalog.js'
 import { scoreAssessment, nextDrift } from './scoring.js'
+import { buildSyllabus, readSyllabus, publishSyllabus } from './syllabus.js'
 import {
   appendJsonl,
   listDir,
@@ -86,6 +87,7 @@ function assessmentFile(ctx, id) {
 }
 
 async function load(ctx, key, fallback = DEFAULTS[key]) {
+  if (key === 'syllabus') return readSyllabus(file(ctx, key), fallback)
   const { value, warning } = await readJson(file(ctx, key), fallback)
   if (warning) ctx.warn(warning)
   return value
@@ -457,74 +459,18 @@ function weekStartOf(todayText) {
   return addDays(todayText, -((new Date(`${todayText}T00:00:00`).getDay() + 6) % 7))
 }
 
-/**
- * A route with no dates in it. Three stages: hold the band you are in, reach
- * for the next one, then settle there. The goals are written as things to do,
- * not as days to hit, so falling behind never invalidates the plan.
- */
-function buildSyllabus({ estimate, targetBand, todayText, previous }) {
-  const startIndex = clamp(Math.round(Number(estimate) || 1), 1, BANDS.length)
-  const targetIndex = clamp(
-    targetBand && BANDS.includes(targetBand)
-      ? Math.max(startIndex, BANDS.indexOf(targetBand) + 1)
-      : Math.min(BANDS.length, startIndex + 1),
-    1,
-    BANDS.length
-  )
-  const middle = Math.min(BANDS.length, Math.round((startIndex + targetIndex) / 2))
-
-  const phases = [
-    {
-      id: 'phase-1',
-      name: `巩固「${BANDS[startIndex - 1]}」`,
-      goal: '把当前档位的常见句式和表达用熟，读短文章不再来回回读。',
-      focus: ['把当天的表达用进自己的句子里', '跟读听力文稿，注意连读', '读完一段先自己总结，再看中文'],
-      targetBand: BANDS[startIndex - 1]
-    },
-    {
-      id: 'phase-2',
-      name: `往「${BANDS[middle - 1]}」推`,
-      goal: '读得比现在长一点、快一点，能抓住长句的主干。',
-      focus: ['读比现在长一点的段落', '听真实语速的材料', '整理一周的表达清单'],
-      targetBand: BANDS[middle - 1]
-    },
-    {
-      id: 'phase-3',
-      name: `稳住「${BANDS[targetIndex - 1]}」`,
-      goal: `在「${BANDS[targetIndex - 1]}」这一档站住：长文不断线，表达能用出来。`,
-      focus: ['读长篇评论与专栏', '听播客并复述要点', '在真实场景里主动用出来'],
-      targetBand: BANDS[targetIndex - 1]
-    }
-  ]
-
-  const weekStart = weekStartOf(todayText)
-  const kept = previous?.weekly?.weekStart === weekStart ? previous.weekly : null
-  const current = phases[0]
-  return {
-    version: 1,
-    phases,
-    currentPhaseId: current.id,
-    weekly: kept ?? {
-      weekStart,
-      goals: current.focus.slice(0, 3).map((text, index) => ({ id: `goal-${index + 1}`, text, done: false }))
-    },
-    generatedFrom: { estimate, targetBand: targetBand ?? null },
-    regeneratedAt: null
-  }
-}
-
 async function regenerateSyllabus(ctx) {
-  const level = await load(ctx, 'level')
+  await load(ctx, 'syllabus')
+  const level = await loadCompletionProjection(ctx, 'level')
   const profileStore = await load(ctx, 'profile')
-  const previous = await load(ctx, 'syllabus')
-  const latest = (level.points ?? [])[level.points.length - 1]
+  const latest = latestPoint(level)
   const store = buildSyllabus({
-    estimate: latest?.finalBandIndex ?? 1,
+    finalBandIndex: latest?.finalBandIndex ?? 1,
     targetBand: profileStore.profile?.targetBand ?? null,
     todayText: today(ctx),
-    previous
+    generationId: randomUUID(),
+    at: ctx.now.toISOString()
   })
-  store.regeneratedAt = ctx.now.toISOString()
   await save(ctx, 'syllabus', store)
   return store
 }
@@ -854,20 +800,18 @@ const handlers = {
     if (!normalized.some((phase) => phase.id === currentPhaseId)) {
       fail('invalid_field', 'currentPhaseId 不在 phases 里', 'currentPhaseId')
     }
-    const before = await load(ctx, 'syllabus')
-    const todayText = today(ctx)
-    const weekStart = addDays(todayText, -((new Date(`${todayText}T00:00:00`).getDay() + 6) % 7))
-    const keepWeekly = before.weekly?.weekStart === weekStart ? before.weekly : null
+    await load(ctx, 'syllabus')
+    const generationId = randomUUID()
     const phase = normalized.find((candidate) => candidate.id === currentPhaseId)
-    const weekly = keepWeekly ?? {
-      weekStart,
+    const weekly = {
+      weekStart: weekStartOf(today(ctx)),
       goals: (phase.focus.length ? phase.focus : [phase.goal]).slice(0, 3).map((text, index) => ({
-        id: `goal-${index + 1}`,
+        id: `${generationId}:goal-${index + 1}`,
         text,
         done: false
       }))
     }
-    const store = { version: 1, phases: normalized, currentPhaseId, weekly, regeneratedAt: ctx.now.toISOString() }
+    const store = { version: 1, generationId, phases: normalized, currentPhaseId, weekly, regeneratedAt: ctx.now.toISOString() }
     await save(ctx, 'syllabus', store)
     return store
   },
@@ -1776,8 +1720,22 @@ async function projectAnchorResponses(ctx, attempt) {
 }
 
 async function loadCompletionProjection(ctx, key) {
+  if (key === 'syllabus') return readSyllabus(file(ctx, key), DEFAULTS[key])
+  // readJson's empty fallback cannot distinguish a fresh root from a lost
+  // primary with an unusable backup. Never drop older points in that case.
+  try {
+    await fs.lstat(file(ctx, key))
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error
+    try {
+      await fs.lstat(`${file(ctx, key)}.bak`)
+    } catch (backupError) {
+      if (backupError?.code === 'ENOENT') return structuredClone(DEFAULTS[key])
+    }
+    fail('assessment_recovery_failed', '测评结果主记录缺失，请检查存储后重试；不能用空历史覆盖已有结果', 'attemptId')
+  }
   const { value, warning } = await readJson(file(ctx, key), DEFAULTS[key])
-  if (warning) fail('assessment_recovery_failed', `恢复测评失败：${warning}；请检查存储后重试，不能回退较旧结果`, 'attemptId')
+  if (warning || !Array.isArray(value?.points)) fail('assessment_recovery_failed', `恢复测评失败：${warning ?? '结果记录无效'}；请检查存储后重试，不能回退较旧结果`, 'attemptId')
   return value
 }
 
@@ -1832,10 +1790,10 @@ async function finishAttempt(ctx, attempt) {
     }
     const previous = await loadCompletionProjection(ctx, 'syllabus')
     const profile = await load(ctx, 'profile')
-    const syllabus = !(previous.phases ?? []).length ? {
-      ...buildSyllabus({ estimate: point.finalBandIndex, targetBand: profile.profile?.targetBand, todayText: dateOf(new Date(at)), previous }),
-      regeneratedAt: at
-    } : null
+    const current = latestPoint(level)
+    const syllabus = !current || current.finalBandIndex !== point.finalBandIndex || !(previous.phases ?? []).length
+      ? buildSyllabus({ finalBandIndex: point.finalBandIndex, targetBand: profile.profile?.targetBand, todayText: dateOf(new Date(at)), generationId: `assessment-${attempt.id}`, at })
+      : null
     // Durable intent precedes every derived write. The response and this exact
     // point/syllabus can be replayed after any later file replacement fails.
     attempt.status = 'finalizing'
@@ -1849,10 +1807,7 @@ async function finishAttempt(ctx, attempt) {
     level.drift = drift
     await save(ctx, 'level', level)
   }
-  if (syllabus) {
-    const current = await loadCompletionProjection(ctx, 'syllabus')
-    if (JSON.stringify(current) !== JSON.stringify(syllabus)) await save(ctx, 'syllabus', syllabus)
-  }
+  if (syllabus) await publishSyllabus(file(ctx, 'syllabus'), syllabus, DEFAULTS.syllabus)
   attempt.status = 'done'
   attempt.completionPending = true
   attempt.updatedAt = point.at
