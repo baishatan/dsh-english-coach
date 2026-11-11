@@ -15,7 +15,7 @@ import {
   daysBetween,
   isIsoTimestamp
 } from './constants.js'
-import { anchorStore, hashAnchors } from './anchors.js'
+import { ANCHOR_POOL, anchorStore, hashAnchors } from './anchors.js'
 import { fail } from './errors.js'
 import {
   isComplete,
@@ -866,41 +866,12 @@ const handlers = {
   // ------------------------------------------------------------ assessment
 
   async 'assessment.saveBank'(ctx, payload) {
-    const items = Array.isArray(payload?.items) ? payload.items : []
-    if (items.length < 20) {
-      fail('bank_too_small', `题库至少 20 道题，收到 ${items.length} 道`, 'items')
-    }
-    const normalized = items.map((item, index) => {
-      const field = `items[${index}]`
-      if (!item || typeof item !== 'object') fail('invalid_field', `${field} 必须是对象`, field)
-      const difficulty = Number(item.difficulty)
-      if (!Number.isInteger(difficulty) || difficulty < 1 || difficulty > 6) {
-        fail('invalid_field', `${field}.difficulty 必须是 1 到 6 的整数`, `${field}.difficulty`)
-      }
-      if (!Array.isArray(item.choices) || item.choices.length !== 4) {
-        fail('invalid_field', `${field}.choices 必须是 4 个选项`, `${field}.choices`)
-      }
-      const answerIndex = Number(item.answerIndex)
-      if (!Number.isInteger(answerIndex) || answerIndex < 0 || answerIndex > 3) {
-        fail('invalid_field', `${field}.answerIndex 必须是 0 到 3`, `${field}.answerIndex`)
-      }
-      return {
-        id: item.id ? String(item.id) : `bank-${index + 1}`,
-        difficulty,
-        skill: item.skill ? String(item.skill) : 'general',
-        prompt: String(item.prompt ?? ''),
-        passage: item.passage ? String(item.passage) : '',
-        choices: item.choices.map(String),
-        answerIndex,
-        explanation: item.explanation ? String(item.explanation) : ''
-      }
-    })
-    if (new Set(normalized.map((item) => item.id)).size !== normalized.length) {
-      fail('duplicate_item', '题目 id 不能重复', 'items')
-    }
+    const normalized = validateAssessmentBank(payload)
     const version = String(payload?.version ?? Date.now().toString(36))
     const bank = { version, createdAt: ctx.now.toISOString(), items: normalized }
-    await writeJson(join(ctx.root, FILES.assessments, `bank-${version}.json`), bank)
+    const bankName = `bank-${version}.json`
+    await writeJson(join(ctx.root, FILES.assessments, bankName), bank)
+    await writeJson(join(ctx.root, FILES.assessments, 'current-bank.json'), { file: bankName })
     const difficulties = [...new Set(normalized.map((item) => item.difficulty))].sort()
     return { version, count: normalized.length, difficulties }
   },
@@ -915,16 +886,21 @@ const handlers = {
     if (!banks.length) {
       fail(
         'no_question_bank',
-        '还没有题库。先调用 english_save_assessment 提交一套至少 20 道、覆盖多个难度的题目。',
+        '还没有题库，请重新准备：提交至少 24 道独立词汇/语法短题，难度 1–6 各至少 4 道，可点击「生成测评题库」。',
         'items'
       )
     }
+    const { value: current, warning: currentWarning } = await readJson(join(ctx.root, FILES.assessments, 'current-bank.json'), null)
+    if (currentWarning) ctx.warn(currentWarning)
+    if (current && !banks.includes(current.file)) {
+      fail('no_question_bank', '当前题库读不出来，请重新准备至少 24 道独立词汇/语法短题', 'items')
+    }
     const { value: bank, warning } = await readJson(
-      join(ctx.root, FILES.assessments, banks[banks.length - 1]),
+      join(ctx.root, FILES.assessments, current?.file ?? banks[banks.length - 1]),
       null
     )
     if (warning) ctx.warn(warning)
-    if (!bank?.items?.length) fail('no_question_bank', '题库读不出来，请重新提交')
+    const admitted = validateAssessmentBank(bank)
 
     const anchors = await loadAnchors(ctx)
     const retired = new Set(anchors.retired ?? [])
@@ -939,7 +915,7 @@ const handlers = {
     const length = kind === 'short' ? SHORT_ASSESSMENT_LENGTH : ASSESSMENT_LENGTH
     const id = `${today(ctx)}-${kind}-${ctx.now.getTime().toString(36)}`
     const history = await attemptHistory(ctx)
-    const pool = bank.items.map((item) => ({ ...item, anchor: false }))
+    const pool = admitted.map((item) => ({ ...item, anchor: false }))
     const anchorItems = chosen.map((item) => ({ ...item, anchor: true }))
 
     const attempt = {
@@ -1512,6 +1488,116 @@ const handlers = {
 }
 
 // -------------------------------------------------------------- assessment helpers
+
+function validateAssessmentBank(payload) {
+  const items = Array.isArray(payload?.items) ? payload.items : []
+  if (items.length < 24) {
+    fail('bank_too_small', `请重新准备题库：至少 24 道普通题，收到 ${items.length} 道`, 'items')
+  }
+  const normalized = Array.from(items, (item, index) => {
+    const field = `items[${index}]`
+    if (!item || typeof item !== 'object' || Array.isArray(item)) fail('invalid_field', `请重新准备题库：${field} 必须是对象`, field)
+    if (typeof item.id !== 'string' || !item.id.trim() || ANCHOR_POOL.some((anchor) => anchor.id === item.id.trim())) {
+      fail('invalid_field', `请重新准备题库：${field}.id 必须非空且不能与冻结锚题相同`, `${field}.id`)
+    }
+    const difficulty = item.difficulty
+    if (!Number.isInteger(difficulty) || difficulty < 1 || difficulty > 6) {
+      fail('invalid_field', `请重新准备题库：${field}.difficulty 必须是 1 到 6 的整数`, `${field}.difficulty`)
+    }
+    if (!['grammar', 'vocab'].includes(item.skill)) {
+      fail('invalid_field', `请重新准备题库：${field}.skill 只能是 grammar 或 vocab`, `${field}.skill`)
+    }
+    if (typeof item.prompt !== 'string' || !item.prompt.trim()) {
+      fail('invalid_field', `请重新准备题库：${field}.prompt 必须是非空字符串`, `${field}.prompt`)
+    }
+    if (item.passage != null && (typeof item.passage !== 'string' || item.passage.trim())) {
+      fail('invalid_field', `请重新准备题库：${field}.passage 必须为空，不使用文章或额外材料`, `${field}.passage`)
+    }
+    if (!isStandaloneAssessmentText(item.prompt)) {
+      fail('invalid_field', `请重新准备题库：${field}.prompt 必须是独立单句，不能含文章、对话或依赖音频及外部材料`, `${field}.prompt`)
+    }
+    if (englishWordCount(item.prompt) > 30) {
+      fail('invalid_field', `请重新准备题库：${field}.prompt 最多 30 个英文词`, `${field}.prompt`)
+    }
+    if (!Array.isArray(item.choices) || item.choices.length !== 4) {
+      fail('invalid_field', `请重新准备题库：${field}.choices 必须是 4 个选项`, `${field}.choices`)
+    }
+    for (let choiceIndex = 0; choiceIndex < 4; choiceIndex += 1) {
+      if (typeof item.choices[choiceIndex] !== 'string' || !item.choices[choiceIndex].trim()) {
+        fail('invalid_field', `请重新准备题库：${field}.choices[${choiceIndex}] 必须是非空字符串`, `${field}.choices[${choiceIndex}]`)
+      }
+      if (!isStandaloneAssessmentText(item.choices[choiceIndex])) {
+        fail('invalid_field', `请重新准备题库：${field}.choices[${choiceIndex}] 只能是单句或短语，不能依赖额外材料`, `${field}.choices[${choiceIndex}]`)
+      }
+      if (englishWordCount(item.choices[choiceIndex]) > 12) {
+        fail('invalid_field', `请重新准备题库：${field}.choices[${choiceIndex}] 最多 12 个英文词`, `${field}.choices[${choiceIndex}]`)
+      }
+    }
+    if (new Set(item.choices.map((choice) => choice.trim().replace(/\s+/g, ' ').toLowerCase())).size !== 4) {
+      fail('invalid_field', `请重新准备题库：${field}.choices 必须是 4 个不同的选项`, `${field}.choices`)
+    }
+    const answerIndex = item.answerIndex
+    if (!Number.isInteger(answerIndex) || answerIndex < 0 || answerIndex > 3) {
+      fail('invalid_field', `请重新准备题库：${field}.answerIndex 必须是 0 到 3 的整数`, `${field}.answerIndex`)
+    }
+    return {
+      id: item.id.trim(),
+      difficulty,
+      skill: item.skill ? String(item.skill) : 'general',
+      prompt: String(item.prompt ?? ''),
+      passage: '',
+      choices: item.choices.map(String),
+      answerIndex,
+      explanation: item.explanation ? String(item.explanation) : ''
+    }
+  })
+  for (let difficulty = 1; difficulty <= 6; difficulty += 1) {
+    if (normalized.filter((item) => item.difficulty === difficulty).length < 4) {
+      fail('bank_difficulty_coverage', `请重新准备题库：难度 ${difficulty} 至少需要 4 道普通题`, 'items')
+    }
+  }
+  if (!['grammar', 'vocab'].every((skill) => normalized.some((item) => item.skill === skill))) {
+    fail('bank_skill_coverage', '请重新准备题库：整库必须同时包含 grammar 和 vocab 题', 'items')
+  }
+  if (new Set(normalized.map((item) => item.id)).size !== normalized.length) {
+    fail('duplicate_item', '请重新准备题库：普通题 id 不能重复', 'items')
+  }
+  return normalized
+}
+
+// Latin-letter runs are words; internal apostrophes, hyphens and dotted
+// abbreviations stay in the same word. Symbols/numbers and ___ blanks do not count.
+function englishWordCount(text) {
+  return (text.match(/[A-Za-z]+(?:['’.-][A-Za-z]+)*\.?/g) ?? []).length
+}
+
+function isStandaloneAssessmentText(text) {
+  if (/[\r\n]|https?:\/\/|www\./i.test(text)) return false
+  // Reject explicit extra-material instructions and multi-speaker formatting;
+  // semantic independence and pedagogical quality still require content review.
+  if (/\b(?:listen\s+to|read|refer\s+to|according\s+to|look\s+at|watch)\s+(?:(?:the|this|following|above|below|an?)\s+)*(?:passage|article|paragraph|text|audio|recording|dialogue|conversation|image|picture|video)\b/i.test(text)) return false
+  if ((text.match(/\b[A-Za-z][A-Za-z ]{0,20}:/g) ?? []).length > 1) return false
+  // Do not mistake Dr., e.g., U.S. or decimal points for sentence boundaries.
+  const withoutAbbreviations = text
+    .replace(/\b(?:[A-Za-z]\.){2,}/g, '')
+    .replace(/\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|vs|etc)\./gi, '')
+    .replace(/\b[A-Z]\.(?=\s+[A-Z][a-z])/g, '')
+    .replace(/\d\.\d/g, '')
+  // A quoted word or one quoted sentence can belong to a single task; a
+  // multi-sentence quoted passage must not become a loophole.
+  const withoutQuotedEndings = withoutAbbreviations.replace(/"([^"]*)"|“([^”]*)”|‘([^’]*)’|(?<![A-Za-z])'([^']*)'(?![A-Za-z])/g, (match, ...parts) => {
+    const quoted = parts.slice(0, 4).find((part) => part !== undefined)
+    return hasAssessmentSentenceBoundary(quoted) ? match : match.replace(/[.!?。！？]/g, '')
+  })
+  return !hasAssessmentSentenceBoundary(withoutQuotedEndings)
+}
+
+function hasAssessmentSentenceBoundary(text) {
+  for (const ending of text.matchAll(/[.!?。！？]/g)) {
+    if (text.slice(ending.index + 1).replace(/^[\s"'”’)]*/, '')) return true
+  }
+  return false
+}
 
 function questionOf(attempt, itemId) {
   if (!itemId) return null
