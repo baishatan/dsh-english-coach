@@ -373,6 +373,21 @@ test('a corrupt response authority never falls back to an older backup to answer
   assert.equal(replay.data.replayed, true)
 })
 
+test('a missing response authority cannot resurrect an older backup as an unanswered item', async t => {
+  const { root, run, identity } = await fixture(t)
+  const payload = { ...identity, responseType: 'unable' }
+  assert.equal((await run('assessment.answer', payload)).ok, true)
+  const target = join(root, 'assessments', `${identity.attemptId}.json`)
+  assert.equal(target, join(root, 'assessments', `${identity.attemptId}.json`))
+  await fs.unlink(target)
+  for (const command of ['assessment.answer', 'assessment.finish', 'assessment.resume', 'state.get', 'progress.get']) {
+    const failed = await run(command, payload)
+    assert.equal(failed.ok, false, command)
+    assert.equal(failed.code, 'assessment_recovery_failed')
+  }
+  await assert.rejects(fs.access(target), { code: 'ENOENT' })
+})
+
 test('every last-answer publication boundary recovers in a fresh process with one result and the original completion time', async t => {
   for (const boundary of ['response', 'intent', 'level', 'done']) {
     await t.test(boundary, async t => {

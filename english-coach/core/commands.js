@@ -1826,8 +1826,11 @@ async function finishAttempt(ctx, attempt) {
 
 async function recoverAssessmentFinalizations(ctx) {
   const entries = await listDir(file(ctx, 'assessments'))
-  for (const entry of entries.filter(entry => entry.isFile() && /^\d{4}-.*\.json$/.test(entry.name)).sort((a, b) => a.name.localeCompare(b.name))) {
-    const { value, warning } = await readJson(join(file(ctx, 'assessments'), entry.name), null)
+  const names = [...new Set(entries.filter(entry => entry.isFile() && /^\d{4}-.*\.json(?:\.bak)?$/.test(entry.name)).map(entry => entry.name.replace(/\.bak$/, '')))].sort()
+  for (const name of names) {
+    // A missing authority with a leftover backup is not a fresh attempt. The
+    // backup may predate its last accepted response or its completion intent.
+    const { value, warning } = await readJson(join(file(ctx, 'assessments'), name), null)
     if (warning) fail('assessment_recovery_failed', `恢复测评失败：${warning}；请检查存储后重试`, 'attemptId')
     if (value?.lifecycleVersion === 1 && (value.status === 'finalizing' || (value.status === 'in_progress' && value.answers.length === (value.kind === 'short' ? SHORT_ASSESSMENT_LENGTH : ASSESSMENT_LENGTH)))) {
       await finishAttempt(ctx, value)
