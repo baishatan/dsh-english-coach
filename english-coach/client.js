@@ -20,7 +20,7 @@ window.__ModuleLoader__.load({
       profile: '个人',
       loading: '加载中…',
       retry: '重试',
-      onboardTitle: '先说三件事',
+      onboardTitle: '说说你的学习目标',
       onboardHint: '这些只影响每天给你找什么材料，随时可以改。',
       goal: '想用英语做什么',
       goalWork: '工作里用',
@@ -1329,11 +1329,11 @@ window.__ModuleLoader__.load({
       )
     }
 
-    function Field({ label, hint, children }) {
+    function Field({ label, hint, children, id }) {
       return h(
         'div',
         { className: 'ec-field' },
-        h('label', { className: 'ec-label' }, label),
+        h('label', { className: 'ec-label', htmlFor: id }, label),
         children,
         hint ? h('div', { className: 'ec-muted', style: { marginTop: 5 } }, hint) : null
       )
@@ -1396,12 +1396,19 @@ window.__ModuleLoader__.load({
         goal: 'work',
         minutesPerDay: 30,
         targetBand: '中级',
+        goalNote: '',
         interests: '',
         workContext: ''
       })
       const [busy, setBusy] = useState(false)
       const [error, setError] = useState(null)
       const [guessed, setGuessed] = useState(false)
+      const fieldId = useId()
+      const firstField = useRef(null)
+      const goalField = useRef(null)
+      const saving = useRef(false)
+      useEffect(() => { firstField.current?.focus() }, [])
+      useEffect(() => { if (error) goalField.current?.focus() }, [error])
 
       // A first guess from the current workspace, so the learner confirms or
       // corrects it instead of describing their work from scratch.
@@ -1417,11 +1424,15 @@ window.__ModuleLoader__.load({
       }, [])
 
       const submit = async () => {
+        if (saving.current) return
+        saving.current = true
         setBusy(true)
+        setError(null)
         const result = await call('profile.save', {
           goal: form.goal,
           minutesPerDay: Number(form.minutesPerDay),
           targetBand: form.targetBand,
+          goalNote: form.goalNote,
           workContext: form.workContext,
           interests: form.interests
             .split(/[,，]/)
@@ -1429,12 +1440,13 @@ window.__ModuleLoader__.load({
             .filter(Boolean)
         })
         setBusy(false)
+        saving.current = false
         if (!result.ok) {
           setError(result.message)
           return
         }
         setError(null)
-        await onSaved()
+        await onSaved(result.data.profile)
       }
 
       return h(
@@ -1445,8 +1457,10 @@ window.__ModuleLoader__.load({
         guessed
           ? h(
               Field,
-              { label: t('workContext'), hint: t('workContextHint') },
+              { label: t('workContext'), hint: t('workContextHint'), id: `${fieldId}-work` },
               h('input', {
+                id: `${fieldId}-work`,
+                disabled: busy,
                 className: 'ec-input',
                 type: 'text',
                 value: form.workContext,
@@ -1456,10 +1470,13 @@ window.__ModuleLoader__.load({
           : null,
         h(
           Field,
-          { label: t('goal') },
+          { label: t('goal'), id: `${fieldId}-goal` },
           h(
             'select',
             {
+              id: `${fieldId}-goal`,
+              disabled: busy,
+              ref: firstField,
               className: 'ec-select',
               value: form.goal,
               onChange: (event) => setForm({ ...form, goal: event.target.value })
@@ -1471,8 +1488,10 @@ window.__ModuleLoader__.load({
         ),
         h(
           Field,
-          { label: t('minutes') },
+          { label: t('minutes'), id: `${fieldId}-minutes` },
           h('input', {
+            id: `${fieldId}-minutes`,
+            disabled: busy,
             className: 'ec-input',
             type: 'number',
             min: 5,
@@ -1483,10 +1502,12 @@ window.__ModuleLoader__.load({
         ),
         h(
           Field,
-          { label: t('targetBand') },
+          { label: t('targetBand'), id: `${fieldId}-band` },
           h(
             'select',
             {
+              id: `${fieldId}-band`,
+              disabled: busy,
               className: 'ec-select',
               value: form.targetBand,
               onChange: (event) => setForm({ ...form, targetBand: event.target.value })
@@ -1496,8 +1517,25 @@ window.__ModuleLoader__.load({
         ),
         h(
           Field,
-          { label: t('interests'), hint: t('interestsHint') },
+          { label: t('goalNote'), hint: '可选，写下具体目标或希望用英语完成的事。', id: `${fieldId}-note` },
+          h('textarea', {
+            id: `${fieldId}-note`,
+            ref: goalField,
+            disabled: busy,
+            className: 'ec-input ec-profile-note-input',
+            rows: 3,
+            'aria-label': t('goalNote'),
+            value: form.goalNote,
+            placeholder: t('goalNotePlaceholder'),
+            onChange: (event) => setForm({ ...form, goalNote: event.target.value })
+          })
+        ),
+        h(
+          Field,
+          { label: t('interests'), hint: t('interestsHint'), id: `${fieldId}-interests` },
           h('input', {
+            id: `${fieldId}-interests`,
+            disabled: busy,
             className: 'ec-input',
             type: 'text',
             value: form.interests,
@@ -3440,7 +3478,11 @@ window.__ModuleLoader__.load({
       const openVocabulary = () => navigate(() => { setTab('words'); setOpenThemed(0); setOpenPersonal(value => value + 1) })
       const chooseList = () => navigate(() => { setTab('words'); setMode('normal'); setOpenPersonal(0); setOpenThemed(value => value + 1) })
       const startAssessment = () => navigate(() => setMode('assessment'))
-      const { data, error, loading, reload } = useRefresh(loadState, 20000)
+      const [onboardingProfile, setOnboardingProfile] = useState(null)
+      const { data: polledData, error, loading, reload } = useRefresh(loadState, 20000)
+      // A saved onboarding profile is confirmed even while an older state read is in flight.
+      const data = polledData && onboardingProfile && (!polledData.onboarded || !polledData.profile?.updatedAt || polledData.profile.updatedAt < onboardingProfile.updatedAt)
+        ? { ...polledData, onboarded: true, profile: onboardingProfile } : polledData
       const words = useRefresh(loadWords, 0)
       const round = useStudyRound(false)
 
@@ -3472,7 +3514,7 @@ window.__ModuleLoader__.load({
         return h('div', { className: 'ec-root' }, h(Style),
           h('div', { className: 'ec-wrap', style: { maxWidth: 720 } },
             h('header', { className: 'ec-top' }, h('h1', null, t('title'))),
-            h(Onboarding, { onSaved: reload })))
+            h(Onboarding, { onSaved: profile => { setOnboardingProfile(profile); void reload() } })))
       }
 
       if (mode === 'assessment') {
