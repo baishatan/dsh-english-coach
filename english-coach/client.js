@@ -48,7 +48,7 @@ window.__ModuleLoader__.load({
       saved: '已保存',
       startAssessment: '先做一次测评',
       assessmentFirst: '测评大约 10 分钟，全是选择题。',
-      needBank: '还没有题库。点下面让 Agent 出一套，大约一分钟。',
+      needBank: '还没有题库。请重新准备至少 24 道独立词汇/语法短题，难度 1–6 各至少 4 道；点「生成测评题库」后才会开始准备。',
       makeBank: '生成测评题库',
       makeBankRunning: '正在出题…',
       bankReady: '题库已就绪，可以开始测评。',

@@ -28,6 +28,14 @@ const JOB_TIMEOUT_MS = 15 * 60_000
 const HISTORY_TIMEOUT_MS = 10_000
 const HISTORY_MAX_PAGES = 20
 
+const ASSESSMENT_BANK_CONTRACT = [
+  '至少 24 道普通题，难度 1–6 为整数且各至少 4 道；skill 仅 grammar / vocab，整库两类均有覆盖，不设每档或每场比例。',
+  '每题是独立单句的词义、搭配、语法填空或句子选择，题干最多 30 个英文词；恰好四个不同的非空字符串选项，每项最多 12 个英文词，只有一个正确答案，answerIndex 为 0–3 整数。',
+  '英文词按连续英文字母计数，词内撇号、连字符和点分缩写仍算一词（如 don\'t、state-of-the-art、U.S.）；数字、符号及 ___ 填空占位不计英文词。',
+  '禁止文章、段落、多轮对话、音频及外部材料，passage 必须为空；不能把文章放进 prompt，不自动截断或改写不合格题目；高难题靠词义、搭配和句法而非篇幅。',
+  '普通题 ID 必须非空、池内唯一且不与冻结锚题 ID 冲突（保留 anchor-01 至 anchor-12）。'
+].join('\n')
+
 function resolveDefaultRoot() {
   return join(homedir(), 'DeepSeek-English')
 }
@@ -283,9 +291,8 @@ export function apply(ctx, config) {
       '你是「英语教练」的出题人。请只做一件事：调用 english_save_assessment 提交一套英语测评题库。',
       '',
       '要求：',
-      '- 24 道四选一，难度 1 到 6 各 4 道；1 大致是最简单，6 大致是最难。',
-      '- 覆盖语法、词汇、阅读理解、推断四类，skill 字段里标明。',
-      '- 每题 4 个选项、只有一个正确答案，answerIndex 是从 0 开始的选项下标。',
+      ASSESSMENT_BANK_CONTRACT,
+      '- 难度 1 最简单、6 最难；结构校验不证明教学正确或难度已标定，提交前逐题检查唯一答案和内容独立性。',
       '- 每题给一句中文讲解，说明为什么正确答案对、其他选项错在哪。',
       '- 不要使用任何考试机构的真题或改编题，自己写。',
       '- 不要在对话里贴出题目正文，直接调用工具提交。'
@@ -739,29 +746,32 @@ export function apply(ctx, config) {
     {
       name: 'english_save_assessment',
       description:
-        '提交一套测评题库。至少 20 道四选一，难度用 1 到 6 标注，覆盖多个难度；插件会按作答自适应抽题，并混入自己的锚题。以 version 为幂等键。',
+        `提交一套简短词汇与语法测评题库。${ASSESSMENT_BANK_CONTRACT}\n保存和开测共用准入规则，不合格时请重新准备。插件会自适应抽题并混入冻结锚题。以 version 为幂等键。`,
       parameters: {
         type: 'object',
         properties: {
           version: { type: 'string', description: '这一套题目的版本标识' },
           items: {
             type: 'array',
+            minItems: 24,
+            description: '至少 24 道普通题，难度 1–6 各至少 4 道，整库同时覆盖 grammar 和 vocab',
             items: {
               type: 'object',
               properties: {
-                id: { type: 'string' },
+                id: { type: 'string', minLength: 1, description: '普通池内唯一，不能与冻结锚题 ID 相同' },
                 difficulty: { type: 'integer', minimum: 1, maximum: 6 },
                 skill: {
                   type: 'string',
-                  description: 'grammar / vocab / reading / listening / inference'
+                  enum: ['grammar', 'vocab'],
+                  description: '仅 grammar / vocab，整库两类均须包含，不设每档比例'
                 },
-                prompt: { type: 'string' },
-                passage: { type: 'string', description: '如有阅读材料，放这里' },
-                choices: { type: 'array', items: { type: 'string' }, minItems: 4, maxItems: 4 },
+                prompt: { type: 'string', minLength: 1, description: '独立单句，最多 30 个英文词；缩写算一词、填空占位不计词' },
+                passage: { type: 'string', description: '必须为空；禁止文章、对话、音频或外部材料' },
+                choices: { type: 'array', items: { type: 'string', minLength: 1, description: '非空且互不相同，每项最多 12 个英文词' }, minItems: 4, maxItems: 4 },
                 answerIndex: { type: 'integer', minimum: 0, maximum: 3 },
                 explanation: { type: 'string', description: '中文讲解' }
               },
-              required: ['id', 'difficulty', 'prompt', 'choices', 'answerIndex']
+              required: ['id', 'difficulty', 'skill', 'prompt', 'choices', 'answerIndex']
             }
           }
         },
