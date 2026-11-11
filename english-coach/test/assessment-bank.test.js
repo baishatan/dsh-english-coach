@@ -48,6 +48,86 @@ test('重新准备后采用最新成功提交的库，不由version字典序或�
   assert.equal(await fs.readFile(oldFile, 'utf8'), original, 'a successful replacement keeps the old bank intact')
 })
 
+test('a damaged current bank primary cannot start from an earlier same-version backup', async t => {
+  const root = await rootFor(t)
+  const previous = assessmentBank('same')
+  assert.equal((await run(root, 'assessment.saveBank', previous)).ok, true)
+  let attempt = await run(root, 'assessment.start', { kind: 'short' })
+  const attemptId = attempt.data.attemptId
+  for (let index = 0; index < 10; index++) {
+    attempt = await run(root, 'assessment.answer', { attemptId, itemId: attempt.data.question.id, responseType: 'unable' })
+    assert.equal(attempt.ok, true, JSON.stringify(attempt))
+  }
+  const replacement = assessmentBank('same')
+  replacement.items[0].prompt = 'The replacement question ___ here.'
+  assert.equal((await run(root, 'assessment.saveBank', replacement)).ok, true)
+  const bankFile = join(root, 'assessments', 'bank-same.json')
+  assert.equal(JSON.parse(await fs.readFile(`${bankFile}.bak`, 'utf8')).items[0].prompt, previous.items[0].prompt)
+  await fs.writeFile(bankFile, '{truncated current question bank')
+  const paths = ['level.json', 'syllabus.json', `assessments/${attemptId}.json`, 'assessments/current-bank.json', 'assessments/bank-same.json', 'assessments/bank-same.json.bak']
+  const before = await Promise.all(paths.map(path => fs.readFile(join(root, path), 'utf8')))
+  const entries = await fs.readdir(join(root, 'assessments'))
+  const started = await run(root, 'assessment.start', { kind: 'short' })
+  assert.equal(started.ok, false, JSON.stringify(started))
+  assert.equal(started.code, 'no_question_bank')
+  assert.match(started.message, /重新准备/)
+  assert.deepEqual(await Promise.all(paths.map(path => fs.readFile(join(root, path), 'utf8'))), before)
+  assert.deepEqual(await fs.readdir(join(root, 'assessments')), entries, 'no failed start leaves another attempt')
+})
+
+test('an unreadable current-bank pointer cannot silently select a backup or a lexical bank', async t => {
+  for (const state of ['broken', 'missing-with-backup', 'missing-with-broken-backup', 'null', 'empty-object']) {
+    await t.test(state, async t => {
+      const root = await rootFor(t)
+      assert.equal((await run(root, 'assessment.saveBank', assessmentBank('a-old'))).ok, true)
+      assert.equal((await run(root, 'assessment.saveBank', assessmentBank('z-current'))).ok, true)
+      const pointer = join(root, 'assessments', 'current-bank.json')
+      if (state.startsWith('missing')) {
+        assert.equal(pointer, join(root, 'assessments', 'current-bank.json'))
+        await fs.unlink(pointer)
+        if (state === 'missing-with-broken-backup') await fs.writeFile(`${pointer}.bak`, '{broken backup')
+      } else await fs.writeFile(pointer, state === 'broken' ? '{broken pointer' : state === 'null' ? 'null' : '{}')
+      const paths = await fs.readdir(join(root, 'assessments'))
+      const before = await Promise.all(paths.map(path => fs.readFile(join(root, 'assessments', path), 'utf8')))
+      const started = await run(root, 'assessment.start', { kind: 'short' })
+      assert.equal(started.ok, false, JSON.stringify(started))
+      assert.equal(started.code, 'no_question_bank')
+      assert.match(started.message, /重新准备/)
+      assert.deepEqual(await fs.readdir(join(root, 'assessments')), paths)
+      assert.deepEqual(await Promise.all(paths.map(path => fs.readFile(join(root, 'assessments', path), 'utf8'))), before)
+    })
+  }
+})
+
+test('a missing selected bank primary is not replaced by its backup or a different intact bank', async t => {
+  const root = await rootFor(t)
+  assert.equal((await run(root, 'assessment.saveBank', assessmentBank('a-old'))).ok, true)
+  assert.equal((await run(root, 'assessment.saveBank', assessmentBank('z-current'))).ok, true)
+  assert.equal((await run(root, 'assessment.saveBank', assessmentBank('z-current'))).ok, true)
+  const bankFile = join(root, 'assessments', 'bank-z-current.json')
+  assert.equal(bankFile, join(root, 'assessments', 'bank-z-current.json'))
+  await fs.unlink(bankFile)
+  const entries = await fs.readdir(join(root, 'assessments'))
+  const started = await run(root, 'assessment.start', { kind: 'short' })
+  assert.equal(started.ok, false, JSON.stringify(started))
+  assert.equal(started.code, 'no_question_bank')
+  assert.match(started.message, /重新准备/)
+  assert.deepEqual(await fs.readdir(join(root, 'assessments')), entries)
+})
+
+test('legacy banks with no pointer or pointer backup still select the latest intact primary lexically', async t => {
+  const root = await rootFor(t)
+  await fs.mkdir(join(root, 'assessments'), { recursive: true })
+  for (const version of ['z-latest', 'a-older']) {
+    const bank = assessmentBank(version)
+    bank.items[8].prompt = version === 'z-latest' ? 'The latest bank ___ here.' : 'The older bank ___ here.'
+    await fs.writeFile(join(root, 'assessments', `bank-${version}.json`), JSON.stringify(bank))
+  }
+  const started = await run(root, 'assessment.start', { kind: 'short' })
+  assert.equal(started.ok, true, JSON.stringify(started))
+  assert.equal(started.data.question.prompt, 'The latest bank ___ here.')
+})
+
 test('没有或损坏题库时开测提示重新准备，不创建可恢复测评', async t => {
   for (const content of [null, '{broken json', '{}', '{"items":{}}']) {
     const root = await rootFor(t)

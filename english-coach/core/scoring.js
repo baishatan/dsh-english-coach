@@ -74,6 +74,11 @@ export function scoreAssessment(answers) {
     band,
     coverageNote: finalBandIndex < Math.floor(estimate + 0.5) ? '本轮题目难度覆盖较窄，已按覆盖范围安排学习档位。' : null,
     accuracy: accuracyOf(answers),
+    counts: {
+      correct: answers.filter(answer => answer.correct).length,
+      incorrect: answers.filter(answer => !answer.correct && answer.responseType !== 'unable').length,
+      unable: answers.filter(answer => answer.responseType === 'unable').length
+    },
     weaknesses: weaknessesOf(evidence),
     reference: referenceOf(band)
   }
