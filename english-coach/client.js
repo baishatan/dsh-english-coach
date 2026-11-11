@@ -140,7 +140,7 @@ window.__ModuleLoader__.load({
       streakShort: '连续',
       bandShort: '档位',
       assessmentShort: '测评',
-      assessmentFirstHint: '做完会给出档位和薄弱项，之后的大纲照着排。',
+      assessmentFirstHint: '当前未测评，可先从入门材料开始学习；测评用于估计词汇与语法档位，不是学习门槛。',
       backToStudy: '回到今天',
       todayIndex: '今天 {done} / {total} 项',
       noLessonShort: '今天还没排课',
@@ -319,9 +319,11 @@ window.__ModuleLoader__.load({
         const request = generation
         try {
           const status = await call('job.status', { kind: 'vocab' })
-          if (request !== generation || !status.ok || !status.data) return
-          if (status.data.status === 'pending') return
-          patch({ job: status.data })
+          if (request !== generation) return
+          if (!status.ok) { patch({ error: `读取词汇生成状态失败：${status.message || '暂时无法连接后台'}。将继续重试，不会重复创建任务。` }); return }
+          if (!status.data) return
+          if (status.data.status === 'pending') { patch({ error: null }); return }
+          patch({ job: status.data, error: null })
           stopPolling()
           if (status.data.status === 'failed') { patch({ error: status.data.failure ?? t('generateFailed') }); return }
           patch({ busy: true })
@@ -2738,6 +2740,8 @@ window.__ModuleLoader__.load({
 
     function TodayTab({ data, words, reload, onTab, onChooseList, onOpenVocabulary }) {
       const [job, setJob] = useState(null)
+      const [jobError, setJobError] = useState(null)
+      const [jobRetry, setJobRetry] = useState(0)
       const [notice, setNotice] = useState(null)
       const [busy, setBusy] = useState(false)
       const lesson = data.todayLesson
@@ -2746,18 +2750,22 @@ window.__ModuleLoader__.load({
         let alive = true
         void (async () => {
           const result = await call('job.status', { kind: 'lesson' })
-          if (alive && result.ok && result.data && result.data.date === data.today) setJob(result.data)
+          if (!alive) return
+          if (!result.ok) { setJobError(`读取课程生成状态失败：${result.message || '暂时无法连接后台'}。请重试读取，已有任务不会重复创建。`); return }
+          setJobError(null)
+          if (result.data && result.data.date === data.today) setJob(result.data)
         })()
         return () => {
           alive = false
         }
-      }, [data.today])
+      }, [data.today, jobRetry])
 
       useEffect(() => {
         if (!job || job.status !== 'pending') return
         const timer = setInterval(async () => {
           const result = await call('job.status', { kind: 'lesson' })
-          if (!result.ok) return
+          if (!result.ok) { setJobError(`读取课程生成状态失败：${result.message || '暂时无法连接后台'}。将继续重试，不会重复创建任务。`); return }
+          setJobError(null)
           setJob(result.data)
           if (result.data && result.data.status !== 'pending') {
             await reload()
@@ -2797,6 +2805,8 @@ window.__ModuleLoader__.load({
         'div',
         null,
         notice ? h(Notice, { tone: notice.tone }, notice.text) : null,
+        jobError ? h('div', { role: 'alert' }, h(Notice, { tone: 'error' }, jobError),
+          h(Btn, { small: true, onClick: () => setJobRetry(value => value + 1) }, '重试生成状态')) : null,
         failed ? h(Notice, { tone: 'error' }, `${t('generateFailed')}：${job.failure ?? ''}`) : null,
         pending ? h(Notice, null, t('generating')) : null,
         h(
