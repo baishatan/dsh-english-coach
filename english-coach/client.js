@@ -149,7 +149,7 @@ window.__ModuleLoader__.load({
       phaseIndex: '第 {n} / {total} 阶段',
       nowWhere: '现在在哪',
       routeTitle: '换路线',
-      routeNote: '大纲照着当前档位排，不写死日期；水平变了就重写一次。本周已勾选的目标会保留。',
+      routeNote: '大纲从当前档位起步，目标档位只指引未来方向。首次测评或档位变化会重建；同档复测保留路线。重建后本周目标重新开始，实际学习记录和已学天数保留。',
       rewriteRoute: '重写大纲',
 
       // review
@@ -2262,8 +2262,11 @@ window.__ModuleLoader__.load({
     function WeeklyCard({ data, reload }) {
       const weekly = data.syllabus?.weekly ?? { goals: [], completedGoals: 0, totalGoals: 0 }
       const goals = weekly.goals ?? []
+      const [error, setError] = useState(null)
       const toggle = async (goalId, done) => {
-        await call('syllabus.toggleGoal', { goalId, done })
+        setError(null)
+        const result = await call('syllabus.toggleGoal', { goalId, done })
+        if (!result.ok) setError(result.code === 'goal_not_found' ? '本周目标已变化，旧目标未保存；请使用更新后的目标。' : result.message)
         await reload()
       }
       return h(
@@ -2275,6 +2278,7 @@ window.__ModuleLoader__.load({
           h('h2', null, t('weekGoals')),
           h('span', { className: 'ec-sub' }, `${weekly.completedGoals ?? 0} / ${weekly.totalGoals ?? 0}`)
         ),
+        error ? h('div', { role: 'alert' }, h(Notice, { tone: 'error' }, error)) : null,
         goals.length
           ? h(
               'div',
@@ -3826,7 +3830,7 @@ window.__ModuleLoader__.load({
 
         h('div', { className: 'ec-section-title' }, t('regenerateSyllabus')),
         h('div', { className: 'ec-muted', style: { marginBottom: 10 } },
-          '按当前档位与目标档位重写一份大纲；本周已勾选的目标会保留。'),
+          t('routeNote')),
         h(
           Btn,
           {
