@@ -89,12 +89,12 @@ export async function recoverAssessmentHistory(ctx, defaults) {
     const sourcePoints = Array.isArray(level.value?.points) ? level.value.points : []
     const levelPoints = sourcePoints.filter(isRecord)
     const malformedPoints = level.text !== null && (!Array.isArray(level.value?.points) || levelPoints.length !== sourcePoints.length)
-    if (malformedPoints && (level.value?.scoringRule === SCORING_RULE || level.value?.current?.scoringRule === SCORING_RULE ||
+    const hasLegacy = legacy.length || levelPoints.some(point => point.scoringRule !== SCORING_RULE)
+      || (route.value?.phases?.length && !route.value.generationId)
+    if (hasLegacy && malformedPoints && (level.value?.scoringRule === SCORING_RULE || level.value?.current?.scoringRule === SCORING_RULE ||
       levelPoints.some(point => point.scoringRule === SCORING_RULE) || candidates.some(record => !legacy.includes(record)))) {
       fail('assessment_recovery_failed', '新测评结果记录损坏，不能按旧历史替换', 'level')
     }
-    const hasLegacy = legacy.length || levelPoints.some(point => point.scoringRule !== SCORING_RULE)
-      || (route.value?.phases?.length && !route.value.generationId)
     const levelUncertain = malformedPoints ||
       (level.text === null && (levelBackup.text !== null || levelBackup.type))
     const routeInvalid = (route.text !== null && (!Array.isArray(route.value?.phases) || !Array.isArray(route.value?.weekly?.goals))) ||
