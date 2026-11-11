@@ -3,7 +3,7 @@ import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 
 import { execute } from './core/index.js'
-import { dateOf } from './core/constants.js'
+import { BANDS, dateOf } from './core/constants.js'
 import { readJson, writeJson } from './core/store.js'
 import { createSpeechAssets } from './speech/assets.js'
 import { createSpeechAudio } from './speech/audio.js'
@@ -249,7 +249,32 @@ export function apply(ctx, config) {
 
   // ------------------------------------------------------- the daily agent
 
+  async function learningContext() {
+    const snapshot = await execute(root, 'state.get')
+    // Only these stores supply the material's current band, profile or batch
+    // preference. An unrelated attendance warning is not a learning gate.
+    const unavailable = (snapshot.warnings ?? []).filter(warning => /^(?:profile|settings|level)\.json\s/.test(warning))
+    if (!snapshot.ok || unavailable.length) {
+      throw new Error(`无法读取可靠的学习状态，请检查后重试：${snapshot.message || unavailable.join('；') || '状态不可用'}`)
+    }
+    const data = snapshot.data
+    const latest = data?.level?.latest
+    if (!data?.level || latest !== null && (!Number.isInteger(latest?.finalBandIndex)
+      || latest.finalBandIndex < 1 || latest.finalBandIndex > BANDS.length
+      || latest.band !== BANDS[latest.finalBandIndex - 1])) {
+      throw new Error('当前档位状态不可用，请检查后重试；未创建生成任务')
+    }
+    const band = latest?.band ?? BANDS[0]
+    const index = latest?.finalBandIndex ?? 1
+    return { data, lines: [
+      latest ? `当前有效测评档位：${band}。` : '当前测评状态：未测评；可直接学习，不要求先完成测评；入门材料起点不代表测评结果。',
+      `材料难度：${band}（档位 ${index}/6）。`,
+      '目标档位只表示未来方向，不抬高或压低材料难度；大纲阶段和路线只用于选择主题，不能覆盖当前材料档位。'
+    ] }
+  }
+
   async function lessonPrompt() {
+    const learning = await learningContext()
     const preference = await execute(root, 'study.preference', {})
     if (!preference.ok) throw new Error(preference.message || '无法读取当前词库偏好')
     const { activeWordList, candidates, candidateCount, batchSize } = preference.data
@@ -264,6 +289,7 @@ export function apply(ctx, config) {
       '你是「英语教练」的素材采购员。按下面的步骤工作，不要输出与任务无关的内容。',
       '',
       '1. 先调用 english_state，读出 today、画像、当前阶段与阶段目标、最近水平估计、到期复习数量、近 7 天用过的素材链接。',
+      ...learning.lines,
       '   今天已有草稿、进行中或已完成课程就保留，不重复生成或覆盖；说明已有课程即可。',
       '   不要用任何工具在本机写文件；所有内容只能通过 english_save_lesson 提交。',
       ...preferenceLines,
@@ -304,18 +330,19 @@ export function apply(ctx, config) {
    * writes vocabulary; it never touches the lesson or the syllabus.
    */
   async function vocabPrompt() {
-    const snapshot = await execute(root, 'state.get').catch(() => null)
-    const data = snapshot?.ok ? snapshot.data : null
-    const count = data?.settings?.study?.wordsPerDay ?? 10
-    const band = data?.level?.latest?.band ?? '未测评'
+    const learning = await learningContext()
+    const count = learning.data.settings.study.wordsPerDay
     return [
       '你是「英语教练」的补充词汇编辑。只做一件事：调用 english_add_words 提交一批新词。',
       '',
-      '1. 先调用 english_state，读出画像、当前档位、目标档位和 review.terms（已经有的词）。',
+      '1. 先调用 english_state，读出画像、当前档位和 review.terms（已经有的词）；失败或当前档位不可用就报告原因并停止，不使用旧快照猜测。',
+      '   以最新返回的 level.latest.finalBandIndex 与 band 为准；latest 为 null 时仍是未测评，从入门材料开始。',
+      '   以下是请求时的参考快照；若状态已变，以最新状态更新材料难度、画像、每批词数与已有词。',
+      ...learning.lines,
       `2. 出 ${count} 个新词或整块表达，要求：`,
       '   - 避免重复已有词；忽略大小写及多余空白，同词最终由插件全量去重，review.terms 只是有限摘要，不自动合并不同词形或英美拼写；',
       '   - 贴近画像里的工作方向和兴趣，整块表达优先于孤立单词；',
-      `   - 难度略高于「${band}」、但不高于目标档位；`,
+      '   - 按最新状态确定的材料难度选择新词，不自行提高或降低档位；',
       '   - 每个词给中文释义、4 个不同的中文选项，以及一句中文讲解（常见搭配、和近义词的区别）；',
       '   - answerIndex 指向与 meaning 完全相同的那一项。',
       '3. 不要在对话里贴出词表，直接调用 english_add_words。',
