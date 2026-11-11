@@ -583,7 +583,7 @@ test('测评按难度自适应：答对升档、答错降档，且不重复出�
     mean(right.difficulties) - mean(wrong.difficulties) >= 1,
     `全对应显著高于全错：${right.difficulties.join(',')} vs ${wrong.difficulties.join(',')}`
   )
-  assert.ok(right.result.estimate > wrong.result.estimate)
+  assert.ok(right.result.finalBandIndex > wrong.result.finalBandIndex)
   assert.ok(right.result.band !== wrong.result.band)
 })
 
@@ -697,8 +697,9 @@ test('锚题连续三次偏离基线后只加提示，不改分数', async (t) =
   const progress = await run(root, 'progress.get', {}, at('2026-10-25'))
   assert.ok(progress.data.drift.note, '连续三次偏离后应出现提示')
   assert.equal(progress.data.curve.length, 4)
-  const estimates = progress.data.curve.map((point) => point.estimate)
-  assert.ok(estimates.every((value) => Number.isFinite(value)), '分数不应被自动改动或清空')
+  assert.ok(progress.data.curve.every(point => Number.isInteger(point.finalBandIndex) && point.finalBandIndex >= 1 && point.finalBandIndex <= 6), '提示不应清空公开档位')
+  const level = JSON.parse(await fs.readFile(join(root, 'level.json'), 'utf8'))
+  assert.ok(level.points.every(point => point.finalBandIndex === Math.min(point.scoring.rawBandIndex, point.scoring.coverageCap)), '漂移观察不自动校正档位')
 })
 
 test('未到期的复习项不能推进盒子，到了才能答', async (t) => {
@@ -830,16 +831,17 @@ test('锚题耗尽后普通题作答不产生新的漂移判断', async (t) => {
     await fullAssessment(root, at(`2026-10-2${round}`), { decide: (id) => answerIndexFor(id) })
   }
   const before = await run(root, 'progress.get', {}, at('2026-10-25'))
-  assert.equal(before.data.drift.streak, 0)
-  const baseline = before.data.drift.baseline
+  assert.deepEqual(before.data.drift, { note: null })
+  const priorLevel = JSON.parse(await fs.readFile(join(root, 'level.json'), 'utf8'))
+  assert.equal(priorLevel.drift.streak, 0)
 
   // 第五次只用普通题；即使全部答错，也不应形成新的锚题漂移观察。
   await fullAssessment(root, at('2026-10-25'), { decide: (id) => (answerIndexFor(id) + 1) % 4 })
 
   const after = await run(root, 'progress.get', {}, at('2026-10-25'))
-  assert.equal(after.data.drift.streak, 0, '普通题不应计入锚题漂移')
-  assert.equal(after.data.drift.baseline, baseline)
+  assert.deepEqual(after.data.drift, { note: null })
   const level = JSON.parse(await fs.readFile(join(root, 'level.json'), 'utf8'))
+  assert.deepEqual(level.drift, priorLevel.drift, '普通题不应计入锚题漂移')
   assert.equal(level.points[level.points.length - 1].anchorAccuracy, null, '没有新锚题不产生锚题准确率')
 })
 
