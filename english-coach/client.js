@@ -924,8 +924,9 @@ window.__ModuleLoader__.load({
   transition: background .12s ease, border-color .12s ease, opacity .12s ease; }
 .ec-btn:hover:not(:disabled) { background: var(--dsw-alias-border-l1); }
 .ec-btn:disabled { opacity: .45; cursor: default; }
-.ec-btn-primary { background: var(--dsw-alias-brand-primary); color: var(--dsw-alias-bg-base); }
-.ec-btn-primary:hover:not(:disabled) { background: var(--dsw-alias-brand-primary); filter: brightness(1.06); }
+.ec-btn-primary { background: var(--ec-primary-fill, #0f1115); color: var(--ec-primary-foreground, #ffffff);
+  border-color: var(--dsw-alias-label-primary, #0f1115); font-weight: 600; }
+.ec-btn-primary:hover:not(:disabled) { background: var(--ec-primary-hover, #43454a); }
 .ec-btn-ghost { background: transparent; border-color: var(--dsw-alias-border-l2); color: var(--dsw-alias-label-primary); }
 .ec-btn-ghost:hover:not(:disabled) { background: var(--dsw-alias-bg-layer-2); }
 .ec-btn-sm { padding: 5px 10px; font-size: 12px; }
@@ -1289,9 +1290,52 @@ window.__ModuleLoader__.load({
 .ec-pop .ec-acts { margin-top: 10px; }
 .ec-pop-acts { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 8px; margin-top: 14px; }
 .ec-pop-acts > .ec-btn { flex: none; white-space: nowrap; margin-left: 0; }
+/* Keep the shared primary focus ring after page-specific focus rules. */
+.ec-btn.ec-btn-primary:focus-visible { outline: 2px solid var(--dsw-alias-label-primary, #0f1115); outline-offset: 3px; }
 `
     function Style() {
-      return h('style', { dangerouslySetInnerHTML: { __html: CSS } })
+      const element = useRef(null)
+      useEffect(() => {
+        const scope = element.current?.parentElement
+        if (!scope) return
+        // CSS var fallbacks are independent: a missing foreground could otherwise
+        // leave a theme fill paired with unrelated fallback text. Select all three
+        // semantic tokens together and keep their CSS references live.
+        const tokens = [
+          ['--ec-primary-fill', '--dsw-alias-button-primary-fill', '#0f1115'],
+          ['--ec-primary-hover', '--dsw-alias-button-primary-hover', '#43454a'],
+          ['--ec-primary-foreground', '--dsw-alias-label-primary-foreground', '#ffffff']
+        ]
+        const sync = () => {
+          const computed = window.getComputedStyle(scope)
+          const complete = tokens.every(([, name]) => computed.getPropertyValue(name).trim())
+          for (const [local, name, fallback] of tokens) {
+            const value = complete ? `var(${name})` : fallback
+            if (scope.style.getPropertyValue(local) !== value) scope.style.setProperty(local, value)
+          }
+        }
+        sync()
+        const ancestors = new Set()
+        for (let node = scope; node; node = node.parentElement) ancestors.add(node)
+        const sheetSelector = 'style:not([data-ec-style]),link[rel~="stylesheet"]'
+        const isSheet = node => node?.nodeType === 1 && node.matches(sheetSelector)
+        const hasSheet = node => isSheet(node) || (node?.nodeType === 1 && node.querySelector(sheetSelector))
+        const refresh = () => { sync(); observer.takeRecords() } // discard our own local-token writes
+        const observer = new window.MutationObserver(records => {
+          // Theme changes arrive on ancestors or external stylesheets. Ignore
+          // answer text, lesson DOM and our own style nodes; each mutation batch
+          // needs at most one computed-style read, including across busy renders.
+          if (records.some(record => record.type === 'attributes'
+            ? ancestors.has(record.target) || isSheet(record.target)
+            : isSheet(record.target) || isSheet(record.target.parentElement)
+              || [...record.addedNodes, ...record.removedNodes].some(hasSheet))) refresh()
+        })
+        observer.observe(document.documentElement, { subtree: true, attributes: true, attributeFilter: ['class', 'style', 'data-ds-dark-theme', 'href', 'media', 'disabled', 'rel'], childList: true, characterData: true })
+        const loaded = event => { if (isSheet(event.target)) refresh() }
+        document.addEventListener('load', loaded, true)
+        return () => { observer.disconnect(); document.removeEventListener('load', loaded, true) }
+      }, [])
+      return h('style', { ref: element, 'data-ec-style': true, dangerouslySetInnerHTML: { __html: CSS } })
     }
 
     // ------------------------------------------------------------ primitives
