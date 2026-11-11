@@ -406,6 +406,12 @@ function latestPoint(level) {
   return level.points[level.points.length - 1]
 }
 
+/** Preserve saved drift facts, but only a fresh-anchor result has a current note. */
+function currentDrift(drift, point) {
+  return { ...(drift ?? { baseline: null, streak: 0, note: null }),
+    note: Number.isFinite(point?.anchorAccuracy) ? drift?.note ?? null : null }
+}
+
 function weeklyView(syllabus, progress, todayText) {
   const weekStart = addDays(todayText, -((new Date(`${todayText}T00:00:00`).getDay() + 6) % 7))
   const weekly = syllabus.weekly ?? { weekStart: null, goals: [] }
@@ -778,7 +784,7 @@ const handlers = {
       level: {
         latest: latestPoint(level),
         points: level.points ?? [],
-        drift: level.drift ?? { baseline: null, streak: 0, note: null }
+        drift: currentDrift(level.drift, latestPoint(level))
       },
       syllabus: {
         phases: syllabus.phases ?? [],
@@ -904,13 +910,9 @@ const handlers = {
 
     const anchors = await loadAnchors(ctx)
     const retired = new Set(anchors.retired ?? [])
-    const available = anchors.items.filter((item) => !retired.has(item.id))
-    const level = await load(ctx, 'level')
-    const offset = (level.points?.length ?? 0) * ANCHORS_PER_ASSESSMENT
-    const chosen = []
-    for (let index = 0; index < ANCHORS_PER_ASSESSMENT && available.length; index += 1) {
-      chosen.push(available[(offset + index) % available.length])
-    }
+    const answered = await answeredAnchorIds(ctx)
+    const available = anchors.items.filter((item) => !retired.has(item.id) && !answered.has(item.id))
+    const chosen = available.slice(0, ANCHORS_PER_ASSESSMENT)
 
     const length = kind === 'short' ? SHORT_ASSESSMENT_LENGTH : ASSESSMENT_LENGTH
     const id = `${today(ctx)}-${kind}-${ctx.now.getTime().toString(36)}-${randomUUID()}`
@@ -999,6 +1001,7 @@ const handlers = {
       fail('invalid_field', 'choice 必须是 0 到 3 的整数', 'choice')
     }
     const correct = responseType === 'choice' && choice === item.answerIndex
+    const contaminated = item.anchor ? (await answeredAnchorIds(ctx)).has(item.id) : false
     attempt.answers.push({
       itemId,
       responseId,
@@ -1008,14 +1011,12 @@ const handlers = {
       at: ctx.now.toISOString(),
       difficulty: item.difficulty,
       skill: item.skill,
-      anchor: Boolean(item.anchor)
+      anchor: Boolean(item.anchor),
+      ...(item.anchor ? { contaminated } : {}),
+      scoringEvidence: !contaminated,
+      exclusionReason: contaminated ? 'repeated_anchor' : null
     })
-    attempt.tier = clamp(correct ? attempt.tier + 1 : attempt.tier - 1, 1, 6)
-
-    if (item.anchor) {
-      const log = await readJsonl(file(ctx, 'anchorLog'))
-      attempt.answers.at(-1).contaminated = log.some(entry => entry.anchorId === item.id)
-    }
+    if (!contaminated) attempt.tier = clamp(correct ? attempt.tier + 1 : attempt.tier - 1, 1, 6)
 
     const next = pickNext(attempt)
     const expected = attempt.kind === 'short' ? SHORT_ASSESSMENT_LENGTH : ASSESSMENT_LENGTH
@@ -1465,7 +1466,7 @@ const handlers = {
         accuracy: point.accuracy,
         kind: point.kind
       })),
-      drift: level.drift ?? { baseline: null, streak: 0, note: null },
+      drift: currentDrift(level.drift, latestPoint(level)),
       weekly: weeklyView(syllabus, progress, todayText)
     }
   },
@@ -1643,7 +1644,7 @@ function questionOf(attempt, itemId) {
 
 function publicAttempt(attempt) {
   const view = { attemptId: attempt.id, total: attempt.items, progress: attempt.answers.length }
-  if (attempt.status === 'done') return { ...view, done: true, result: attempt.result }
+  if (attempt.status === 'done') return { ...view, done: true, result: { ...attempt.result, drift: currentDrift(attempt.result.drift, attempt.result) } }
   return { ...view, question: publicQuestion(questionOf(attempt, attempt.current)) }
 }
 
@@ -1722,6 +1723,21 @@ async function attemptHistory(ctx) {
   }
 }
 
+/** Submitted responses consume first-response status; an unanswered snapshot does not. */
+async function answeredAnchorIds(ctx) {
+  const answered = new Set((await readJsonl(file(ctx, 'anchorLog'))).map(entry => entry.anchorId))
+  const entries = await listDir(file(ctx, 'assessments'))
+  for (const entry of entries) {
+    if (!entry.isFile() || !/^\d{4}-.*\.json$/.test(entry.name)) continue
+    const { value, warning } = await readJson(join(file(ctx, 'assessments'), entry.name), null)
+    if (warning) fail('assessment_recovery_failed', `恢复测评失败：${warning}；不能确认锚题作答记录，请检查存储后重试`, 'attemptId')
+    for (const answer of value?.answers ?? []) {
+      if (answer.anchor) answered.add(answer.itemId)
+    }
+  }
+  return answered
+}
+
 async function recordAnchorResponse(ctx, attempt, item) {
   const id = item.id
   const log = await readJsonl(join(ctx.root, FILES.anchorLog))
@@ -1760,12 +1776,13 @@ async function finishAttempt(ctx, attempt) {
   if (!['in_progress', 'finalizing'].includes(attempt.status)) fail('attempt_finished', '这次测评已终止，不能结算', 'attemptId')
   await projectAnchorResponses(ctx, attempt)
   if (!attempt.finalization) {
+    const evidence = attempt.answers.filter(answer => !(answer.anchor && answer.contaminated))
     const scored = scoreAssessment(
       [...attempt.pool, ...attempt.anchors],
-      attempt.answers
+      evidence
     )
-    // Preserve the existing scoring and drift rules; only their publication is
-    // journaled here. A retry must not score again against changed projections.
+    // Preserve the scoring formula while excluding remembered anchors. Journal
+    // the resulting evidence projection so recovery never recalculates it.
     const cleanAnchors = attempt.answers.filter((answer) => answer.anchor && !answer.contaminated)
     const anchorAccuracy = cleanAnchors.length
       ? cleanAnchors.filter((answer) => answer.correct).length / cleanAnchors.length
@@ -1780,7 +1797,7 @@ async function finishAttempt(ctx, attempt) {
       kind: attempt.kind,
       band: scored.band,
       estimate: scored.estimate,
-      accuracy: scored.accuracy,
+      accuracy: Number((attempt.answers.filter(answer => answer.correct).length / attempt.answers.length).toFixed(3)),
       counts: {
         correct: attempt.answers.filter(answer => answer.correct).length,
         incorrect: attempt.answers.filter(answer => !answer.correct && answer.responseType !== 'unable').length,
