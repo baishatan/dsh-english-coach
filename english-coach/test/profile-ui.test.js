@@ -173,16 +173,164 @@ test('保存中不能离开；校验拒绝保持表单和全部未提交兴趣�
   assert.equal(ui.field('感兴趣的主题').value, '天文学')
 })
 
-test('首次引导仍直接显示填写表单，不要求先点编辑', async (t) => {
+test('首次引导在原页填写可选多行具体目标，保存后个人页和重入编辑使用同一值', async (t) => {
   const api = fixture()
   api.state.onboarded = false
   api.state.profile = null
+  const save = api.save
+  api.save = async payload => { const result = await save(payload); api.state.onboarded = true; return result }
   const ui = await mountClient({ request: api.request })
   t.after(() => ui.close())
-  assert.match(ui.text(), /先说三件事/)
-  assert.ok(ui.container.querySelector('input'))
+  const goal = ui.field('为什么学英语')
+  assert.equal(goal.tagName, 'TEXTAREA')
+  assert.equal(goal.required, false)
+  assert.equal(goal.hasAttribute('maxlength'), false)
+  assert.equal(goal.value, '')
+  assert.match(goal.closest('.ec-field').textContent, /可选/)
+  assert.doesNotMatch(ui.text(), /先说三件事/)
   assert.equal(ui.buttons('编辑个人目标').length, 0)
+  assert.equal(ui.buttons('下一步').length, 0)
   assert.equal(ui.buttons('保存').length, 1)
+  const goalNote = '听懂跨国技术评审\n清楚说明设计取舍'
+  await ui.input('为什么学英语', goalNote)
+  await ui.click('保存')
+  assert.equal(api.saves[0].goalNote, goalNote)
+  await ui.click('个人')
+  assert.ok(ui.button('编辑个人目标').closest('section').textContent.includes(goalNote))
+  await ui.click('编辑个人目标')
+  assert.equal(ui.field('为什么学英语').value, goalNote)
+})
+
+test('首次引导的原有字段和具体目标都有可关联标签与可用焦点', async (t) => {
+  const api = fixture()
+  api.state.onboarded = false
+  api.state.profile = null
+  const request = api.request
+  api.request = (command, payload) => command === 'profile.infer'
+    ? { ok: true, data: { workContext: '合成软件工作场景' } } : request(command, payload)
+  const ui = await mountClient({ request: api.request })
+  t.after(() => ui.close())
+  const purpose = ui.field('想用英语做什么')
+  assert.equal(ui.window.document.activeElement, purpose)
+  for (const label of ['想用英语做什么', '我们猜你在做', '每天能挤出多久', '想练到哪一档', '为什么学英语', '感兴趣的主题']) {
+    const field = ui.field(label)
+    assert.ok([...field.labels].some(node => node.textContent === label && node.control === field), `${label} needs an associated visible label`)
+    assert.equal(field.tabIndex, 0)
+    field.focus()
+    assert.equal(ui.window.document.activeElement, field)
+  }
+  assert.equal(ui.field('我们猜你在做').value, '合成软件工作场景')
+  assert.equal(ui.field('为什么学英语').value, '', 'work context must not become a specific goal')
+  await ui.input('想用英语做什么', 'study')
+  await ui.input('我们猜你在做', '合成研究上下文')
+  await ui.input('每天能挤出多久', '45')
+  await ui.input('想练到哪一档', '高级')
+  await ui.input('感兴趣的主题', '能源，天文学')
+  await ui.click('保存')
+  assert.deepEqual(api.saves[0], {
+    goal: 'study', goalNote: '', minutesPerDay: 45, targetBand: '高级',
+    workContext: '合成研究上下文', interests: ['能源', '天文学']
+  })
+})
+
+test('首次引导保存延迟时防止重复提交，失败保留长草稿和焦点并允许重试', async (t) => {
+  const api = fixture()
+  api.state.onboarded = false
+  api.state.profile = null
+  const pending = deferred()
+  api.save = () => pending.promise
+  const ui = await mountClient({ request: api.request })
+  t.after(() => ui.close())
+  const goalNote = `第一行：${'在跨国研究讨论中理解并解释设计取舍。'.repeat(250)}\n第二行：保留完整文本。`
+  await ui.input('为什么学英语', goalNote)
+  await ui.input('每天能挤出多久', '45')
+  await ui.input('感兴趣的主题', '能源，天文学')
+  const save = ui.button('保存')
+  await ui.flush(() => { save.click(); save.click() })
+  assert.equal(api.saves.length, 1, 'one pending save must not submit the same draft twice')
+  assert.equal(ui.button('保存中…').disabled, true)
+  for (const field of ui.container.querySelectorAll('input,select,textarea')) assert.equal(field.matches(':disabled'), true)
+  await ui.poll()
+  assert.equal(ui.field('为什么学英语').value, goalNote)
+  assert.equal(ui.buttons('个人').length, 0)
+  await ui.flush(() => pending.resolve({ ok: false, message: '合成网络故障，请重试' }))
+  assert.match(ui.text(), /合成网络故障，请重试/)
+  assert.equal(ui.field('为什么学英语').value, goalNote)
+  assert.equal(ui.field('每天能挤出多久').value, '45')
+  assert.equal(ui.field('感兴趣的主题').value, '能源，天文学')
+  assert.equal(ui.window.document.activeElement, ui.field('为什么学英语'))
+  assert.equal(ui.button('保存').disabled, false)
+  const confirmedGoal = `${goalNote}\n重试前的新输入。`
+  await ui.input('为什么学英语', confirmedGoal)
+  api.save = async payload => {
+    api.state.profile = { ...payload, updatedAt: '2026-10-22T01:00:00Z' }
+    api.state.onboarded = true
+    return { ok: true, data: { profile: api.state.profile } }
+  }
+  await ui.click('保存')
+  assert.equal(api.saves.length, 2)
+  assert.equal(api.saves[1].goalNote, confirmedGoal)
+  await ui.click('个人')
+  await ui.click('查看完整目标')
+  assert.ok(ui.button('编辑个人目标').closest('section').textContent.includes(confirmedGoal))
+  await ui.click('编辑个人目标')
+  assert.equal(ui.field('为什么学英语').value, confirmedGoal)
+})
+
+test('首次引导保存成功采用确认值，迟到的旧状态不能重开引导或覆盖后续目标草稿', async (t) => {
+  const api = fixture()
+  api.state.onboarded = false
+  api.state.profile = null
+  const ui = await mountClient({ request: (command, payload) => api.request(command, payload) })
+  t.after(() => ui.close())
+  const stale = structuredClone(api.state)
+  const olderPoll = deferred(), afterSavePoll = deferred()
+  const request = api.request
+  let reads = 0
+  api.request = (command, payload) => command === 'state.get'
+    ? (++reads === 1 ? olderPoll.promise : afterSavePoll.promise) : request(command, payload)
+  await ui.input('为什么学英语', '已确认的引导目标\n完整保留')
+  await ui.poll()
+  await ui.click('保存')
+  assert.equal(api.saves.length, 1)
+  assert.equal(ui.buttons('个人').length, 1, 'the saved profile, not a delayed state read, confirms onboarding')
+  await ui.click('个人')
+  assert.match(ui.button('编辑个人目标').closest('section').textContent, /已确认的引导目标\n完整保留/)
+  await ui.click('编辑个人目标')
+  await ui.input('为什么学英语', '成功后正在编辑的新草稿')
+  await ui.flush(() => afterSavePoll.resolve({ ok: true, data: stale }))
+  await ui.flush(() => olderPoll.resolve({ ok: true, data: stale }))
+  assert.equal(ui.field('为什么学英语').value, '成功后正在编辑的新草稿')
+  assert.ok([...ui.container.querySelectorAll('h2')].some(node => node.textContent === '编辑个人目标'))
+  assert.equal(api.saves.length, 1)
+})
+
+test('320px窄面板夹具中可聚焦多行目标并在原页保存空值', async (t) => {
+  const api = fixture()
+  api.state.onboarded = false
+  api.state.profile = null
+  const ui = await mountClient({ request: api.request, setupWindow(window) {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 320 })
+  } })
+  t.after(() => ui.close())
+  ui.container.style.width = '320px'
+  const goal = ui.field('为什么学英语')
+  goal.focus()
+  assert.equal(ui.window.document.activeElement, goal)
+  assert.equal(goal.closest('[hidden]'), null)
+  await ui.input('为什么学英语', '第一行\n第二行')
+  await ui.key(goal, 'Escape')
+  assert.equal(goal.value, '第一行\n第二行')
+  await ui.input('为什么学英语', '')
+  const save = ui.button('保存')
+  save.focus()
+  assert.equal(ui.window.document.activeElement, save)
+  assert.equal(save.closest('[hidden]'), null)
+  assert.equal(goal.closest('.ec-card'), save.closest('.ec-card'))
+  await ui.click(save)
+  assert.equal(api.saves[0].goalNote, '')
+  await ui.click('个人')
+  assert.match(ui.button('编辑个人目标').closest('section').textContent, /还没有填写具体目标/)
 })
 
 test('编辑兴趣支持回车添加和移除，保存只修改画像不重置进度展示', async (t) => {
