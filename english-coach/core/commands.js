@@ -937,13 +937,14 @@ const handlers = {
     }
 
     const length = kind === 'short' ? SHORT_ASSESSMENT_LENGTH : ASSESSMENT_LENGTH
-    const id = `${today(ctx)}-${kind}-${ctx.now.getTime().toString(36)}`
+    const id = `${today(ctx)}-${kind}-${ctx.now.getTime().toString(36)}-${randomUUID()}`
     const history = await attemptHistory(ctx)
     const pool = bank.items.map((item) => ({ ...item, anchor: false }))
     const anchorItems = chosen.map((item) => ({ ...item, anchor: true }))
 
     const attempt = {
       id,
+      lifecycleVersion: 1,
       kind,
       createdAt: ctx.now.toISOString(),
       status: 'in_progress',
@@ -972,16 +973,16 @@ const handlers = {
       .filter((entry) => entry.isFile() && /^\d{4}-/.test(entry.name) && entry.name.endsWith('.json'))
       .map((entry) => entry.name)
       .sort()
-    for (let index = ids.length - 1; index >= 0; index -= 1) {
-      const { value } = await readJson(join(ctx.root, FILES.assessments, ids[index]), null)
-      if (value?.status === 'in_progress') {
-        return {
-          attemptId: value.id,
-          total: value.items,
-          answered: value.answers.length,
-          question: publicQuestion(questionOf(value, value.current)),
-          progress: value.answers.length
-        }
+    const attempts = []
+    for (const id of ids) {
+      const { value } = await readJson(join(ctx.root, FILES.assessments, id), null)
+      if (value) attempts.push(value)
+    }
+    attempts.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || (b.rotation ?? 0) - (a.rotation ?? 0))
+    for (const attempt of attempts) {
+      if (attempt.status === 'in_progress' || (attempt.status === 'done' && attempt.completionPending)) {
+        await projectAnchorResponses(ctx, attempt)
+        return { ...publicAttempt(attempt), answered: attempt.answers.length }
       }
     }
     return null
@@ -990,9 +991,26 @@ const handlers = {
   async 'assessment.answer'(ctx, payload) {
     const attemptId = String(payload?.attemptId ?? '')
     const itemId = String(payload?.itemId ?? '')
-    const choice = Number(payload?.choice)
+    const responseType = payload?.responseType === undefined ? 'choice' : payload.responseType
+    if (!['choice', 'unable'].includes(responseType)) fail('invalid_field', 'responseType 必须是 choice 或 unable', 'responseType')
+    if (responseType === 'unable' && Object.hasOwn(payload, 'choice')) fail('invalid_field', '不会响应不能同时提供 choice', 'choice')
+    const choice = responseType === 'unable' ? null : payload?.choice
     const { value: attempt } = await readJson(assessmentFile(ctx, attemptId), null)
     if (!attempt) fail('attempt_not_found', `找不到测评 ${attemptId}`, 'attemptId')
+    if (responseType === 'choice' && (!Number.isInteger(choice) || choice < 0 || choice > 3)) {
+      fail('invalid_field', 'choice 必须是 0 到 3 的整数', 'choice')
+    }
+    // Items never repeat within an attempt, so this pair is also the response
+    // identity for older choice-only callers. Never infer identity from time.
+    const responseId = JSON.stringify([attempt.id, itemId])
+    await projectAnchorResponses(ctx, attempt)
+    const receipt = attempt.answers.find(answer => answer.itemId === itemId)
+    if (receipt) {
+      if ((receipt.responseType ?? 'choice') !== responseType || receipt.choice !== choice) {
+        fail('answer_identity_conflict', '这道题已保存了不同响应，不能改写；请恢复测评后继续', 'itemId')
+      }
+      return { ...publicAttempt(attempt), responseId: receipt.responseId ?? responseId, replayed: true }
+    }
     if (attempt.status !== 'in_progress') {
       fail('attempt_finished', '这次测评已经结束', 'attemptId')
     }
@@ -1001,12 +1019,14 @@ const handlers = {
     }
     const item = questionOf(attempt, itemId)
     if (!item) fail('item_not_found', `题目 ${itemId} 不存在`, 'itemId')
-    if (!Number.isInteger(choice) || choice < 0 || choice > 3) {
+    if (responseType === 'choice' && (!Number.isInteger(choice) || choice < 0 || choice > 3)) {
       fail('invalid_field', 'choice 必须是 0 到 3 的整数', 'choice')
     }
-    const correct = choice === item.answerIndex
+    const correct = responseType === 'choice' && choice === item.answerIndex
     attempt.answers.push({
       itemId,
+      responseId,
+      responseType,
       choice,
       correct,
       at: ctx.now.toISOString(),
@@ -1016,30 +1036,43 @@ const handlers = {
     })
     attempt.tier = clamp(correct ? attempt.tier + 1 : attempt.tier - 1, 1, 6)
 
-    if (item.anchor) await recordAnchorResponse(ctx, attempt, item)
+    if (item.anchor) {
+      const log = await readJsonl(file(ctx, 'anchorLog'))
+      attempt.answers.at(-1).contaminated = log.some(entry => entry.anchorId === item.id)
+    }
 
     const next = pickNext(attempt)
-    if (!next) return await finishAttempt(ctx, attempt)
-    attempt.current = next.id
-    attempt.order.push(next.id)
-    await writeJson(assessmentFile(ctx, attemptId), attempt)
-    return {
-      attemptId: attempt.id,
-      correct,
-      answerIndex: item.answerIndex,
-      explanation: item.explanation,
-      progress: attempt.answers.length,
-      total: attempt.items,
-      question: publicQuestion(next)
+    const expected = attempt.kind === 'short' ? SHORT_ASSESSMENT_LENGTH : ASSESSMENT_LENGTH
+    if (!next && attempt.answers.length < expected) {
+      fail('assessment_questions_unavailable', '测评题目不足，无法继续；请重新准备题库。当前题与进度未改动', 'items')
     }
+    attempt.current = next?.id ?? null
+    if (next) attempt.order.push(next.id)
+    // The attempt is the response authority. No anchor exposure or completion
+    // projection may get ahead of this atomic response commit.
+    await writeJson(assessmentFile(ctx, attemptId), attempt)
+    if (item.anchor) await recordAnchorResponse(ctx, attempt, item)
+    if (!next) return { ...await finishAttempt(ctx, attempt), responseId, replayed: false }
+    return { ...publicAttempt(attempt), responseId, replayed: false }
   },
 
   async 'assessment.finish'(ctx, payload) {
     const attemptId = String(payload?.attemptId ?? '')
     const { value: attempt } = await readJson(assessmentFile(ctx, attemptId), null)
     if (!attempt) fail('attempt_not_found', `找不到测评 ${attemptId}`, 'attemptId')
-    if (attempt.status === 'done') return attempt.result
     return await finishAttempt(ctx, attempt)
+  },
+
+  async 'assessment.acknowledge'(ctx, payload) {
+    const attemptId = String(payload?.attemptId ?? '')
+    const { value: attempt } = await readJson(assessmentFile(ctx, attemptId), null)
+    if (!attempt) fail('attempt_not_found', `找不到测评 ${attemptId}`, 'attemptId')
+    if (attempt.status !== 'done') fail('assessment_incomplete', '测评尚未完成，请继续作答', 'attemptId')
+    if (attempt.completionPending) {
+      attempt.completionPending = false
+      await writeJson(assessmentFile(ctx, attemptId), attempt)
+    }
+    return { attemptId, acknowledged: true }
   },
 
   async 'assessment.abandon'(ctx, payload) {
@@ -1522,6 +1555,12 @@ function questionOf(attempt, itemId) {
   )
 }
 
+function publicAttempt(attempt) {
+  const view = { attemptId: attempt.id, total: attempt.items, progress: attempt.answers.length }
+  if (attempt.status === 'done') return { ...view, done: true, result: attempt.result }
+  return { ...view, question: publicQuestion(questionOf(attempt, attempt.current)) }
+}
+
 function publicQuestion(item) {
   if (!item) return null
   return {
@@ -1603,59 +1642,111 @@ async function recordAnchorResponse(ctx, attempt, item) {
   if (log.some((entry) => entry.attemptId === attempt.id && entry.anchorId === id)) return
   const answer = attempt.answers.find((candidate) => candidate.itemId === id)
   if (!answer) return
-  const contaminated = log.some((entry) => entry.anchorId === id)
+  const contaminated = answer.contaminated ?? log.some((entry) => entry.anchorId === id)
   answer.contaminated = contaminated
   await appendJsonl(join(ctx.root, FILES.anchorLog), {
     anchorId: id,
     attemptId: attempt.id,
-    at: ctx.now.toISOString(),
+    at: answer.at,
     correct: answer.correct,
     contaminated
   })
 }
 
-async function finishAttempt(ctx, attempt) {
-  const scored = scoreAssessment(
-    [...attempt.pool, ...attempt.anchors],
-    attempt.answers
-  )
-  // Only a first exposure is an honest reading of the item's difficulty: once
-  // the learner has seen an anchor, answering it again measures memory.
-  const cleanAnchors = attempt.answers.filter((answer) => answer.anchor && !answer.contaminated)
-  const anchorAccuracy = cleanAnchors.length
-    ? cleanAnchors.filter((answer) => answer.correct).length / cleanAnchors.length
-    : null
-
-  const level = await load(ctx, 'level')
-  const drift = anchorAccuracy === null ? level.drift : nextDrift(level.drift, anchorAccuracy)
-  const point = {
-    id: `level-${ctx.now.getTime().toString(36)}`,
-    at: ctx.now.toISOString(),
-    kind: attempt.kind,
-    band: scored.band,
-    estimate: scored.estimate,
-    accuracy: scored.accuracy,
-    weaknesses: scored.weaknesses,
-    reference: scored.reference,
-    anchorAccuracy: anchorAccuracy === null ? null : Number(anchorAccuracy.toFixed(2)),
-    driftStreak: drift.streak
+async function projectAnchorResponses(ctx, attempt) {
+  for (const answer of attempt.answers.filter(answer => answer.anchor)) {
+    await recordAnchorResponse(ctx, attempt, { id: answer.itemId })
   }
-  level.points = [...(level.points ?? []), point].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
-  level.drift = drift
-  await save(ctx, 'level', level)
+}
 
-  // The first result writes the route. Later results leave it alone: a route
-  // that rewrites itself after every test is not a route.
-  const syllabus = await load(ctx, 'syllabus')
-  if (!(syllabus.phases ?? []).length) await regenerateSyllabus(ctx)
+async function loadCompletionProjection(ctx, key) {
+  const { value, warning } = await readJson(file(ctx, key), DEFAULTS[key])
+  if (warning) fail('assessment_recovery_failed', `恢复测评失败：${warning}；请检查存储后重试，不能回退较旧结果`, 'attemptId')
+  return value
+}
 
+async function finishAttempt(ctx, attempt) {
+  const expected = attempt.kind === 'short' ? SHORT_ASSESSMENT_LENGTH : ASSESSMENT_LENGTH
+  if (attempt.answers.length !== expected || new Set(attempt.answers.map(answer => answer.itemId)).size !== expected) {
+    fail('assessment_incomplete', `本次测评需要 ${expected} 条响应，目前只有 ${attempt.answers.length} 条；请继续作答`, 'attemptId')
+  }
+  if (attempt.status === 'done') return publicAttempt(attempt)
+  if (!['in_progress', 'finalizing'].includes(attempt.status)) fail('attempt_finished', '这次测评已终止，不能结算', 'attemptId')
+  await projectAnchorResponses(ctx, attempt)
+  if (!attempt.finalization) {
+    const scored = scoreAssessment(
+      [...attempt.pool, ...attempt.anchors],
+      attempt.answers
+    )
+    // Preserve the existing scoring and drift rules; only their publication is
+    // journaled here. A retry must not score again against changed projections.
+    const cleanAnchors = attempt.answers.filter((answer) => answer.anchor && !answer.contaminated)
+    const anchorAccuracy = cleanAnchors.length
+      ? cleanAnchors.filter((answer) => answer.correct).length / cleanAnchors.length
+      : null
+    const level = await loadCompletionProjection(ctx, 'level')
+    const drift = anchorAccuracy === null ? level.drift : nextDrift(level.drift, anchorAccuracy)
+    const at = attempt.answers.at(-1).at
+    const point = {
+      id: `level-${attempt.id}`,
+      attemptId: attempt.id,
+      at,
+      kind: attempt.kind,
+      band: scored.band,
+      estimate: scored.estimate,
+      accuracy: scored.accuracy,
+      counts: {
+        correct: attempt.answers.filter(answer => answer.correct).length,
+        incorrect: attempt.answers.filter(answer => !answer.correct && answer.responseType !== 'unable').length,
+        unable: attempt.answers.filter(answer => answer.responseType === 'unable').length
+      },
+      weaknesses: scored.weaknesses,
+      reference: scored.reference,
+      anchorAccuracy: anchorAccuracy === null ? null : Number(anchorAccuracy.toFixed(2)),
+      driftStreak: drift.streak
+    }
+    const previous = await loadCompletionProjection(ctx, 'syllabus')
+    const profile = await load(ctx, 'profile')
+    const syllabus = !(previous.phases ?? []).length ? {
+      ...buildSyllabus({ estimate: point.estimate, targetBand: profile.profile?.targetBand, todayText: dateOf(new Date(at)), previous }),
+      regeneratedAt: at
+    } : null
+    // Durable intent precedes every derived write. The response and this exact
+    // point/syllabus can be replayed after any later file replacement fails.
+    attempt.status = 'finalizing'
+    attempt.finalization = { version: 1, point, drift, syllabus }
+    await writeJson(assessmentFile(ctx, attempt.id), attempt)
+  }
+  const { point, drift, syllabus } = attempt.finalization
+  const level = await loadCompletionProjection(ctx, 'level')
+  if (!(level.points ?? []).some(entry => entry.id === point.id || entry.attemptId === attempt.id)) {
+    level.points = [...(level.points ?? []), point].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
+    level.drift = drift
+    await save(ctx, 'level', level)
+  }
+  if (syllabus) {
+    const current = await loadCompletionProjection(ctx, 'syllabus')
+    if (JSON.stringify(current) !== JSON.stringify(syllabus)) await save(ctx, 'syllabus', syllabus)
+  }
   attempt.status = 'done'
-  attempt.updatedAt = ctx.now.toISOString()
+  attempt.completionPending = true
+  attempt.updatedAt = point.at
   attempt.result = { ...point, drift }
   delete attempt.pool
   delete attempt.anchors
   await writeJson(assessmentFile(ctx, attempt.id), attempt)
-  return { attemptId: attempt.id, done: true, result: attempt.result, progress: attempt.answers.length }
+  return publicAttempt(attempt)
+}
+
+async function recoverAssessmentFinalizations(ctx) {
+  const entries = await listDir(file(ctx, 'assessments'))
+  for (const entry of entries.filter(entry => entry.isFile() && /^\d{4}-.*\.json$/.test(entry.name)).sort((a, b) => a.name.localeCompare(b.name))) {
+    const { value, warning } = await readJson(join(file(ctx, 'assessments'), entry.name), null)
+    if (warning) fail('assessment_recovery_failed', `恢复测评失败：${warning}；请检查存储后重试`, 'attemptId')
+    if (value?.lifecycleVersion === 1 && (value.status === 'finalizing' || (value.status === 'in_progress' && value.answers.length === (value.kind === 'short' ? SHORT_ASSESSMENT_LENGTH : ASSESSMENT_LENGTH)))) {
+      await finishAttempt(ctx, value)
+    }
+  }
 }
 
 // ------------------------------------------------------------------ dispatch
@@ -1696,6 +1787,10 @@ async function executeCommand(root, command, payload = {}, options = {}) {
     return { ok: false, code: 'unknown_command', message: `不认识的命令 ${command}` }
   }
   try {
+    // No command may observe or change one projection of an unfinished result.
+    // Recovery runs in the same root lane as all reads and writers; failed I/O
+    // leaves the durable intent intact and the public command fails closed.
+    await recoverAssessmentFinalizations(ctx)
     const data = await handler(ctx, payload ?? {})
     return { ok: true, data, warnings }
   } catch (error) {
