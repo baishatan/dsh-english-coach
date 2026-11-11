@@ -28,8 +28,9 @@ import {
 import { advance, countMastered, dueItems, hasAnswered, isDue } from './review.js'
 import { enrol, termKey } from './vocabulary.js'
 import { getWordCatalog } from './catalog.js'
-import { scoreAssessment, nextDrift } from './scoring.js'
+import { scoreAssessment, nextDrift, SCORING_RULE } from './scoring.js'
 import { buildSyllabus, readSyllabus, publishSyllabus } from './syllabus.js'
+import { recoverAssessmentHistory } from './assessment-history.js'
 import {
   appendJsonl,
   listDir,
@@ -88,6 +89,7 @@ function assessmentFile(ctx, id) {
 
 async function load(ctx, key, fallback = DEFAULTS[key]) {
   if (key === 'syllabus') return readSyllabus(file(ctx, key), fallback)
+  if (key === 'level') return loadCompletionProjection(ctx, key)
   const { value, warning } = await readJson(file(ctx, key), fallback)
   if (warning) ctx.warn(warning)
   return value
@@ -405,6 +407,7 @@ function publicReviewItem(item) {
 }
 
 function latestPoint(level) {
+  if (Object.hasOwn(level, 'current')) return level.current
   if (!level.points || !level.points.length) return null
   return level.points[level.points.length - 1]
 }
@@ -767,7 +770,7 @@ const handlers = {
       streak: computeStreak(progress.completions ?? [], todayText),
       todayLesson: lesson,
       recentSources: recent,
-      needsAssessment: !(level.points ?? []).length,
+      needsAssessment: !latestPoint(level),
       automation: settings.automation
     }
   },
@@ -887,6 +890,7 @@ const handlers = {
     const attempt = {
       id,
       lifecycleVersion: 1,
+      scoringRule: SCORING_RULE,
       kind,
       createdAt: ctx.now.toISOString(),
       status: 'in_progress',
@@ -926,6 +930,9 @@ const handlers = {
         await projectAnchorResponses(ctx, attempt)
         return { ...publicAttempt(attempt), answered: attempt.answers.length }
       }
+    }
+    if (attempts.some(attempt => attempt.status === 'terminated' && attempt.historyConversion)) {
+      return { restartRequired: true, message: '上次未完成的测评已结束，请主动开始新的测评。' }
     }
     return null
   },
@@ -1689,7 +1696,9 @@ async function answeredAnchorIds(ctx) {
     if (!entry.isFile() || !/^\d{4}-.*\.json$/.test(entry.name)) continue
     const { value, warning } = await readJson(join(file(ctx, 'assessments'), entry.name), null)
     if (warning) fail('assessment_recovery_failed', `恢复测评失败：${warning}；不能确认锚题作答记录，请检查存储后重试`, 'attemptId')
-    for (const answer of value?.answers ?? []) {
+    if (value?.historyConversion === SCORING_RULE) {
+      for (const id of value.confirmedAnchorIds ?? []) answered.add(id)
+    } else for (const answer of value?.answers ?? []) {
       if (answer.anchor) answered.add(answer.itemId)
     }
   }
@@ -1804,6 +1813,8 @@ async function finishAttempt(ctx, attempt) {
   const level = await loadCompletionProjection(ctx, 'level')
   if (!(level.points ?? []).some(entry => entry.id === point.id || entry.attemptId === attempt.id)) {
     level.points = [...(level.points ?? []), point].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
+    level.current = point
+    level.scoringRule = SCORING_RULE
     level.drift = drift
     await save(ctx, 'level', level)
   }
@@ -1873,6 +1884,7 @@ async function executeCommand(root, command, payload = {}, options = {}) {
     // No command may observe or change one projection of an unfinished result.
     // Recovery runs in the same root lane as all reads and writers; failed I/O
     // leaves the durable intent intact and the public command fails closed.
+    await recoverAssessmentHistory(ctx, DEFAULTS)
     await recoverAssessmentFinalizations(ctx)
     const data = await handler(ctx, payload ?? {})
     return { ok: true, data, warnings }

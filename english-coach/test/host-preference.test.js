@@ -909,6 +909,7 @@ test('a malformed current band is not silently treated as an introductory or tar
   const path = join(h.root, 'level.json')
   const level = JSON.parse(await fs.readFile(path, 'utf8'))
   delete level.points.at(-1).finalBandIndex
+  delete level.current.finalBandIndex
   await fs.writeFile(path, JSON.stringify(level))
   const result = await h.tool({ action: 'lesson_context' })
   assert.equal(result.ok, false)
