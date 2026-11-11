@@ -103,7 +103,7 @@ function bank(count = 24) {
     items.push({
       id: `q-${index + 1}`,
       difficulty: (index % 6) + 1,
-      skill: ['grammar', 'vocab', 'reading'][index % 3],
+      skill: ['grammar', 'vocab'][index % 2],
       prompt: `Question ${index + 1}: pick one.`,
       choices: ['alpha', 'beta', 'gamma', 'delta'],
       answerIndex: index % 4,
