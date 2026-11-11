@@ -208,7 +208,7 @@ test('anchor exhaustion keeps saved drift facts unchanged without presenting an 
     const { root, run } = await fixture(t)
     const drift = { baseline: 1, streak: 3, note: 'Synthetic previous drift observation; not current.' }
     await fs.writeFile(join(root, 'level.json'), JSON.stringify({ version: 1, points: [{
-      id: 'synthetic-prior-level', at: '2026-11-10T09:00:00.000Z', band: '中级', estimate: 3, anchorAccuracy: 0
+      id: 'synthetic-prior-level', at: '2026-11-10T09:00:00.000Z', band: '中级', finalBandIndex: 3, scoringRule: 'six-band-grid-v1', anchorAccuracy: 0
     }], drift }))
     const before = await run('progress.get')
     assert.match(before.data.drift.note, /仅供安排学习/, 'a fresh observation may give only a scope-safe caution')
