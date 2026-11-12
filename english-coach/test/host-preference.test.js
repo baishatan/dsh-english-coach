@@ -941,7 +941,8 @@ for (const [kind, label, total] of [['short', '短测（10 题）', 10], ['full'
     assert.equal(ui.button('生成今天').disabled, false)
     assert.equal(calls.some(call => call.command === 'assessment.start'), false)
 
-    await ui.click('测评'); await settle()
+    await ui.click('个人')
+    await ui.click(ui.buttons('开始测评').length ? '开始测评' : '重新测评'); await settle()
     await ui.click('生成测评题库'); await settle()
     assert.match(h.records.at(-1).prompt, /至少 24.*普通题/)
     const bank = assessmentBank(`integrated-${kind}`)
@@ -961,7 +962,8 @@ for (const [kind, label, total] of [['short', '短测（10 题）', 10], ['full'
     await ui.click('稍后继续'); await settle()
     await ui.close()
     ;({ ui, calls, settle } = await clientThroughHost(t, h))
-    await ui.click('测评'); await settle()
+    await ui.click('个人')
+    await ui.click(ui.buttons('开始测评').length ? '开始测评' : '重新测评'); await settle()
     assert.ok(ui.text().includes(paused.question.prompt))
     assert.match(ui.text(), new RegExp(`第 3 / ${total} 题`))
     for (let index = 2; index < total; index++) { await ui.click('不会，继续'); await settle() }

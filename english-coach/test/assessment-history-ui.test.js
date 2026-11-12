@@ -35,7 +35,8 @@ async function fixture(t, status = 'in_progress', prepare = async () => {}) {
 
 test('the real Client explains that the previous incomplete round ended and waits for an explicit new start', async t => {
   const { ui, calls, settle } = await fixture(t)
-  await ui.click('测评'); await settle()
+  await ui.click('个人')
+  await ui.click(ui.buttons('开始测评').length ? '开始测评' : '重新测评'); await settle()
   assert.match(ui.text(), /上次未完成.*已结束.*开始新.*测评/)
   assert.equal(ui.container.querySelectorAll('.ec-choice').length, 0)
   assert.equal(calls.some(call => call.command === 'assessment.start'), false)

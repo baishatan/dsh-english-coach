@@ -41,7 +41,8 @@ async function fixture(t, remaining) {
 }
 
 async function answerVisibleAssessment(ui, kind) {
-  await ui.click('测评'); await ui.settle()
+  await ui.click('个人')
+  await ui.click(ui.buttons('开始测评').length ? '开始测评' : '重新测评'); await ui.settle()
   await ui.click(kind === 'short' ? '短测（10 题）' : '开始测评（20 题）'); await ui.settle()
   const total = kind === 'short' ? 10 : 20
   for (let index = 1; index <= total; index++) {

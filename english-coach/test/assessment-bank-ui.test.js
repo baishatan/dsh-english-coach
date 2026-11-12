@@ -33,7 +33,8 @@ async function openAssessment(t) {
   } })
   const settle = () => ui.flush(drain)
   await settle()
-  await ui.click('测评')
+  await ui.click('个人')
+  await ui.click(ui.buttons('开始测评').length ? '开始测评' : '重新测评')
   await settle()
   return { root, run, ui, requests, settle }
 }

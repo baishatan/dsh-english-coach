@@ -86,7 +86,8 @@ test('real Client first, same-band, upward and downward reassessments keep route
   const keys = new Map([...bank.items, ...ANCHOR_POOL].map(item => [item.id, item.answerIndex]))
   const assess = async correct => {
     const ui = api.ui
-    await ui.click('测评'); await api.settle()
+    await ui.click('个人')
+    await ui.click(ui.buttons('开始测评').length ? '开始测评' : '重新测评'); await api.settle()
     await ui.click('短测（10 题）'); await api.settle()
     for (let index = 0; index < 10; index++) {
       const current = (await api.run('assessment.resume')).data

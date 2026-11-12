@@ -900,9 +900,6 @@ window.__ModuleLoader__.load({
 .ec-status button { border: 0; background: none; padding: 0; font: inherit; font-size: 12px; cursor: pointer;
   color: var(--dsw-alias-label-secondary); text-decoration: underline; text-underline-offset: 3px; }
 .ec-status button:hover { color: var(--dsw-alias-brand-primary); }
-.ec-status .ec-top-btn { border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); padding: 5px 10px; border-radius: 7px; cursor: pointer; }
-.ec-status .ec-top-btn:hover { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-brand-primary); }
-.ec-status .ec-top-btn:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
 
 /* ---------------------------------------------------------------- structure */
 .ec-grid { display: grid; grid-template-columns: minmax(0, 1fr) 336px; gap: 16px; align-items: start; }
@@ -1204,12 +1201,18 @@ window.__ModuleLoader__.load({
 .ec-profile-read-error p { color: var(--dsw-alias-state-error-primary); margin: 0 0 8px; }
 @media (max-width: 600px) { .ec-profile-goal { padding: 20px; } .ec-profile-page-editing .ec-form { grid-template-columns: minmax(0, 1fr); gap: 16px; } }
 
-.ec-profile-comparison { display: flex; gap: 28px; flex-wrap: wrap; margin-top: 18px; padding-top: 16px;
+.ec-profile-actions { display: flex; align-items: center; gap: 16px; margin-left: auto; }
+.ec-profile-actions .ec-profile-link { font-size: 12.5px; min-height: 28px; padding: 2px 0; }
+.ec-profile-summary { margin-top: 10px; overflow-wrap: anywhere; }
+.ec-profile-meta { font-size: 12.5px; color: var(--dsw-alias-label-secondary); }
+.ec-profile-goal-note { font-size: 15.5px; line-height: 1.6; font-weight: 500; margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 65ch; }
+.ec-profile-goal-note[data-empty="true"] { color: var(--dsw-alias-label-secondary); font-weight: 400; }
+.ec-profile-interests { font-size: 12.5px; color: var(--dsw-alias-label-secondary); margin-top: 4px; }
+.ec-profile-comparison { display: flex; gap: 28px; flex-wrap: wrap; margin-top: 16px; padding-top: 14px;
   border-top: 1px solid var(--dsw-alias-border-l1); }
-.ec-profile-comparison > div { display: grid; gap: 3px; min-width: 100px; }
+.ec-profile-comparison > div { display: grid; gap: 2px; min-width: 100px; }
 .ec-profile-comparison span { color: var(--dsw-alias-label-secondary); font-size: 12px; }
-.ec-profile-comparison b { font-size: 21px; font-weight: 600; }
-.ec-profile-goal-note { font-size: 20px; line-height: 1.65; margin: 12px 0; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 65ch; }
+.ec-profile-comparison b { font-size: 16px; font-weight: 600; }
 .ec-profile-link { display: inline-block; border: 0; background: transparent; color: var(--dsw-alias-brand-primary); font: inherit;
   padding: 8px 0; min-height: 36px; cursor: pointer; text-align: left; }
 .ec-profile-link:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 3px; border-radius: 3px; }
@@ -1226,7 +1229,7 @@ window.__ModuleLoader__.load({
 .ec-profile-weaknesses { padding-left: 20px; font-size: 12.5px; color: var(--dsw-alias-label-secondary); }
 .ec-profile-diagnostics { font-size: 12px; color: var(--dsw-alias-label-secondary); }
 .ec-profile-diagnostics p { margin: 6px 0; }
-@media (max-width: 480px) { .ec-profile-metrics { gap: 12px; } .ec-profile-metrics dd { font-size: 21px; } .ec-profile-goal-note { font-size: 18px; } }
+@media (max-width: 480px) { .ec-profile-metrics { gap: 12px; } .ec-profile-metrics dd { font-size: 21px; } }
 
 .ec-curve-wrap { margin-top: 18px; min-width: 0; }
 .ec-curve-scroll { overflow-x: auto; max-width: 100%; }
@@ -3006,7 +3009,8 @@ window.__ModuleLoader__.load({
      * 编辑草稿与只读查看分离；编辑时隐藏但不卸载进度，保留展开状态和读取结果。
      * 画像仍由既有命令写入，局部导航与卸载保护沿用同一份草稿状态。
      */
-    function ProfileTab({ data, reload, leaveGuard, editing, setEditing, editButton }) {
+    function ProfileTab({ data, reload, leaveGuard, onAssess }) {
+      const [editing, setEditing] = useState(false)
       const [draft, setDraft] = useState(data.profile ?? null)
       const [dirty, setDirty] = useState(false)
       const [status, setStatus] = useState(null)
@@ -3014,6 +3018,7 @@ window.__ModuleLoader__.load({
       const [interestText, setInterestText] = useState('')
       const [fullGoal, setFullGoal] = useState(false)
       const savedProfile = useRef(data.profile)
+      const editButton = useRef(null)
       const firstField = useRef(null)
       const restoreFocus = useRef(false)
       const saving = useRef(false)
@@ -3140,13 +3145,16 @@ window.__ModuleLoader__.load({
             'div',
             { className: 'ec-profile-section-head' },
             h('h2', null, editing ? '编辑个人目标' : t('profileTitle')),
-            editing ? h('span', { className: 'ec-sub' }, '保存后用于安排后续学习，已有进度不变。') : null
+            editing ? h('span', { className: 'ec-sub' }, '保存后用于安排后续学习，已有进度不变。') : null,
+            h('div', { className: 'ec-profile-actions' },
+              !editing ? h('button', { type: 'button', className: 'ec-profile-link', ref: editButton, onClick: () => { setDraft(savedProfile.current); setStatus(null); setEditing(true) } }, '编辑个人目标') : null,
+              onAssess ? h('button', { type: 'button', className: 'ec-profile-link', onClick: onAssess }, data.level?.latest ? '重新测评' : '开始测评') : null)
           ),
           !editing ? h(React.Fragment, null,
-            h('div', { style: { marginTop: 12, overflowWrap: 'anywhere' } },
-              h('div', null, `${t(`goal${String(draft.goal ?? 'other')[0].toUpperCase()}${String(draft.goal ?? 'other').slice(1)}`)} · 每天 ${draft.minutesPerDay ?? 30} 分钟 · 目标 ${draft.targetBand || '暂未设定'}`),
-              h('div', { className: 'ec-profile-goal-note' }, draft.goalNote ? (fullGoal || draft.goalNote.length <= 80 ? draft.goalNote : `${draft.goalNote.slice(0, 80)}…`) : '还没有填写具体目标'),
-              h('div', { className: 'ec-muted' }, `兴趣：${(fullGoal ? interests : interests.slice(0, 3)).map(text => fullGoal || text.length <= 16 ? text : `${text.slice(0, 16)}…`).join('、') || '暂未填写'}${!fullGoal && interests.length > 3 ? ` 等 ${interests.length} 项` : ''}`),
+            h('div', { className: 'ec-profile-summary' },
+              h('div', { className: 'ec-profile-meta' }, `${t(`goal${String(draft.goal ?? 'other')[0].toUpperCase()}${String(draft.goal ?? 'other').slice(1)}`)} · 每天 ${draft.minutesPerDay ?? 30} 分钟 · 目标 ${draft.targetBand || '暂未设定'}`),
+              h('div', { className: 'ec-profile-goal-note', 'data-empty': draft.goalNote ? null : 'true' }, draft.goalNote ? (fullGoal || draft.goalNote.length <= 80 ? draft.goalNote : `${draft.goalNote.slice(0, 80)}…`) : '还没有填写具体目标'),
+              h('div', { className: 'ec-profile-interests' }, `兴趣：${(fullGoal ? interests : interests.slice(0, 3)).map(text => fullGoal || text.length <= 16 ? text : `${text.slice(0, 16)}…`).join('、') || '暂未填写'}${!fullGoal && interests.length > 3 ? ` 等 ${interests.length} 项` : ''}`),
               (draft.goalNote?.length > 80 || interests.length > 3 || interests.some(text => text.length > 16)) ? h('button', { type: 'button', className: 'ec-profile-link', 'aria-expanded': fullGoal, onClick: () => setFullGoal(value => !value) }, fullGoal ? '收起完整目标' : '查看完整目标') : null),
             h('div', { className: 'ec-profile-comparison', role: 'group', 'aria-label': '当前与目标' },
               h('div', null, h('span', null, '当前水平估计'), h('b', null, data.level?.latest?.band || '尚未测评')),
@@ -3547,15 +3555,12 @@ window.__ModuleLoader__.load({
       const [openThemed, setOpenThemed] = useState(0)
       const [openPersonal, setOpenPersonal] = useState(0)
       const leaveGuard = useRef(null)
-      const [profileEditing, setProfileEditing] = useState(false)
-      const profileEditButton = useRef(null)
       const navigate = useCallback((proceed) => {
         if (leaveGuard.current) return leaveGuard.current(proceed)
         proceed()
         return true
       }, [])
       const changeTab = (next) => { if (next !== tab) navigate(() => setTab(next)) }
-      useEffect(() => { if (tab !== 'profile') setProfileEditing(false) }, [tab])
       const openVocabulary = () => navigate(() => { setTab('words'); setOpenThemed(0); setOpenPersonal(value => value + 1) })
       const chooseList = () => navigate(() => { setTab('words'); setMode('normal'); setOpenPersonal(0); setOpenThemed(value => value + 1) })
       const startAssessment = () => navigate(() => setMode('assessment'))
@@ -3636,7 +3641,7 @@ window.__ModuleLoader__.load({
       } else if (tab === 'plan') {
         content = h(PlanTab, { data, reload })
       } else {
-        content = h(ProfileTab, { data, reload, leaveGuard, editing: profileEditing, setEditing: setProfileEditing, editButton: profileEditButton })
+        content = h(ProfileTab, { data, reload, leaveGuard, onAssess: startAssessment })
       }
 
       return h(
@@ -3666,12 +3671,7 @@ window.__ModuleLoader__.load({
               { className: 'ec-status' },
               h('span', null, `${t('dueShort')} `, h('b', null, String(due))),
               h('span', null, `${t('streakShort')} `, h('b', null, String(streak))),
-              band && tab !== 'profile' ? h('span', null, `${t('bandShort')} `, h('b', null, band)) : null,
-              tab === 'profile'
-                ? h(React.Fragment, null,
-                    profileEditing ? null : h('button', { type: 'button', className: 'ec-top-btn', ref: profileEditButton, onClick: () => { setProfileEditing(true) } }, '编辑个人目标'),
-                    h('button', { type: 'button', className: 'ec-top-btn', onClick: startAssessment }, data.level?.latest ? '重新测评' : '开始测评'))
-                : h('button', { type: 'button', onClick: startAssessment }, t('assessmentShort'))
+              band && tab !== 'profile' ? h('span', null, `${t('bandShort')} `, h('b', null, band)) : null
             )
           ),
           error ? h(Notice, { tone: 'error' }, `刷新失败：${error}。当前内容和未保存修改已保留。`) : null,

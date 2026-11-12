@@ -40,7 +40,8 @@ test('real Client summarizes correct, incorrect and unable responses with inclus
   const api = await fixture(t)
   const ui = await api.open()
   const keys = new Map([...api.bank.items, ...ANCHOR_POOL].map(item => [item.id, item.answerIndex]))
-  await ui.click('测评'); await ui.settle()
+  await ui.click('个人')
+  await ui.click(ui.buttons('开始测评').length ? '开始测评' : '重新测评'); await ui.settle()
   await ui.click('短测（10 题）'); await ui.settle()
   for (let index = 0; index < 10; index++) {
     if (index < 5) {
@@ -80,7 +81,8 @@ test('real Client presents a coverage-limited result as a usable band without ex
   const finished = await api.run('assessment.finish', { attemptId: attempt.id })
   assert.equal(finished.ok, true)
   const ui = await api.open()
-  await ui.click('测评'); await ui.settle()
+  await ui.click('个人')
+  await ui.click(ui.buttons('开始测评').length ? '开始测评' : '重新测评'); await ui.settle()
   assert.match(ui.text(), /你的档位.*入门/)
   assert.match(ui.text(), /覆盖较窄/)
   assert.match(ui.text(), /本轮答对率\s*100%/)

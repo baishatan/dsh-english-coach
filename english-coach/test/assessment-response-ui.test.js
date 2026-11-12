@@ -32,7 +32,8 @@ async function fixture(t) {
       do { await ui.flush(() => Promise.all(remaining())) } while (remaining().length)
     }
     await ui.settle()
-    await ui.click('测评'); await ui.settle()
+    await ui.click('个人')
+    await ui.click(ui.buttons('开始测评').length ? '开始测评' : '重新测评'); await ui.settle()
     return ui
   }
   api.commits = []

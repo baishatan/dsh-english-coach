@@ -2,10 +2,10 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mountClient } from './client-harness.js'
 
-function fixture({ latest = { band: '中级' } } = {}) {
+function fixture({ latest = { band: '中级' }, goalNote = '听懂技术评审' } = {}) {
   const state = {
     onboarded: true,
-    profile: { updatedAt: '2026-10-21T00:00:00Z', goal: 'work', minutesPerDay: 30, targetBand: '高级', goalNote: '听懂技术评审', interests: ['能源'] },
+    profile: { updatedAt: '2026-10-21T00:00:00Z', goal: 'work', minutesPerDay: 30, targetBand: '高级', goalNote, interests: ['能源'] },
     now: '2026-10-22T00:00:00Z',
     settings: { study: { wordsPerDay: 10 } },
     review: { dueCount: 4 },
@@ -33,38 +33,65 @@ async function mount(t, options) {
   return { ui, api }
 }
 
-const headerButton = (ui, label) => [...ui.container.querySelector('.ec-top').querySelectorAll('button')]
+const cardButton = (ui, label) => [...ui.container.querySelector('.ec-profile-goal').querySelectorAll('button')]
   .find(node => node.textContent.trim() === label)
+const headerHas = (ui, label) => [...ui.container.querySelector('.ec-top').querySelectorAll('button')]
+  .some(node => node.textContent.trim() === label)
 
-test('个人页把「编辑个人目标」和「重新测评」放在右上角，摘要卡内不再重复', async (t) => {
+test('今日、单词、计划页头部不再有测评入口', async (t) => {
+  const { ui } = await mount(t)
+  assert.equal(headerHas(ui, '测评'), false)
+  await ui.click('单词')
+  assert.equal(headerHas(ui, '测评'), false)
+  await ui.click('计划')
+  assert.equal(headerHas(ui, '测评'), false)
+  await ui.click('个人')
+  assert.equal(headerHas(ui, '测评'), false)
+  assert.equal(headerHas(ui, '编辑个人目标'), false)
+})
+
+test('个人目标卡右上角放编辑与重新测评，摘要卡外不再有重复入口', async (t) => {
   const { ui } = await mount(t)
   await ui.click('个人')
-  assert.ok(headerButton(ui, '编辑个人目标'), '编辑个人目标 lives in the page header')
-  assert.ok(headerButton(ui, '重新测评'), '重新测评 lives in the page header')
+  assert.ok(cardButton(ui, '编辑个人目标'), '编辑个人目标 sits in the goal card header')
+  assert.ok(cardButton(ui, '重新测评'), '重新测评 sits in the goal card header')
   assert.equal(ui.buttons('编辑个人目标').length, 1)
   assert.equal(ui.buttons('重新测评').length, 1)
-  const card = ui.container.querySelector('.ec-profile-goal')
-  assert.ok(card, 'goal summary card still renders')
-  assert.equal([...card.querySelectorAll('button')].filter(node => node.textContent.trim() === '编辑个人目标').length, 0)
-  assert.equal([...card.querySelectorAll('button')].filter(node => node.textContent.trim() === '重新测评').length, 0)
-  assert.equal([...ui.container.querySelector('.ec-top').querySelectorAll('button')].filter(node => node.textContent.trim() === '测评').length, 0, '测评 link is replaced by 重新测评 on this page')
+  const head = ui.container.querySelector('.ec-profile-goal .ec-profile-section-head')
+  assert.ok(head.contains(cardButton(ui, '编辑个人目标')))
+  assert.ok(head.contains(cardButton(ui, '重新测评')))
 })
 
-test('没有测评记录时右上角显示开始测评', async (t) => {
+test('没有测评记录时卡片右上角显示开始测评', async (t) => {
   const { ui } = await mount(t, { latest: null })
   await ui.click('个人')
-  assert.ok(headerButton(ui, '开始测评'))
-  assert.equal(headerButton(ui, '重新测评'), undefined)
+  assert.ok(cardButton(ui, '开始测评'))
+  assert.equal(cardButton(ui, '重新测评'), undefined)
 })
 
-test('右上角编辑入口打开表单，取消后焦点回到该按钮', async (t) => {
+test('卡片右上角编辑入口打开表单，取消后焦点回到该按钮', async (t) => {
   const { ui } = await mount(t)
   await ui.click('个人')
   await ui.click('编辑个人目标')
   assert.equal(ui.field('为什么学英语').value, '听懂技术评审')
   await ui.click('取消')
   assert.equal(ui.buttons('编辑个人目标').length, 1)
-  assert.equal(ui.window.document.activeElement, headerButton(ui, '编辑个人目标'))
+  assert.equal(ui.window.document.activeElement, cardButton(ui, '编辑个人目标'))
+})
+
+test('个人目标卡用统一字号层级：摘要行、目标陈述、兴趣各归其类', async (t) => {
+  const { ui } = await mount(t)
+  await ui.click('个人')
+  const card = ui.container.querySelector('.ec-profile-goal')
+  assert.ok(card.querySelector('.ec-profile-meta'), 'goal·minutes·target line has its own class')
+  assert.ok(card.querySelector('.ec-profile-goal-note'), 'goal statement has its own class')
+  assert.ok(card.querySelector('.ec-profile-interests'), 'interests line has its own class')
+  assert.equal(card.querySelector('.ec-profile-goal-note').getAttribute('data-empty'), null)
+  const empty = await mount(t, { goalNote: '' })
+  await empty.ui.click('个人')
+  const emptyNote = empty.ui.container.querySelector('.ec-profile-goal-note')
+  assert.equal(emptyNote.getAttribute('data-empty'), 'true')
+  assert.equal(emptyNote.textContent, '还没有填写具体目标')
 })
 
 test('个人页不再显示「用于安排学习目标和选择课程素材」提示', async (t) => {
@@ -76,7 +103,6 @@ test('个人页不再显示「用于安排学习目标和选择课程素材」�
 
 test('朗读设置不再显示主机处理与语速档位说明', async (t) => {
   const { ui } = await mount(t)
-  await ui.text()
   assert.doesNotMatch(ui.text(), /远程页面会把文本交给该主机/)
   assert.doesNotMatch(ui.text(), /语速为相对档位/)
 })
