@@ -52,8 +52,10 @@ test('学习安排和浏览共用已保存来源，取消不写入、失败留�
   const current = term(ui)
   const personalBefore = (await run('review.list')).data
   await ui.click('更换新词来源'); await settle()
+  assert.ok(ui.container.querySelector('.ec-modal-back').hasAttribute('data-window-drag-exclude'))
   await ui.input('当前词库偏好', 'ielts')
   await ui.click('取消')
+  assert.equal(ui.container.querySelector('.ec-modal-back'), null, 'Closing removes the modal window region')
   assert.equal((await run('settings.get')).data.study.activeWordListId, null)
   assert.equal(ui.window.document.activeElement, ui.button('更换新词来源'))
   await ui.click('更换新词来源'); await settle()

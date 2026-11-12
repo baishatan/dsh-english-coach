@@ -2481,7 +2481,7 @@ window.__ModuleLoader__.load({
     function PreferenceDialog({ title, busy, onClose, onSave, children, confirmLabel }) {
       const dialog = useRef(null)
       useEffect(() => { dialog.current?.querySelector('select,input,button')?.focus() }, [])
-      return h('div', { className: 'ec-modal-back', onClick: () => { if (!busy) onClose() } },
+      return h('div', { className: 'ec-modal-back', 'data-window-drag-exclude': '', onClick: () => { if (!busy) onClose() } },
         h('form', { className: 'ec-modal', role: 'dialog', 'aria-modal': true, 'aria-label': title, ref: dialog,
           onClick: event => event.stopPropagation(), onSubmit: event => { event.preventDefault(); if (!busy) void onSave() },
           onKeyDown: event => {
@@ -2729,7 +2729,7 @@ window.__ModuleLoader__.load({
           h(Btn, { small: true, disabled: loading || !result || result.page <= 1, onClick: () => change({ page: result.page - 1 }) }, '上一页'),
           h('span', { role: 'status' }, `第 ${result?.page ?? 1} / ${result?.pages ?? 1} 页`),
           h(Btn, { small: true, disabled: loading || !result || result.page >= result.pages, onClick: () => change({ page: result.page + 1 }) }, '下一页')),
-        open ? h('div', { className: 'ec-modal-back', onClick: close },
+        open ? h('div', { className: 'ec-modal-back', 'data-window-drag-exclude': '', onClick: close },
           h('div', { className: 'ec-modal', role: 'dialog', 'aria-modal': true, 'aria-label': `${open.term} 词汇详情`, onClick: e => e.stopPropagation(), onKeyDown: e => {
             if (e.key === 'Escape') { e.stopPropagation(); close() }
             if (e.key === 'Tab') { const nodes = [...e.currentTarget.querySelectorAll('button,input,select,a[href]')].filter(node => !node.disabled); const first = nodes[0], last = nodes.at(-1); if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus() } else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus() } }
@@ -4042,11 +4042,11 @@ window.__ModuleLoader__.load({
         h(Style),
         h(
           'div',
-          { className: 'ec-pill', ref: pillRef, style: pillStyle },
+          { className: 'ec-pill', 'data-window-drag-exclude': '', ref: pillRef, style: pillStyle },
           open
             ? h(
                 'div',
-                { className: 'ec-pop', 'data-down': openDown, style: popStyle },
+                { className: 'ec-pop', 'data-window-drag-exclude': '', 'data-down': openDown, style: popStyle },
                 h(
                   'div',
                   { className: 'ec-pop-head' },

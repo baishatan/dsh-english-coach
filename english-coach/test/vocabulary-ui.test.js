@@ -83,6 +83,7 @@ test('主题目录独立分页与可练状态，选库不入队且详情返回�
   const row = [...ui.container.querySelectorAll('.ec-lib-row')].find(node => node.textContent.startsWith('zoo'))
   await ui.click(row)
   assert.ok(ui.container.querySelector('[role=dialog]'))
+  assert.ok(ui.container.querySelector('.ec-modal-back').hasAttribute('data-window-drag-exclude'))
   assert.match(ui.text(), /原始标签：/)
   await ui.click('关闭词汇详情')
   assert.equal(ui.window.document.activeElement === row, true)

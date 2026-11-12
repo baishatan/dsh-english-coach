@@ -6,12 +6,12 @@ import { mountClient } from './client-harness.js'
 
 const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
 
-test('兼容声明只接受已核对的 DSH 0.2.2-rc.1，保留 Node 24 运行边界', () => {
-  assert.equal(manifest.engines.dsh, '0.2.2-rc.1')
+test('兼容声明只接受已核对的 DSH 0.2.2-rc.2，保留 Node 24 运行边界', () => {
+  assert.equal(manifest.engines.dsh, '0.2.2-rc.2')
   assert.equal(manifest.engines.node, '>=24.21.0 <25')
 })
 
-test('客户端等待 0.2.2-rc.1 槽位声明，并注册一致的面板、设置与悬浮入口', async () => {
+test('客户端等待 0.2.2-rc.2 槽位声明，并注册一致的面板、设置与悬浮入口', async () => {
   let plugin
   vm.runInNewContext(await readFile(new URL('../client.js', import.meta.url), 'utf8'), {
     window: { __ModuleLoader__: { load({ id, factory }) {
@@ -30,7 +30,7 @@ test('客户端等待 0.2.2-rc.1 槽位声明，并注册一致的面板、设�
   plugin.apply({
     slots: {
       inject(name, callback) {
-        assert.ok(kinds.has(name), `Unknown 0.2.2-rc.1 slot: ${name}`)
+        assert.ok(kinds.has(name), `Unknown 0.2.2-rc.2 slot: ${name}`)
         assert.ok(!waiting.has(name), `Duplicate slot wait: ${name}`)
         waiting.set(name, callback)
       },
@@ -66,12 +66,16 @@ test('悬浮入口通过 layout.selectPanel 打开已注册主页，并可转到
   const selected = []
   const ui = await mountClient({ request, slot: ['main', 'shell.overlay'], layout: {
     selectPanel(id) {
-      assert.equal(id, 'english-coach', '0.2.2-rc.1 requires an existing main-slot key')
+      assert.equal(id, 'english-coach', '0.2.2-rc.2 requires an existing main-slot key')
       selected.push(id)
     }
   } })
   t.after(() => ui.close())
+  assert.ok(ui.container.querySelector('.ec-pill').hasAttribute('data-window-drag-exclude'))
+  assert.ok(!ui.container.querySelector('.ec-overlay-layer').hasAttribute('data-window-drag-exclude'), 'The full-screen transparent layer must not block window dragging')
+  assert.equal(ui.container.querySelector('.ec-pop'), null, 'A closed popup must not contribute a window region')
   await ui.click(ui.container.querySelector('.ec-pill-btn'))
+  assert.ok(ui.container.querySelector('.ec-pop').hasAttribute('data-window-drag-exclude'), 'The visible scrolling popup owns its no-drag rectangle')
   await ui.click('打开主页')
   assert.deepEqual(selected, ['english-coach'])
   assert.equal(ui.container.querySelector('.ec-pop'), null)
@@ -94,7 +98,7 @@ test('宿主面板暂不可用时，悬浮入口仍能关闭而不产生学习�
   assert.ok(calls.every(command => ['state.get', 'study.batch'].includes(command)))
 })
 
-test('主面板使用 0.2.2-rc.1 macOS 顶部避让变量，不给设置和悬浮层重复加顶距', async t => {
+test('主面板使用 0.2.2-rc.2 macOS 顶部避让变量，不给设置和悬浮层重复加顶距', async t => {
   const ui = await mountClient({ request, setupWindow: window => {
     window.document.documentElement.dataset.platform = 'darwin'
     window.document.documentElement.style.setProperty('--dsh-frame-top-clearance', '48px')
