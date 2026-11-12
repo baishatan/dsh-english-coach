@@ -50,7 +50,7 @@ test('长目标和全部兴趣可以只读展开与收起，不必进入编辑',
   api.state.profile.goalNote = '在跨国设计评审中清楚讨论产品设计取舍。'.repeat(12)
   api.state.profile.interests = ['科技', '产品设计', '日常交流', '非常长的第四个研究兴趣主题']
   const { ui } = await openProfile(t, api)
-  const summary = ui.button('编辑个人目标').closest('section')
+  const summary = ui.container.querySelector('.ec-profile-goal')
   assert.ok(!summary.textContent.includes(api.state.profile.goalNote))
   await ui.click('查看完整目标')
   assert.ok(summary.textContent.includes(api.state.profile.goalNote))
@@ -205,7 +205,7 @@ test('编辑具体目标保留多行内容和明确编辑标题，Esc不丢弃�
   assert.equal(ui.field('为什么学英语').value, '第一行具体目标\n第二行讨论场景')
   await ui.click('保存')
   assert.equal(api.saves[0].goalNote, '第一行具体目标\n第二行讨论场景')
-  assert.match(ui.button('编辑个人目标').closest('section').textContent, /第一行具体目标\n第二行讨论场景/)
+  assert.match(ui.container.querySelector('.ec-profile-goal').textContent, /第一行具体目标\n第二行讨论场景/)
 })
 
 test('进度加载不以零伪装成功，单点与大量曲线记录可完整读取', async (t) => {

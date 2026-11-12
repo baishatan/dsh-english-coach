@@ -34,7 +34,6 @@ window.__ModuleLoader__.load({
       interests: '感兴趣的主题',
       interestsHint: '逗号分隔，例如：工程管理, 产品设计, 能源',
       profileTitle: '个人目标',
-      profileHint: '用于安排学习目标和选择课程素材，随时可以改。',
       profileInterestsHint: '输入主题后按回车或点「添加」，最多 12 个；最后点「保存」。',
       interestLimit: '最多填写 12 个兴趣主题，请先移除一些再添加。',
       goalNote: '为什么学英语',
@@ -901,6 +900,9 @@ window.__ModuleLoader__.load({
 .ec-status button { border: 0; background: none; padding: 0; font: inherit; font-size: 12px; cursor: pointer;
   color: var(--dsw-alias-label-secondary); text-decoration: underline; text-underline-offset: 3px; }
 .ec-status button:hover { color: var(--dsw-alias-brand-primary); }
+.ec-status .ec-top-btn { border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); padding: 5px 10px; border-radius: 7px; cursor: pointer; }
+.ec-status .ec-top-btn:hover { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-brand-primary); }
+.ec-status .ec-top-btn:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
 
 /* ---------------------------------------------------------------- structure */
 .ec-grid { display: grid; grid-template-columns: minmax(0, 1fr) 336px; gap: 16px; align-items: start; }
@@ -1752,8 +1754,7 @@ window.__ModuleLoader__.load({
           prefs.manualPlay ? h(Btn, { small: true, primary: true, onClick: () => { void audio.playLocal() } }, '播放生成音频') : null,
           prefs.localStatus && prefs.localStatus !== '试听结束' ? h(Btn, { small: true, onClick: () => audio.release(owner.current) }, '停止试听') : null,
           !kokoro ? h(Btn, { small: true, onClick: audio.refreshVoices }, '重试声源') : null),
-        h('div', { className: 'ec-muted', style: { marginTop: 10 } }, kokoro ? '本地音色在 DSH 主机处理文本；远程页面会把文本交给该主机。' : '系统音色来自当前网页设备。'),
-        h('div', { className: 'ec-sub' }, '语速为相对档位，不同音色的实际词速可能不同。'),
+        !kokoro ? h('div', { className: 'ec-muted', style: { marginTop: 10 } }, '系统音色来自当前网页设备。') : null,
         prefs.localStatus ? h('div', { role: 'status', 'aria-live': 'polite' }, prefs.localStatus) : null,
         prefs.notice ? h('div', { role: 'status', className: 'ec-muted' }, prefs.notice) : null,
         prefs.error ? h(Notice, { tone: 'error' }, prefs.error) : null,
@@ -3005,8 +3006,7 @@ window.__ModuleLoader__.load({
      * 编辑草稿与只读查看分离；编辑时隐藏但不卸载进度，保留展开状态和读取结果。
      * 画像仍由既有命令写入，局部导航与卸载保护沿用同一份草稿状态。
      */
-    function ProfileTab({ data, reload, leaveGuard, onAssess }) {
-      const [editing, setEditing] = useState(false)
+    function ProfileTab({ data, reload, leaveGuard, editing, setEditing, editButton }) {
       const [draft, setDraft] = useState(data.profile ?? null)
       const [dirty, setDirty] = useState(false)
       const [status, setStatus] = useState(null)
@@ -3014,7 +3014,6 @@ window.__ModuleLoader__.load({
       const [interestText, setInterestText] = useState('')
       const [fullGoal, setFullGoal] = useState(false)
       const savedProfile = useRef(data.profile)
-      const editButton = useRef(null)
       const firstField = useRef(null)
       const restoreFocus = useRef(false)
       const saving = useRef(false)
@@ -3141,7 +3140,7 @@ window.__ModuleLoader__.load({
             'div',
             { className: 'ec-profile-section-head' },
             h('h2', null, editing ? '编辑个人目标' : t('profileTitle')),
-            h('span', { className: 'ec-sub' }, editing ? '保存后用于安排后续学习，已有进度不变。' : t('profileHint'))
+            editing ? h('span', { className: 'ec-sub' }, '保存后用于安排后续学习，已有进度不变。') : null
           ),
           !editing ? h(React.Fragment, null,
             h('div', { style: { marginTop: 12, overflowWrap: 'anywhere' } },
@@ -3151,9 +3150,7 @@ window.__ModuleLoader__.load({
               (draft.goalNote?.length > 80 || interests.length > 3 || interests.some(text => text.length > 16)) ? h('button', { type: 'button', className: 'ec-profile-link', 'aria-expanded': fullGoal, onClick: () => setFullGoal(value => !value) }, fullGoal ? '收起完整目标' : '查看完整目标') : null),
             h('div', { className: 'ec-profile-comparison', role: 'group', 'aria-label': '当前与目标' },
               h('div', null, h('span', null, '当前水平估计'), h('b', null, data.level?.latest?.band || '尚未测评')),
-              h('div', null, h('span', null, '目标档位'), h('b', null, draft.targetBand || '暂未设定')),
-              onAssess ? h('button', { type: 'button', className: 'ec-profile-link', onClick: onAssess }, data.level?.latest ? '重新测评' : '开始测评') : null),
-            h('button', { type: 'button', className: 'ec-btn', ref: editButton, onClick: () => { setDraft(savedProfile.current); setStatus(null); setEditing(true) }, style: { marginTop: 12 } }, '编辑个人目标')) : h(
+              h('div', null, h('span', null, '目标档位'), h('b', null, draft.targetBand || '暂未设定')))) : h(
             'fieldset',
             { className: 'ec-form', disabled: busy, style: { border: 0, padding: 0, minWidth: 0 } },
             h(
@@ -3550,12 +3547,15 @@ window.__ModuleLoader__.load({
       const [openThemed, setOpenThemed] = useState(0)
       const [openPersonal, setOpenPersonal] = useState(0)
       const leaveGuard = useRef(null)
+      const [profileEditing, setProfileEditing] = useState(false)
+      const profileEditButton = useRef(null)
       const navigate = useCallback((proceed) => {
         if (leaveGuard.current) return leaveGuard.current(proceed)
         proceed()
         return true
       }, [])
       const changeTab = (next) => { if (next !== tab) navigate(() => setTab(next)) }
+      useEffect(() => { if (tab !== 'profile') setProfileEditing(false) }, [tab])
       const openVocabulary = () => navigate(() => { setTab('words'); setOpenThemed(0); setOpenPersonal(value => value + 1) })
       const chooseList = () => navigate(() => { setTab('words'); setMode('normal'); setOpenPersonal(0); setOpenThemed(value => value + 1) })
       const startAssessment = () => navigate(() => setMode('assessment'))
@@ -3636,7 +3636,7 @@ window.__ModuleLoader__.load({
       } else if (tab === 'plan') {
         content = h(PlanTab, { data, reload })
       } else {
-        content = h(ProfileTab, { data, reload, leaveGuard, onAssess: startAssessment })
+        content = h(ProfileTab, { data, reload, leaveGuard, editing: profileEditing, setEditing: setProfileEditing, editButton: profileEditButton })
       }
 
       return h(
@@ -3667,7 +3667,11 @@ window.__ModuleLoader__.load({
               h('span', null, `${t('dueShort')} `, h('b', null, String(due))),
               h('span', null, `${t('streakShort')} `, h('b', null, String(streak))),
               band && tab !== 'profile' ? h('span', null, `${t('bandShort')} `, h('b', null, band)) : null,
-              h('button', { type: 'button', onClick: startAssessment }, t('assessmentShort'))
+              tab === 'profile'
+                ? h(React.Fragment, null,
+                    profileEditing ? null : h('button', { type: 'button', className: 'ec-top-btn', ref: profileEditButton, onClick: () => { setProfileEditing(true) } }, '编辑个人目标'),
+                    h('button', { type: 'button', className: 'ec-top-btn', onClick: startAssessment }, data.level?.latest ? '重新测评' : '开始测评'))
+                : h('button', { type: 'button', onClick: startAssessment }, t('assessmentShort'))
             )
           ),
           error ? h(Notice, { tone: 'error' }, `刷新失败：${error}。当前内容和未保存修改已保留。`) : null,
