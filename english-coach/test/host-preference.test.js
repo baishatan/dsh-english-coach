@@ -8,6 +8,9 @@ import { apply } from '../index.js'
 import { execute } from '../core/index.js'
 import { getWordCatalog } from '../core/catalog.js'
 import { tempFixture, disposeFixture } from './temp-fixture.js'
+import { assessmentBank } from './assessment-bank-fixture.js'
+import { ANCHOR_POOL } from '../core/anchors.js'
+import { mountClient } from './client-harness.js'
 
 // External Host adapters only. Tests call the registered HTTP handler and public
 // tools; no prompt helper, private dispatch export, or learner-data injection.
@@ -153,6 +156,50 @@ function lesson(date) {
     ]
   }
 }
+
+test('assessment preparation and submission tool declare the same short-bank admission contract', async t => {
+  const h = await host(t)
+  const tool = h.tools.get('english_save_assessment')
+  const schema = tool.parameters.properties.items
+  assert.equal(schema.minItems, 24)
+  assert.deepEqual(schema.items.properties.skill.enum, ['grammar', 'vocab'])
+  assert.ok(schema.items.required.includes('skill'))
+  assert.equal(schema.items.properties.prompt.minLength, 1)
+  assert.equal(schema.items.properties.choices.items.minLength, 1)
+  assert.match(schema.items.properties.passage.description, /必须.*空|禁止/)
+  const generated = await h.request('generate.assessment')
+  assert.equal(generated.ok, true, JSON.stringify(generated))
+  const prompt = h.records.at(-1).prompt
+  for (const contract of [tool.description, prompt]) {
+    assert.match(contract, /至少 24/)
+    assert.match(contract, /1.*6.*各至少 4/)
+    assert.match(contract, /grammar.*vocab/)
+    assert.match(contract, /两类.*覆盖|同时.*包含/)
+    assert.match(contract, /不.*比例/)
+    assert.match(contract, /独立单句/)
+    assert.match(contract, /30.*英文词/)
+    assert.match(contract, /12.*英文词/)
+    assert.match(contract, /缩写.*一词/)
+    assert.match(contract, /填空.*不计/)
+    assert.match(contract, /文章.*对话.*音频.*外部材料/)
+    assert.match(contract, /passage.*空/)
+    assert.match(contract, /ID.*唯一.*锚题/)
+    assert.match(contract, /不.*截断/)
+  }
+  const payload = assessmentBank()
+  payload.items[0].skill = 'reading'
+  const rejected = await tool.execute(payload)
+  assert.equal(rejected.ok, false)
+  assert.equal(rejected.field, 'items[0].skill')
+  assert.match(rejected.message, /重新准备/)
+  assert.equal((await h.request('assessment.start', { kind: 'short' })).ok, false)
+  payload.items[0].skill = 'grammar'
+  assert.equal((await tool.execute(payload)).ok, true)
+  const started = await h.request('assessment.start', { kind: 'short' })
+  assert.equal(started.ok, true, JSON.stringify(started))
+  assert.equal(started.data.total, 10)
+  assert.equal(started.data.question.passage, '')
+})
 
 test('lesson tool declares optional paragraph translations and shares domain validation', async t => {
   const h = await host(t)
@@ -626,4 +673,386 @@ test('preference requests do not rewrite existing courses or require material ma
   const after = (await execute(h.root, 'lesson.get', { date: today })).data
   assert.deepEqual(after, before)
   assert.equal(after.lesson.items.find(item => item.type === 'reading').body, 'Quux works with zyzzyva.')
+})
+
+// Seed at-time facts in a new attempt, then publish only through the approved
+// finish seam. This supplies narrow coverage without a second test scorer.
+async function finishFixedAssessment(h, difficulties, outcomes) {
+  assert.equal((await h.request('assessment.saveBank', assessmentBank('starting-point'))).ok, true)
+  const started = await h.request('assessment.start', { kind: 'short' })
+  assert.equal(started.ok, true, JSON.stringify(started))
+  const path = join(h.root, 'assessments', `${started.data.attemptId}.json`)
+  const attempt = JSON.parse(await fs.readFile(path, 'utf8'))
+  attempt.anchors = []; attempt.anchorIds = []
+  attempt.answers = difficulties.map((difficulty, index) => ({
+    itemId: `starting-${index}`, responseId: JSON.stringify([attempt.id, `starting-${index}`]),
+    responseType: 'choice', choice: outcomes[index] ? 1 : 0, correct: outcomes[index],
+    difficulty, skill: index % 2 ? 'grammar' : 'vocab', anchor: false,
+    at: new Date().toISOString()
+  }))
+  attempt.pool = attempt.answers.map(answer => ({ id: answer.itemId, difficulty: answer.difficulty, skill: answer.skill, answerIndex: 1 }))
+  attempt.order = attempt.answers.map(answer => answer.itemId)
+  attempt.current = null
+  await fs.writeFile(path, JSON.stringify(attempt))
+  const finished = await h.request('assessment.finish', { attemptId: attempt.id })
+  assert.equal(finished.ok, true, JSON.stringify(finished))
+  return finished.data.result
+}
+
+test('an unassessed learner can request an introductory lesson without acquiring a level point', async t => {
+  const h = await host(t)
+  await h.request('profile.save', { goal: 'work', minutesPerDay: 20, interests: [], targetBand: '精通' })
+  const before = (await h.request('state.get')).data.level
+  assert.equal(before.latest, null)
+  const result = await h.request('generate')
+  assert.equal(result.ok, true, JSON.stringify(result))
+  const prompt = h.records.at(-1).prompt
+  assert.match(prompt, /材料难度：入门（档位 1\/6）/)
+  assert.match(prompt, /当前测评状态：未测评/)
+  assert.match(prompt, /不要求先完成测评/)
+  assert.deepEqual((await h.request('state.get')).data.level, before)
+  const context = await h.tool({ action: 'lesson_context' })
+  assert.equal(context.ok, true)
+  assert.match(context.data.prompt, /材料难度：入门（档位 1\/6）/)
+})
+
+test('explicit profile supplementation starts at introductory material while remaining unassessed', async t => {
+  const h = await host(t)
+  await h.request('profile.save', { goal: 'work', minutesPerDay: 20, interests: [], targetBand: '精通' })
+  await h.tool({ action: 'select', id: 'cet6' })
+  const before = (await h.request('state.get')).data.level
+  const preference = (await h.request('study.preference')).data
+  assert.equal(h.records.length, 0, 'reading state and choosing a static list cannot request generated words')
+  const result = await h.tool({ action: 'supplement', profile: true })
+  assert.equal(result.ok, true, JSON.stringify(result))
+  assert.equal(result.data.mode, 'generated')
+  const prompt = h.records.at(-1).prompt
+  assert.match(prompt, /材料难度：入门（档位 1\/6）/)
+  assert.match(prompt, /当前测评状态：未测评/)
+  assert.doesNotMatch(prompt, /略高于|不高于目标档位/)
+  assert.deepEqual((await h.request('state.get')).data.level, before)
+  assert.deepEqual((await h.request('study.preference')).data, preference)
+  assert.equal((await h.request('review.list')).data.total, 0)
+})
+
+test('both generated paths use the current capped band despite aspirational target and conflicting route', async t => {
+  const h = await host(t)
+  await h.request('profile.save', { goal: 'work', minutesPerDay: 20, interests: [], targetBand: '精通' })
+  const result = await finishFixedAssessment(h, [1, 1, 1, 1, 1, 1, 1, 1, 1, 6], Array(10).fill(true))
+  assert.equal(result.band, '入门')
+  assert.equal(result.finalBandIndex, 1)
+  await h.request('syllabus.save', { phases: [{ id: 'old', name: '高级法律路线', goal: '精通长篇法律评论', targetBand: '精通', focus: ['合同法'] }] })
+  assert.equal((await h.request('state.get')).data.syllabus.currentPhase.targetBand, '精通')
+  assert.equal((await h.request('generate')).ok, true)
+  assert.equal((await h.tool({ action: 'supplement', profile: true })).ok, true)
+  assert.equal(h.records.length, 2)
+  for (const prompt of h.records.map(record => record.prompt)) {
+    assert.match(prompt, /当前有效测评档位：入门/)
+    assert.match(prompt, /材料难度：入门（档位 1\/6）/)
+    assert.match(prompt, /目标档位只表示未来方向，不抬高或压低材料难度/)
+    assert.match(prompt, /大纲.*只.*主题.*不能覆盖.*档位/)
+    assert.doesNotMatch(prompt, /略高于|不高于目标档位|rawEstimate|estimate/)
+  }
+})
+
+test('unavailable current state stops generated requests rather than reusing a known band', async t => {
+  const h = await host(t)
+  await h.request('profile.save', { goal: 'work', minutesPerDay: 20, interests: [], targetBand: '入门' })
+  await finishFixedAssessment(h, [1, 1, 2, 2, 3, 3, 4, 4, 5, 6], [true, true, true, true, true, true, true, true, true, false])
+  const known = await h.tool({ action: 'lesson_context' })
+  assert.equal(known.ok, true)
+  assert.match(known.data.prompt, /材料难度：高级（档位 5\/6）/)
+  const profilePath = join(h.root, 'profile.json')
+  const saved = await fs.readFile(profilePath, 'utf8')
+  await fs.writeFile(profilePath, '{damaged')
+  for (const invoke of [
+    () => h.tool({ action: 'lesson_context' }),
+    () => h.request('generate'),
+    () => h.tool({ action: 'supplement', profile: true })
+  ]) {
+    const result = await invoke()
+    assert.equal(result.ok, false, 'damaged state cannot authorize a stale or default difficulty')
+    assert.match(result.message, /学习状态.*重试/)
+    assert.doesNotMatch(result.message, /必须.*测评|先完成测评/)
+  }
+  assert.equal(h.records.length, 0)
+  assert.equal(h.createdSessions.length, 0)
+  await fs.writeFile(profilePath, saved)
+  assert.match((await h.tool({ action: 'lesson_context' })).data.prompt, /材料难度：高级（档位 5\/6）/)
+  assert.equal((await h.request('generate')).ok, true)
+})
+
+test('a non-authoritative attendance warning does not become a new prerequisite for learning', async t => {
+  const h = await host(t)
+  await fs.writeFile(join(h.root, 'progress.json'), '{damaged attendance')
+  const state = await h.request('state.get')
+  assert.equal(state.ok, true)
+  assert.ok(state.warnings.some(warning => warning.startsWith('progress.json')))
+  const context = await h.tool({ action: 'lesson_context' })
+  assert.equal(context.ok, true, JSON.stringify(context))
+  assert.match(context.data.prompt, /材料难度：入门（档位 1\/6）/)
+  assert.equal((await h.request('generate')).ok, true)
+  assert.equal((await h.tool({ action: 'supplement', profile: true })).ok, true)
+  assert.equal(h.records.length, 2)
+})
+
+test('a delayed vocabulary request requires the latest public starting point instead of its request snapshot', async t => {
+  const h = await host(t)
+  await h.request('profile.save', { goal: 'work', minutesPerDay: 20, interests: [], targetBand: '精通' })
+  assert.equal((await h.tool({ action: 'supplement', profile: true })).ok, true)
+  const prompt = h.records.at(-1).prompt
+  assert.match(prompt, /请求时.*参考快照/)
+  assert.match(prompt, /english_state.*失败.*停止/)
+  assert.match(prompt, /最新.*level\.latest.*finalBandIndex.*band.*为准/)
+  assert.match(prompt, /latest.*null.*未测评.*入门/)
+  await finishFixedAssessment(h, [1, 1, 2, 2, 3, 3, 4, 4, 5, 6], [true, true, true, true, true, false, false, false, false, false])
+  const live = await h.tools.get('english_state').execute({})
+  assert.equal(live.ok, true)
+  assert.equal(live.data.level.latest.band, '中级')
+  assert.equal(live.data.level.latest.finalBandIndex, 3)
+  assert.doesNotMatch(prompt, /略高于|不高于目标档位/)
+})
+
+test('a lower target and easier old route cannot cap the current band in either generated path', async t => {
+  const h = await host(t)
+  await h.request('profile.save', { goal: 'work', minutesPerDay: 20, interests: [], targetBand: '入门' })
+  const result = await finishFixedAssessment(h, [1, 1, 2, 2, 3, 3, 4, 4, 5, 6], [true, true, true, true, true, true, true, true, true, false])
+  assert.equal(result.band, '高级')
+  assert.equal(result.finalBandIndex, 5, 'worked example is capped below the raw sixth band')
+  await h.request('syllabus.save', { phases: [{ id: 'old-easy', name: '日常问候', goal: '只用基础短句', targetBand: '入门', focus: ['问候'] }] })
+  assert.equal((await h.request('generate')).ok, true)
+  assert.equal((await h.tool({ action: 'supplement', profile: true })).ok, true)
+  for (const prompt of h.records.map(record => record.prompt)) {
+    assert.match(prompt, /材料难度：高级（档位 5\/6）/)
+    assert.match(prompt, /目标档位只表示未来方向，不抬高或压低材料难度/)
+    assert.match(prompt, /大纲.*只.*主题.*不能覆盖.*档位/)
+    assert.doesNotMatch(prompt, /略高于|不高于目标档位|rawEstimate|5\.5/)
+  }
+})
+
+test('daily and queued lesson delivery refresh the final band through the public context tool', async t => {
+  const h = await host(t)
+  await h.request('settings.save', { automation: { enabled: true, time: '08:00', timeZone: 'Asia/Shanghai' } })
+  assert.equal((await h.request('generate')).ok, true)
+  const manual = h.records.find(record => record.kind === 'after')
+  const daily = h.records.find(record => record.daily)
+  assert.match(manual.prompt, /材料难度：入门（档位 1\/6）/)
+  for (const prompt of [manual.prompt, daily.prompt]) {
+    assert.match(prompt, /english_vocabulary.*lesson_context/)
+    assert.match(prompt, /失败.*停止/)
+  }
+  await finishFixedAssessment(h, [1, 1, 2, 2, 3, 3, 4, 4, 5, 6], [true, true, true, true, true, false, false, false, false, false])
+  const context = await h.tool({ action: 'lesson_context' })
+  assert.equal(context.ok, true)
+  assert.match(context.data.prompt, /材料难度：中级（档位 3\/6）/)
+  assert.equal(h.records.length, 2, 'band changes cannot schedule replacement material')
+})
+
+test('failed state I/O stops public contexts and actual lesson and profile schedules without losing a known band', async t => {
+  const h = await host(t)
+  await finishFixedAssessment(h, [1, 1, 2, 2, 3, 3, 4, 4, 5, 6], [true, true, true, true, true, false, false, false, false, false])
+  const before = (await h.request('state.get')).data.level
+  const lessons = join(h.root, 'lessons')
+  // This synthetic external-I/O fault makes state.get return ok:false, unlike a
+  // tolerated warning. No private execute or prompt implementation is replaced.
+  await fs.writeFile(lessons, 'not a directory')
+  assert.equal((await h.request('state.get')).ok, false)
+  const results = [await h.tool({ action: 'lesson_context' }), await h.request('generate'), await h.tool({ action: 'supplement', profile: true })]
+  for (const result of results) {
+    assert.equal(result.ok, false, JSON.stringify(result))
+    assert.match(result.message, /学习状态.*重试/)
+    assert.doesNotMatch(result.message, /必须.*测评|先完成测评/)
+  }
+  assert.equal(h.records.length, 0)
+  assert.equal(h.createdSessions.length, 0)
+  assert.equal(lessons, join(h.root, 'lessons'))
+  assert.equal((await fs.lstat(lessons)).isFile(), true)
+  await fs.unlink(lessons)
+  assert.deepEqual((await h.request('state.get')).data.level, before)
+  assert.equal((await h.request('generate')).ok, true)
+  assert.match(h.records.at(-1).prompt, /材料难度：中级（档位 3\/6）/)
+})
+
+test('new learning requests preserve draft, active and done lessons plus vocabulary schedules and static source order', async t => {
+  for (const status of ['draft', 'active', 'done']) {
+    const h = await host(t)
+    await h.request('profile.save', { goal: 'work', minutesPerDay: 20, interests: [], targetBand: '精通' })
+    const today = (await h.request('state.get')).data.today
+    const payload = lesson(today)
+    assert.equal((await h.tools.get('english_save_lesson').execute(payload)).ok, true)
+    if (status !== 'draft') assert.equal((await h.request('lesson.start', { date: today })).ok, true)
+    if (status === 'done') for (const item of payload.items) {
+      assert.equal((await h.request('lesson.completeItem', { date: today, itemId: item.id })).ok, true)
+    }
+    assert.equal((await h.tools.get('english_add_words').execute({ items: [{ term: 'protected term', meaning: '原有释义', choices: ['原有释义', '其他', '不同', '未知'], answerIndex: 0 }] })).ok, true)
+    const item = (await h.request('review.list')).data.items[0]
+    assert.equal((await h.request('record.batch', { reviewAnswers: [{ itemId: item.id, correct: true, attemptId: `preserve-${status}` }] })).ok, true)
+    await h.tool({ action: 'select', id: 'cet6' })
+    const course = (await h.request('lesson.get', { date: today })).data
+    assert.equal(course.lesson.status, status)
+    const words = (await h.request('review.list')).data
+    const preference = (await h.request('study.preference')).data
+    await finishFixedAssessment(h, [1, 1, 1, 1, 1, 1, 1, 1, 1, 6], Array(10).fill(true))
+    const context = await h.tool({ action: 'lesson_context' })
+    assert.equal(context.ok, true)
+    assert.match(context.data.prompt, /今天已有草稿、进行中或已完成课程就保留/)
+    assert.equal((await h.request('generate')).ok, true)
+    assert.equal((await h.tool({ action: 'supplement', profile: true })).ok, true)
+    assert.deepEqual((await h.request('lesson.get', { date: today })).data, course)
+    assert.deepEqual((await h.request('review.list')).data, words)
+    assert.deepEqual((await h.request('study.preference')).data, preference)
+    assert.equal((await h.request('wordlists.list')).data.activeWordListId, 'cet6')
+  }
+})
+
+// Bridge the production Client transport to the actual registered HTTP route.
+// No learner-domain response is supplied by this adapter.
+async function clientThroughHost(t, h) {
+  const pending = new Set()
+  const calls = []
+  const ui = await mountClient({ request(command, payload) {
+    calls.push({ command, payload })
+    const task = h.request(command, payload)
+    pending.add(task)
+    void task.then(() => pending.delete(task), () => pending.delete(task))
+    return task
+  } })
+  const settle = async () => {
+    do { await ui.flush(() => Promise.all([...pending])) } while (pending.size)
+  }
+  disposeFixture(t, async () => { await ui.close(); await Promise.all([...pending]) })
+  await settle()
+  return { ui, calls, settle }
+}
+
+for (const [kind, label, total] of [['short', '短测（10 题）', 10], ['full', '开始测评（20 题）', 20]]) {
+  test(`new learner ${kind} journey joins onboarding, registered bank preparation, Client recovery, route and generated contexts`, async t => {
+    const h = await host(t)
+    let { ui, calls, settle } = await clientThroughHost(t, h)
+    const goal = '听懂合成技术评审\n清楚说明设计取舍'
+    await ui.input('为什么学英语', goal)
+    await ui.input('我们猜你在做', '合成工作上下文')
+    await ui.input('想练到哪一档', '精通')
+    await ui.click('保存'); await settle()
+    const profile = (await h.tools.get('english_state').execute({})).data.profile
+    assert.equal(profile.goalNote, goal)
+    assert.equal(profile.workContext, '合成工作上下文')
+    assert.match(ui.text(), /未测评.*入门材料/)
+    assert.equal(ui.button('生成今天').disabled, false)
+    assert.equal(calls.some(call => call.command === 'assessment.start'), false)
+
+    await ui.click('个人')
+    await ui.click(ui.buttons('开始测评').length ? '开始测评' : '重新测评'); await settle()
+    await ui.click('生成测评题库'); await settle()
+    assert.match(h.records.at(-1).prompt, /至少 24.*普通题/)
+    const bank = assessmentBank(`integrated-${kind}`)
+    assert.equal((await h.tools.get('english_save_assessment').execute(bank)).ok, true)
+    h.endSession()
+    await ui.poll(); await settle()
+    assert.match(ui.text(), /题库已就绪/)
+    assert.equal(calls.some(call => call.command === 'assessment.start'), false, 'preparing a bank cannot start an assessment')
+    await ui.click(label); await settle()
+    const current = (await h.request('assessment.resume')).data
+    const item = [...bank.items, ...ANCHOR_POOL].find(item => item.id === current.question.id)
+    assert.ok(item)
+    await ui.click(ui.container.querySelectorAll('.ec-choice')[(item.answerIndex + 1) % 4]); await settle()
+    await ui.click('不会，继续'); await settle()
+    const paused = (await h.request('assessment.resume')).data
+    assert.equal(paused.progress, 2)
+    await ui.click('稍后继续'); await settle()
+    await ui.close()
+    ;({ ui, calls, settle } = await clientThroughHost(t, h))
+    await ui.click('个人')
+    await ui.click(ui.buttons('开始测评').length ? '开始测评' : '重新测评'); await settle()
+    assert.ok(ui.text().includes(paused.question.prompt))
+    assert.match(ui.text(), new RegExp(`第 3 / ${total} 题`))
+    for (let index = 2; index < total; index++) { await ui.click('不会，继续'); await settle() }
+    assert.match(ui.text(), /你的档位.*入门/)
+    assert.match(ui.text(), /根据词汇与语法短题估计，仅供安排学习/)
+    assert.doesNotMatch(ui.text(), /正确答案|答对了|答错了|逐题|锚题|有效题数|置信度/)
+    const completed = (await h.request('assessment.resume')).data
+    assert.deepEqual(completed.result.counts, { correct: 0, incorrect: 1, unable: total - 1 })
+    assert.equal(completed.result.accuracy, 0)
+    await ui.click('知道了'); await settle()
+    await ui.click('计划'); await settle()
+    assert.match(ui.text(), /巩固「入门」/)
+    const state = (await h.tools.get('english_state').execute({})).data
+    assert.equal(state.level.latest.attemptId, current.attemptId)
+    assert.equal(state.level.points.length, 1)
+    assert.equal(state.syllabus.weekly.completedGoals, 0)
+    const context = await h.tool({ action: 'lesson_context' })
+    assert.match(context.data.prompt, /材料难度：入门（档位 1\/6）/)
+    await ui.click('今日'); await settle()
+    await ui.click('生成今天'); await settle()
+    assert.match(h.records.at(-1).prompt, /当前有效测评档位：入门/)
+    await ui.click('继续学习'); await settle()
+    assert.match(h.records.at(-1).prompt, /材料难度：入门（档位 1\/6）/)
+    assert.equal(h.records.length, 3, 'only explicit bank, lesson and profile-word requests create schedules')
+    assert.equal((await h.request('state.get')).data.level.points.length, 1)
+  })
+}
+
+test('converted latest-bad history stays unassessed in the real Client and Host learning requests despite an earlier valid curve', async t => {
+  // Install old files before apply/startup can run its first execute/read.
+  const h = await host(t, { prepare: async root => {
+    await fs.mkdir(join(root, 'assessments'), { recursive: true })
+    const attempts = [1, 2].map(index => {
+      const id = `2026-11-01-short-integrated-old-${index}`
+      const at = `2026-11-0${index + 1}T09:00:00.000Z`
+      const answers = [1, 1, 2, 2, 3, 3, 4, 4, 5, 6].map((difficulty, i) => ({
+        itemId: `original-${index}-${i}`, difficulty, correct: i < 5, choice: i < 5 ? 1 : 0,
+        at, skill: i % 2 ? 'grammar' : 'vocab', anchor: false
+      }))
+      return { id, kind: 'short', status: 'done', length: 10, items: 10,
+        createdAt: '2026-11-01T09:00:00.000Z', answers, order: answers.map(answer => answer.itemId), anchorIds: [],
+        result: { id: `integrated-old-level-${index}`, at, kind: 'short', band: '精通', estimate: 6, accuracy: 1, weaknesses: [] } }
+    })
+    delete attempts[1].answers[0].difficulty
+    for (const attempt of attempts) await fs.writeFile(join(root, 'assessments', `${attempt.id}.json`), JSON.stringify(attempt))
+    await fs.writeFile(join(root, 'level.json'), JSON.stringify({ version: 1, points: attempts.map(attempt => attempt.result) }))
+    await fs.writeFile(join(root, 'syllabus.json'), JSON.stringify({ version: 1,
+      phases: [{ id: 'old', name: '旧精通路线', goal: '旧目标', targetBand: '精通', focus: ['旧勾选'] }], currentPhaseId: 'old',
+      weekly: { weekStart: '2026-11-09', goals: [{ id: 'goal-1', text: '旧勾选', done: true }] } }))
+  } })
+  assert.equal((await h.request('profile.save', { goal: 'work', minutesPerDay: 20, targetBand: '精通' })).ok, true)
+  const state = (await h.tools.get('english_state').execute({})).data
+  assert.equal(state.level.latest, null)
+  assert.deepEqual(state.level.points.map(point => [point.id, point.band]), [['integrated-old-level-1', '中级']])
+  assert.equal(state.syllabus.currentPhase.targetBand, '入门')
+  assert.equal(state.syllabus.weekly.completedGoals, 0)
+  const { ui, settle } = await clientThroughHost(t, h)
+  assert.match(ui.text(), /未测评.*入门材料/)
+  await ui.click('个人'); await settle()
+  await ui.click('查看记录'); await settle()
+  assert.match(ui.text(), /未测评/)
+  assert.match(ui.text(), /中级/)
+  assert.doesNotMatch(ui.text(), /兼容|重算|旧评分|rawEstimate|scoringRule/)
+  const context = await h.tool({ action: 'lesson_context' })
+  assert.equal(context.ok, true, JSON.stringify(context))
+  assert.match(context.data.prompt, /当前测评状态：未测评/)
+  assert.match(context.data.prompt, /材料难度：入门（档位 1\/6）/)
+  await ui.click('今日'); await settle()
+  await ui.click('生成今天'); await settle()
+  await ui.click('继续学习'); await settle()
+  assert.equal(h.records.length, 2)
+  for (const { prompt } of h.records) {
+    assert.match(prompt, /当前测评状态：未测评/)
+    assert.match(prompt, /材料难度：入门（档位 1\/6）/)
+  }
+  assert.deepEqual((await h.tools.get('english_state').execute({})).data.level, state.level)
+  assert.deepEqual((await h.request('progress.get')).data.curve, state.level.points)
+})
+
+test('a malformed current band is not silently treated as an introductory or target estimate', async t => {
+  const h = await host(t)
+  await finishFixedAssessment(h, [1, 1, 2, 2, 3, 3, 4, 4, 5, 6], [true, true, true, true, true, false, false, false, false, false])
+  const path = join(h.root, 'level.json')
+  const level = JSON.parse(await fs.readFile(path, 'utf8'))
+  delete level.points.at(-1).finalBandIndex
+  delete level.current.finalBandIndex
+  await fs.writeFile(path, JSON.stringify(level))
+  const result = await h.tool({ action: 'lesson_context' })
+  assert.equal(result.ok, false)
+  assert.match(result.message, /当前档位.*重试/)
+  assert.equal(h.records.length, 0)
 })

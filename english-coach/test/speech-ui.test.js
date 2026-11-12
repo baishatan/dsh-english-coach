@@ -161,7 +161,6 @@ test('新学习者在统一菜单看到Kokoro四声和未准备状态，选择�
   assert.equal(ui.field('英语音色').value, 'kokoro:af_heart')
   assert.deepEqual([...ui.field('英语音色').options].map(option => option.value), ['kokoro:af_heart', 'kokoro:am_michael', 'kokoro:bf_emma', 'kokoro:bm_george', 'system:local-en', 'system:shelley-gb'])
   assert.match(ui.text(), /Kokoro.*未准备/)
-  assert.match(ui.text(), /DSH 主机/)
   assert.equal(synth.spoken.length, 0)
   await ui.input('英语音色', 'kokoro:bm_george')
   await ui.input('朗读语速', 0.5)

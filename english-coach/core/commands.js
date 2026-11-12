@@ -5,6 +5,7 @@ import { join, resolve, sep } from 'node:path'
 import {
   ANCHORS_PER_ASSESSMENT,
   ASSESSMENT_LENGTH,
+  ASSESSMENT_SCOPE,
   BANDS,
   KOKORO_VOICES,
   READING_RATES,
@@ -15,7 +16,7 @@ import {
   daysBetween,
   isIsoTimestamp
 } from './constants.js'
-import { anchorStore, hashAnchors } from './anchors.js'
+import { ANCHOR_POOL, anchorStore, hashAnchors } from './anchors.js'
 import { fail } from './errors.js'
 import {
   isComplete,
@@ -27,7 +28,9 @@ import {
 import { advance, countMastered, dueItems, hasAnswered, isDue } from './review.js'
 import { enrol, termKey } from './vocabulary.js'
 import { getWordCatalog } from './catalog.js'
-import { scoreAssessment, nextDrift } from './scoring.js'
+import { scoreAssessment, nextDrift, SCORING_RULE } from './scoring.js'
+import { buildSyllabus, readSyllabus, publishSyllabus } from './syllabus.js'
+import { recoverAssessmentHistory } from './assessment-history.js'
 import {
   appendJsonl,
   listDir,
@@ -81,10 +84,15 @@ function lessonFile(ctx, date) {
 }
 
 function assessmentFile(ctx, id) {
+  if (typeof id !== 'string' || !/^\d{4}-[^/\\\u0000-\u001f]+$/.test(id)) {
+    fail('invalid_field', 'attemptId 必须是有效的测评标识，不能包含路径', 'attemptId')
+  }
   return join(ctx.root, FILES.assessments, `${id}.json`)
 }
 
 async function load(ctx, key, fallback = DEFAULTS[key]) {
+  if (key === 'syllabus') return readSyllabus(file(ctx, key), fallback)
+  if (key === 'level') return loadCompletionProjection(ctx, key)
   const { value, warning } = await readJson(file(ctx, key), fallback)
   if (warning) ctx.warn(warning)
   return value
@@ -402,8 +410,34 @@ function publicReviewItem(item) {
 }
 
 function latestPoint(level) {
+  if (Object.hasOwn(level, 'current')) return level.current
   if (!level.points || !level.points.length) return null
   return level.points[level.points.length - 1]
+}
+
+/** Keep observations internal; expose only a scope-safe current caution. */
+function currentDrift(drift, point) {
+  return { note: Number.isFinite(point?.anchorAccuracy) && drift?.note
+    ? '近期短题表现波动较大，结果仍仅供安排学习。' : null }
+}
+
+/** All assessment read paths share this allow-list, never an internal spread. */
+function publicLevelPoint(point) {
+  if (!point) return null
+  return {
+    id: point.id,
+    attemptId: point.attemptId,
+    at: point.at,
+    kind: point.kind,
+    band: point.band,
+    finalBandIndex: point.finalBandIndex,
+    accuracy: point.accuracy,
+    counts: point.counts,
+    weaknesses: (point.weaknesses ?? []).filter(item => ['grammar', 'vocab'].includes(item.skill)),
+    reference: point.reference,
+    scope: ASSESSMENT_SCOPE,
+    coverageNote: point.coverageNote ?? null
+  }
 }
 
 function weeklyView(syllabus, progress, todayText) {
@@ -431,74 +465,18 @@ function weekStartOf(todayText) {
   return addDays(todayText, -((new Date(`${todayText}T00:00:00`).getDay() + 6) % 7))
 }
 
-/**
- * A route with no dates in it. Three stages: hold the band you are in, reach
- * for the next one, then settle there. The goals are written as things to do,
- * not as days to hit, so falling behind never invalidates the plan.
- */
-function buildSyllabus({ estimate, targetBand, todayText, previous }) {
-  const startIndex = clamp(Math.round(Number(estimate) || 1), 1, BANDS.length)
-  const targetIndex = clamp(
-    targetBand && BANDS.includes(targetBand)
-      ? Math.max(startIndex, BANDS.indexOf(targetBand) + 1)
-      : Math.min(BANDS.length, startIndex + 1),
-    1,
-    BANDS.length
-  )
-  const middle = Math.min(BANDS.length, Math.round((startIndex + targetIndex) / 2))
-
-  const phases = [
-    {
-      id: 'phase-1',
-      name: `巩固「${BANDS[startIndex - 1]}」`,
-      goal: '把当前档位的常见句式和表达用熟，读短文章不再来回回读。',
-      focus: ['把当天的表达用进自己的句子里', '跟读听力文稿，注意连读', '读完一段先自己总结，再看中文'],
-      targetBand: BANDS[startIndex - 1]
-    },
-    {
-      id: 'phase-2',
-      name: `往「${BANDS[middle - 1]}」推`,
-      goal: '读得比现在长一点、快一点，能抓住长句的主干。',
-      focus: ['读比现在长一点的段落', '听真实语速的材料', '整理一周的表达清单'],
-      targetBand: BANDS[middle - 1]
-    },
-    {
-      id: 'phase-3',
-      name: `稳住「${BANDS[targetIndex - 1]}」`,
-      goal: `在「${BANDS[targetIndex - 1]}」这一档站住：长文不断线，表达能用出来。`,
-      focus: ['读长篇评论与专栏', '听播客并复述要点', '在真实场景里主动用出来'],
-      targetBand: BANDS[targetIndex - 1]
-    }
-  ]
-
-  const weekStart = weekStartOf(todayText)
-  const kept = previous?.weekly?.weekStart === weekStart ? previous.weekly : null
-  const current = phases[0]
-  return {
-    version: 1,
-    phases,
-    currentPhaseId: current.id,
-    weekly: kept ?? {
-      weekStart,
-      goals: current.focus.slice(0, 3).map((text, index) => ({ id: `goal-${index + 1}`, text, done: false }))
-    },
-    generatedFrom: { estimate, targetBand: targetBand ?? null },
-    regeneratedAt: null
-  }
-}
-
 async function regenerateSyllabus(ctx) {
-  const level = await load(ctx, 'level')
+  await load(ctx, 'syllabus')
+  const level = await loadCompletionProjection(ctx, 'level')
   const profileStore = await load(ctx, 'profile')
-  const previous = await load(ctx, 'syllabus')
-  const latest = (level.points ?? [])[level.points.length - 1]
+  const latest = latestPoint(level)
   const store = buildSyllabus({
-    estimate: latest?.estimate ?? 1,
+    finalBandIndex: latest?.finalBandIndex ?? 1,
     targetBand: profileStore.profile?.targetBand ?? null,
     todayText: today(ctx),
-    previous
+    generationId: randomUUID(),
+    at: ctx.now.toISOString()
   })
-  store.regeneratedAt = ctx.now.toISOString()
   await save(ctx, 'syllabus', store)
   return store
 }
@@ -776,9 +754,9 @@ const handlers = {
       onboarded: Boolean(profileStore.profile?.confirmedAt),
       settings,
       level: {
-        latest: latestPoint(level),
-        points: level.points ?? [],
-        drift: level.drift ?? { baseline: null, streak: 0, note: null }
+        latest: publicLevelPoint(latestPoint(level)),
+        points: (level.points ?? []).map(publicLevelPoint),
+        drift: currentDrift(level.drift, latestPoint(level))
       },
       syllabus: {
         phases: syllabus.phases ?? [],
@@ -795,7 +773,7 @@ const handlers = {
       streak: computeStreak(progress.completions ?? [], todayText),
       todayLesson: lesson,
       recentSources: recent,
-      needsAssessment: !(level.points ?? []).length,
+      needsAssessment: !latestPoint(level),
       automation: settings.automation
     }
   },
@@ -828,20 +806,18 @@ const handlers = {
     if (!normalized.some((phase) => phase.id === currentPhaseId)) {
       fail('invalid_field', 'currentPhaseId 不在 phases 里', 'currentPhaseId')
     }
-    const before = await load(ctx, 'syllabus')
-    const todayText = today(ctx)
-    const weekStart = addDays(todayText, -((new Date(`${todayText}T00:00:00`).getDay() + 6) % 7))
-    const keepWeekly = before.weekly?.weekStart === weekStart ? before.weekly : null
+    await load(ctx, 'syllabus')
+    const generationId = randomUUID()
     const phase = normalized.find((candidate) => candidate.id === currentPhaseId)
-    const weekly = keepWeekly ?? {
-      weekStart,
+    const weekly = {
+      weekStart: weekStartOf(today(ctx)),
       goals: (phase.focus.length ? phase.focus : [phase.goal]).slice(0, 3).map((text, index) => ({
-        id: `goal-${index + 1}`,
+        id: `${generationId}:goal-${index + 1}`,
         text,
         done: false
       }))
     }
-    const store = { version: 1, phases: normalized, currentPhaseId, weekly, regeneratedAt: ctx.now.toISOString() }
+    const store = { version: 1, generationId, phases: normalized, currentPhaseId, weekly, regeneratedAt: ctx.now.toISOString() }
     await save(ctx, 'syllabus', store)
     return store
   },
@@ -866,41 +842,12 @@ const handlers = {
   // ------------------------------------------------------------ assessment
 
   async 'assessment.saveBank'(ctx, payload) {
-    const items = Array.isArray(payload?.items) ? payload.items : []
-    if (items.length < 20) {
-      fail('bank_too_small', `题库至少 20 道题，收到 ${items.length} 道`, 'items')
-    }
-    const normalized = items.map((item, index) => {
-      const field = `items[${index}]`
-      if (!item || typeof item !== 'object') fail('invalid_field', `${field} 必须是对象`, field)
-      const difficulty = Number(item.difficulty)
-      if (!Number.isInteger(difficulty) || difficulty < 1 || difficulty > 6) {
-        fail('invalid_field', `${field}.difficulty 必须是 1 到 6 的整数`, `${field}.difficulty`)
-      }
-      if (!Array.isArray(item.choices) || item.choices.length !== 4) {
-        fail('invalid_field', `${field}.choices 必须是 4 个选项`, `${field}.choices`)
-      }
-      const answerIndex = Number(item.answerIndex)
-      if (!Number.isInteger(answerIndex) || answerIndex < 0 || answerIndex > 3) {
-        fail('invalid_field', `${field}.answerIndex 必须是 0 到 3`, `${field}.answerIndex`)
-      }
-      return {
-        id: item.id ? String(item.id) : `bank-${index + 1}`,
-        difficulty,
-        skill: item.skill ? String(item.skill) : 'general',
-        prompt: String(item.prompt ?? ''),
-        passage: item.passage ? String(item.passage) : '',
-        choices: item.choices.map(String),
-        answerIndex,
-        explanation: item.explanation ? String(item.explanation) : ''
-      }
-    })
-    if (new Set(normalized.map((item) => item.id)).size !== normalized.length) {
-      fail('duplicate_item', '题目 id 不能重复', 'items')
-    }
+    const normalized = validateAssessmentBank(payload)
     const version = String(payload?.version ?? Date.now().toString(36))
     const bank = { version, createdAt: ctx.now.toISOString(), items: normalized }
-    await writeJson(join(ctx.root, FILES.assessments, `bank-${version}.json`), bank)
+    const bankName = `bank-${version}.json`
+    await writeJson(join(ctx.root, FILES.assessments, bankName), bank)
+    await writeJson(join(ctx.root, FILES.assessments, 'current-bank.json'), { file: bankName })
     const difficulties = [...new Set(normalized.map((item) => item.difficulty))].sort()
     return { version, count: normalized.length, difficulties }
   },
@@ -915,35 +862,38 @@ const handlers = {
     if (!banks.length) {
       fail(
         'no_question_bank',
-        '还没有题库。先调用 english_save_assessment 提交一套至少 20 道、覆盖多个难度的题目。',
+        '还没有题库，请重新准备：提交至少 24 道独立词汇/语法短题，难度 1–6 各至少 4 道，可点击「生成测评题库」。',
         'items'
       )
     }
+    const { value: current, warning: currentWarning } = await readJson(join(ctx.root, FILES.assessments, 'current-bank.json'), null)
+    if (currentWarning || (current ? !banks.includes(current.file) :
+      entries.some(entry => ['current-bank.json', 'current-bank.json.bak'].includes(entry.name)))) {
+      fail('no_question_bank', '当前题库读不出来，请重新准备至少 24 道独立词汇/语法短题', 'items')
+    }
     const { value: bank, warning } = await readJson(
-      join(ctx.root, FILES.assessments, banks[banks.length - 1]),
+      join(ctx.root, FILES.assessments, current?.file ?? banks[banks.length - 1]),
       null
     )
-    if (warning) ctx.warn(warning)
-    if (!bank?.items?.length) fail('no_question_bank', '题库读不出来，请重新提交')
+    if (warning) fail('no_question_bank', '当前题库主记录读不出来，请重新准备至少 24 道独立词汇/语法短题', 'items')
+    const admitted = validateAssessmentBank(bank)
 
     const anchors = await loadAnchors(ctx)
     const retired = new Set(anchors.retired ?? [])
-    const available = anchors.items.filter((item) => !retired.has(item.id))
-    const level = await load(ctx, 'level')
-    const offset = (level.points?.length ?? 0) * ANCHORS_PER_ASSESSMENT
-    const chosen = []
-    for (let index = 0; index < ANCHORS_PER_ASSESSMENT && available.length; index += 1) {
-      chosen.push(available[(offset + index) % available.length])
-    }
+    const answered = await answeredAnchorIds(ctx)
+    const available = anchors.items.filter((item) => !retired.has(item.id) && !answered.has(item.id))
+    const chosen = available.slice(0, ANCHORS_PER_ASSESSMENT)
 
     const length = kind === 'short' ? SHORT_ASSESSMENT_LENGTH : ASSESSMENT_LENGTH
-    const id = `${today(ctx)}-${kind}-${ctx.now.getTime().toString(36)}`
+    const id = `${today(ctx)}-${kind}-${ctx.now.getTime().toString(36)}-${randomUUID()}`
     const history = await attemptHistory(ctx)
-    const pool = bank.items.map((item) => ({ ...item, anchor: false }))
+    const pool = admitted.map((item) => ({ ...item, anchor: false }))
     const anchorItems = chosen.map((item) => ({ ...item, anchor: true }))
 
     const attempt = {
       id,
+      lifecycleVersion: 1,
+      scoringRule: SCORING_RULE,
       kind,
       createdAt: ctx.now.toISOString(),
       status: 'in_progress',
@@ -972,27 +922,47 @@ const handlers = {
       .filter((entry) => entry.isFile() && /^\d{4}-/.test(entry.name) && entry.name.endsWith('.json'))
       .map((entry) => entry.name)
       .sort()
-    for (let index = ids.length - 1; index >= 0; index -= 1) {
-      const { value } = await readJson(join(ctx.root, FILES.assessments, ids[index]), null)
-      if (value?.status === 'in_progress') {
-        return {
-          attemptId: value.id,
-          total: value.items,
-          answered: value.answers.length,
-          question: publicQuestion(questionOf(value, value.current)),
-          progress: value.answers.length
-        }
+    const attempts = []
+    for (const id of ids) {
+      const { value } = await readJson(join(ctx.root, FILES.assessments, id), null)
+      if (value) attempts.push(value)
+    }
+    attempts.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || (b.rotation ?? 0) - (a.rotation ?? 0))
+    for (const attempt of attempts) {
+      if (attempt.status === 'in_progress' || (attempt.status === 'done' && attempt.completionPending)) {
+        await projectAnchorResponses(ctx, attempt)
+        return { ...publicAttempt(attempt), answered: attempt.answers.length }
       }
+    }
+    if (attempts.some(attempt => attempt.status === 'terminated' && attempt.historyConversion)) {
+      return { restartRequired: true, message: '上次未完成的测评已结束，请主动开始新的测评。' }
     }
     return null
   },
 
   async 'assessment.answer'(ctx, payload) {
-    const attemptId = String(payload?.attemptId ?? '')
+    const attemptId = payload?.attemptId
     const itemId = String(payload?.itemId ?? '')
-    const choice = Number(payload?.choice)
+    const responseType = payload?.responseType === undefined ? 'choice' : payload.responseType
+    if (!['choice', 'unable'].includes(responseType)) fail('invalid_field', 'responseType 必须是 choice 或 unable', 'responseType')
+    if (responseType === 'unable' && Object.hasOwn(payload, 'choice')) fail('invalid_field', '不会响应不能同时提供 choice', 'choice')
+    const choice = responseType === 'unable' ? null : payload?.choice
     const { value: attempt } = await readJson(assessmentFile(ctx, attemptId), null)
     if (!attempt) fail('attempt_not_found', `找不到测评 ${attemptId}`, 'attemptId')
+    if (responseType === 'choice' && (!Number.isInteger(choice) || choice < 0 || choice > 3)) {
+      fail('invalid_field', 'choice 必须是 0 到 3 的整数', 'choice')
+    }
+    // Items never repeat within an attempt, so this pair is also the response
+    // identity for older choice-only callers. Never infer identity from time.
+    const responseId = JSON.stringify([attempt.id, itemId])
+    await projectAnchorResponses(ctx, attempt)
+    const receipt = attempt.answers.find(answer => answer.itemId === itemId)
+    if (receipt) {
+      if ((receipt.responseType ?? 'choice') !== responseType || receipt.choice !== choice) {
+        fail('answer_identity_conflict', '这道题已保存了不同响应，不能改写；请恢复测评后继续', 'itemId')
+      }
+      return { ...publicAttempt(attempt), responseId: receipt.responseId ?? responseId, replayed: true }
+    }
     if (attempt.status !== 'in_progress') {
       fail('attempt_finished', '这次测评已经结束', 'attemptId')
     }
@@ -1001,49 +971,63 @@ const handlers = {
     }
     const item = questionOf(attempt, itemId)
     if (!item) fail('item_not_found', `题目 ${itemId} 不存在`, 'itemId')
-    if (!Number.isInteger(choice) || choice < 0 || choice > 3) {
+    if (responseType === 'choice' && (!Number.isInteger(choice) || choice < 0 || choice > 3)) {
       fail('invalid_field', 'choice 必须是 0 到 3 的整数', 'choice')
     }
-    const correct = choice === item.answerIndex
+    const correct = responseType === 'choice' && choice === item.answerIndex
+    const contaminated = item.anchor ? (await answeredAnchorIds(ctx)).has(item.id) : false
     attempt.answers.push({
       itemId,
+      responseId,
+      responseType,
       choice,
       correct,
       at: ctx.now.toISOString(),
       difficulty: item.difficulty,
       skill: item.skill,
-      anchor: Boolean(item.anchor)
+      anchor: Boolean(item.anchor),
+      ...(item.anchor ? { contaminated } : {}),
+      scoringEvidence: !contaminated,
+      exclusionReason: contaminated ? 'repeated_anchor' : null
     })
-    attempt.tier = clamp(correct ? attempt.tier + 1 : attempt.tier - 1, 1, 6)
-
-    if (item.anchor) await recordAnchorResponse(ctx, attempt, item)
+    if (!contaminated) attempt.tier = clamp(correct ? attempt.tier + 1 : attempt.tier - 1, 1, 6)
 
     const next = pickNext(attempt)
-    if (!next) return await finishAttempt(ctx, attempt)
-    attempt.current = next.id
-    attempt.order.push(next.id)
-    await writeJson(assessmentFile(ctx, attemptId), attempt)
-    return {
-      attemptId: attempt.id,
-      correct,
-      answerIndex: item.answerIndex,
-      explanation: item.explanation,
-      progress: attempt.answers.length,
-      total: attempt.items,
-      question: publicQuestion(next)
+    const expected = attempt.kind === 'short' ? SHORT_ASSESSMENT_LENGTH : ASSESSMENT_LENGTH
+    if (!next && attempt.answers.length < expected) {
+      fail('assessment_questions_unavailable', '测评题目不足，无法继续；请重新准备题库。当前题与进度未改动', 'items')
     }
+    attempt.current = next?.id ?? null
+    if (next) attempt.order.push(next.id)
+    // The attempt is the response authority. No anchor exposure or completion
+    // projection may get ahead of this atomic response commit.
+    await writeJson(assessmentFile(ctx, attemptId), attempt)
+    if (item.anchor) await recordAnchorResponse(ctx, attempt, item)
+    if (!next) return { ...await finishAttempt(ctx, attempt), responseId, replayed: false }
+    return { ...publicAttempt(attempt), responseId, replayed: false }
   },
 
   async 'assessment.finish'(ctx, payload) {
-    const attemptId = String(payload?.attemptId ?? '')
+    const attemptId = payload?.attemptId
     const { value: attempt } = await readJson(assessmentFile(ctx, attemptId), null)
     if (!attempt) fail('attempt_not_found', `找不到测评 ${attemptId}`, 'attemptId')
-    if (attempt.status === 'done') return attempt.result
     return await finishAttempt(ctx, attempt)
   },
 
+  async 'assessment.acknowledge'(ctx, payload) {
+    const attemptId = payload?.attemptId
+    const { value: attempt } = await readJson(assessmentFile(ctx, attemptId), null)
+    if (!attempt) fail('attempt_not_found', `找不到测评 ${attemptId}`, 'attemptId')
+    if (attempt.status !== 'done') fail('assessment_incomplete', '测评尚未完成，请继续作答', 'attemptId')
+    if (attempt.completionPending) {
+      attempt.completionPending = false
+      await writeJson(assessmentFile(ctx, attemptId), attempt)
+    }
+    return { attemptId, acknowledged: true }
+  },
+
   async 'assessment.abandon'(ctx, payload) {
-    const attemptId = String(payload?.attemptId ?? '')
+    const attemptId = payload?.attemptId
     const { value: attempt } = await readJson(assessmentFile(ctx, attemptId), null)
     if (!attempt) fail('attempt_not_found', `找不到测评 ${attemptId}`, 'attemptId')
     if (attempt.status === 'in_progress') {
@@ -1449,14 +1433,8 @@ const handlers = {
       streak: computeStreak(progress.completions ?? [], todayText),
       completions: progress.completions ?? [],
       expiredDrafts: progress.expiredDrafts ?? 0,
-      curve: (level.points ?? []).map((point) => ({
-        at: point.at,
-        band: point.band,
-        estimate: point.estimate,
-        accuracy: point.accuracy,
-        kind: point.kind
-      })),
-      drift: level.drift ?? { baseline: null, streak: 0, note: null },
+      curve: (level.points ?? []).map(publicLevelPoint),
+      drift: currentDrift(level.drift, latestPoint(level)),
       weekly: weeklyView(syllabus, progress, todayText)
     }
   },
@@ -1513,6 +1491,116 @@ const handlers = {
 
 // -------------------------------------------------------------- assessment helpers
 
+function validateAssessmentBank(payload) {
+  const items = Array.isArray(payload?.items) ? payload.items : []
+  if (items.length < 24) {
+    fail('bank_too_small', `请重新准备题库：至少 24 道普通题，收到 ${items.length} 道`, 'items')
+  }
+  const normalized = Array.from(items, (item, index) => {
+    const field = `items[${index}]`
+    if (!item || typeof item !== 'object' || Array.isArray(item)) fail('invalid_field', `请重新准备题库：${field} 必须是对象`, field)
+    if (typeof item.id !== 'string' || !item.id.trim() || ANCHOR_POOL.some((anchor) => anchor.id === item.id.trim())) {
+      fail('invalid_field', `请重新准备题库：${field}.id 必须非空且不能与冻结锚题相同`, `${field}.id`)
+    }
+    const difficulty = item.difficulty
+    if (!Number.isInteger(difficulty) || difficulty < 1 || difficulty > 6) {
+      fail('invalid_field', `请重新准备题库：${field}.difficulty 必须是 1 到 6 的整数`, `${field}.difficulty`)
+    }
+    if (!['grammar', 'vocab'].includes(item.skill)) {
+      fail('invalid_field', `请重新准备题库：${field}.skill 只能是 grammar 或 vocab`, `${field}.skill`)
+    }
+    if (typeof item.prompt !== 'string' || !item.prompt.trim()) {
+      fail('invalid_field', `请重新准备题库：${field}.prompt 必须是非空字符串`, `${field}.prompt`)
+    }
+    if (item.passage != null && (typeof item.passage !== 'string' || item.passage.trim())) {
+      fail('invalid_field', `请重新准备题库：${field}.passage 必须为空，不使用文章或额外材料`, `${field}.passage`)
+    }
+    if (!isStandaloneAssessmentText(item.prompt)) {
+      fail('invalid_field', `请重新准备题库：${field}.prompt 必须是独立单句，不能含文章、对话或依赖音频及外部材料`, `${field}.prompt`)
+    }
+    if (englishWordCount(item.prompt) > 30) {
+      fail('invalid_field', `请重新准备题库：${field}.prompt 最多 30 个英文词`, `${field}.prompt`)
+    }
+    if (!Array.isArray(item.choices) || item.choices.length !== 4) {
+      fail('invalid_field', `请重新准备题库：${field}.choices 必须是 4 个选项`, `${field}.choices`)
+    }
+    for (let choiceIndex = 0; choiceIndex < 4; choiceIndex += 1) {
+      if (typeof item.choices[choiceIndex] !== 'string' || !item.choices[choiceIndex].trim()) {
+        fail('invalid_field', `请重新准备题库：${field}.choices[${choiceIndex}] 必须是非空字符串`, `${field}.choices[${choiceIndex}]`)
+      }
+      if (!isStandaloneAssessmentText(item.choices[choiceIndex])) {
+        fail('invalid_field', `请重新准备题库：${field}.choices[${choiceIndex}] 只能是单句或短语，不能依赖额外材料`, `${field}.choices[${choiceIndex}]`)
+      }
+      if (englishWordCount(item.choices[choiceIndex]) > 12) {
+        fail('invalid_field', `请重新准备题库：${field}.choices[${choiceIndex}] 最多 12 个英文词`, `${field}.choices[${choiceIndex}]`)
+      }
+    }
+    if (new Set(item.choices.map((choice) => choice.trim().replace(/\s+/g, ' ').toLowerCase())).size !== 4) {
+      fail('invalid_field', `请重新准备题库：${field}.choices 必须是 4 个不同的选项`, `${field}.choices`)
+    }
+    const answerIndex = item.answerIndex
+    if (!Number.isInteger(answerIndex) || answerIndex < 0 || answerIndex > 3) {
+      fail('invalid_field', `请重新准备题库：${field}.answerIndex 必须是 0 到 3 的整数`, `${field}.answerIndex`)
+    }
+    return {
+      id: item.id.trim(),
+      difficulty,
+      skill: item.skill ? String(item.skill) : 'general',
+      prompt: String(item.prompt ?? ''),
+      passage: '',
+      choices: item.choices.map(String),
+      answerIndex,
+      explanation: item.explanation ? String(item.explanation) : ''
+    }
+  })
+  for (let difficulty = 1; difficulty <= 6; difficulty += 1) {
+    if (normalized.filter((item) => item.difficulty === difficulty).length < 4) {
+      fail('bank_difficulty_coverage', `请重新准备题库：难度 ${difficulty} 至少需要 4 道普通题`, 'items')
+    }
+  }
+  if (!['grammar', 'vocab'].every((skill) => normalized.some((item) => item.skill === skill))) {
+    fail('bank_skill_coverage', '请重新准备题库：整库必须同时包含 grammar 和 vocab 题', 'items')
+  }
+  if (new Set(normalized.map((item) => item.id)).size !== normalized.length) {
+    fail('duplicate_item', '请重新准备题库：普通题 id 不能重复', 'items')
+  }
+  return normalized
+}
+
+// Latin-letter runs are words; internal apostrophes, hyphens and dotted
+// abbreviations stay in the same word. Symbols/numbers and ___ blanks do not count.
+function englishWordCount(text) {
+  return (text.match(/[A-Za-z]+(?:['’.-][A-Za-z]+)*\.?/g) ?? []).length
+}
+
+function isStandaloneAssessmentText(text) {
+  if (/[\r\n]|https?:\/\/|www\./i.test(text)) return false
+  // Reject explicit extra-material instructions and multi-speaker formatting;
+  // semantic independence and pedagogical quality still require content review.
+  if (/\b(?:listen\s+to|read|refer\s+to|according\s+to|look\s+at|watch)\s+(?:(?:the|this|following|above|below|an?)\s+)*(?:passage|article|paragraph|text|audio|recording|dialogue|conversation|image|picture|video)\b/i.test(text)) return false
+  if ((text.match(/\b[A-Za-z][A-Za-z ]{0,20}:/g) ?? []).length > 1) return false
+  // Do not mistake Dr., e.g., U.S. or decimal points for sentence boundaries.
+  const withoutAbbreviations = text
+    .replace(/\b(?:[A-Za-z]\.){2,}/g, '')
+    .replace(/\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|vs|etc)\./gi, '')
+    .replace(/\b[A-Z]\.(?=\s+[A-Z][a-z])/g, '')
+    .replace(/\d\.\d/g, '')
+  // A quoted word or one quoted sentence can belong to a single task; a
+  // multi-sentence quoted passage must not become a loophole.
+  const withoutQuotedEndings = withoutAbbreviations.replace(/"([^"]*)"|“([^”]*)”|‘([^’]*)’|(?<![A-Za-z])'([^']*)'(?![A-Za-z])/g, (match, ...parts) => {
+    const quoted = parts.slice(0, 4).find((part) => part !== undefined)
+    return hasAssessmentSentenceBoundary(quoted) ? match : match.replace(/[.!?。！？]/g, '')
+  })
+  return !hasAssessmentSentenceBoundary(withoutQuotedEndings)
+}
+
+function hasAssessmentSentenceBoundary(text) {
+  for (const ending of text.matchAll(/[.!?。！？]/g)) {
+    if (text.slice(ending.index + 1).replace(/^[\s"'”’)]*/, '')) return true
+  }
+  return false
+}
+
 function questionOf(attempt, itemId) {
   if (!itemId) return null
   return (
@@ -1520,6 +1608,12 @@ function questionOf(attempt, itemId) {
     attempt.anchors.find((item) => item.id === itemId) ??
     null
   )
+}
+
+function publicAttempt(attempt) {
+  const view = { attemptId: attempt.id, total: attempt.items, progress: attempt.answers.length }
+  if (attempt.status === 'done') return { ...view, done: true, result: publicLevelPoint(attempt.result) }
+  return { ...view, question: publicQuestion(questionOf(attempt, attempt.current)) }
 }
 
 function publicQuestion(item) {
@@ -1597,65 +1691,155 @@ async function attemptHistory(ctx) {
   }
 }
 
+/** Submitted responses consume first-response status; an unanswered snapshot does not. */
+async function answeredAnchorIds(ctx) {
+  const answered = new Set((await readJsonl(file(ctx, 'anchorLog'))).map(entry => entry.anchorId))
+  const entries = await listDir(file(ctx, 'assessments'))
+  for (const entry of entries) {
+    if (!entry.isFile() || !/^\d{4}-.*\.json$/.test(entry.name)) continue
+    const { value, warning } = await readJson(join(file(ctx, 'assessments'), entry.name), null)
+    if (warning) fail('assessment_recovery_failed', `恢复测评失败：${warning}；不能确认锚题作答记录，请检查存储后重试`, 'attemptId')
+    if (value?.historyConversion === SCORING_RULE) {
+      for (const id of value.confirmedAnchorIds ?? []) answered.add(id)
+    } else for (const answer of value?.answers ?? []) {
+      if (answer.anchor) answered.add(answer.itemId)
+    }
+  }
+  return answered
+}
+
 async function recordAnchorResponse(ctx, attempt, item) {
   const id = item.id
   const log = await readJsonl(join(ctx.root, FILES.anchorLog))
   if (log.some((entry) => entry.attemptId === attempt.id && entry.anchorId === id)) return
   const answer = attempt.answers.find((candidate) => candidate.itemId === id)
   if (!answer) return
-  const contaminated = log.some((entry) => entry.anchorId === id)
+  const contaminated = answer.contaminated ?? log.some((entry) => entry.anchorId === id)
   answer.contaminated = contaminated
   await appendJsonl(join(ctx.root, FILES.anchorLog), {
     anchorId: id,
     attemptId: attempt.id,
-    at: ctx.now.toISOString(),
+    at: answer.at,
     correct: answer.correct,
     contaminated
   })
 }
 
-async function finishAttempt(ctx, attempt) {
-  const scored = scoreAssessment(
-    [...attempt.pool, ...attempt.anchors],
-    attempt.answers
-  )
-  // Only a first exposure is an honest reading of the item's difficulty: once
-  // the learner has seen an anchor, answering it again measures memory.
-  const cleanAnchors = attempt.answers.filter((answer) => answer.anchor && !answer.contaminated)
-  const anchorAccuracy = cleanAnchors.length
-    ? cleanAnchors.filter((answer) => answer.correct).length / cleanAnchors.length
-    : null
-
-  const level = await load(ctx, 'level')
-  const drift = anchorAccuracy === null ? level.drift : nextDrift(level.drift, anchorAccuracy)
-  const point = {
-    id: `level-${ctx.now.getTime().toString(36)}`,
-    at: ctx.now.toISOString(),
-    kind: attempt.kind,
-    band: scored.band,
-    estimate: scored.estimate,
-    accuracy: scored.accuracy,
-    weaknesses: scored.weaknesses,
-    reference: scored.reference,
-    anchorAccuracy: anchorAccuracy === null ? null : Number(anchorAccuracy.toFixed(2)),
-    driftStreak: drift.streak
+async function projectAnchorResponses(ctx, attempt) {
+  for (const answer of attempt.answers.filter(answer => answer.anchor)) {
+    await recordAnchorResponse(ctx, attempt, { id: answer.itemId })
   }
-  level.points = [...(level.points ?? []), point].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
-  level.drift = drift
-  await save(ctx, 'level', level)
+}
 
-  // The first result writes the route. Later results leave it alone: a route
-  // that rewrites itself after every test is not a route.
-  const syllabus = await load(ctx, 'syllabus')
-  if (!(syllabus.phases ?? []).length) await regenerateSyllabus(ctx)
+async function loadCompletionProjection(ctx, key) {
+  if (key === 'syllabus') return readSyllabus(file(ctx, key), DEFAULTS[key])
+  // readJson's empty fallback cannot distinguish a fresh root from a lost
+  // primary with an unusable backup. Never drop older points in that case.
+  try {
+    await fs.lstat(file(ctx, key))
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error
+    try {
+      await fs.lstat(`${file(ctx, key)}.bak`)
+    } catch (backupError) {
+      if (backupError?.code === 'ENOENT') return structuredClone(DEFAULTS[key])
+    }
+    fail('assessment_recovery_failed', '测评结果主记录缺失，请检查存储后重试；不能用空历史覆盖已有结果', 'attemptId')
+  }
+  const { value, warning } = await readJson(file(ctx, key), DEFAULTS[key])
+  if (warning || !Array.isArray(value?.points)) fail('assessment_recovery_failed', `恢复测评失败：${warning ?? '结果记录无效'}；请检查存储后重试，不能回退较旧结果`, 'attemptId')
+  return value
+}
 
+async function finishAttempt(ctx, attempt) {
+  const expected = attempt.kind === 'short' ? SHORT_ASSESSMENT_LENGTH : ASSESSMENT_LENGTH
+  if (attempt.answers.length !== expected || new Set(attempt.answers.map(answer => answer.itemId)).size !== expected) {
+    fail('assessment_incomplete', `本次测评需要 ${expected} 条响应，目前只有 ${attempt.answers.length} 条；请继续作答`, 'attemptId')
+  }
+  if (attempt.status === 'done') return publicAttempt(attempt)
+  if (!['in_progress', 'finalizing'].includes(attempt.status)) fail('attempt_finished', '这次测评已终止，不能结算', 'attemptId')
+  if (!attempt.finalization) {
+    // New response metadata is part of formal completion, not an inference
+    // default. Historical conversion validates the original response schema.
+    if (attempt.answers.some(answer =>
+      !isIsoTimestamp(answer.at) || !['grammar', 'vocab'].includes(answer.skill) ||
+      answer.responseId !== JSON.stringify([attempt.id, answer.itemId]) ||
+      !['choice', 'unable'].includes(answer.responseType) ||
+      (answer.responseType === 'unable' ? answer.choice !== null : !Number.isInteger(answer.choice) || answer.choice < 0 || answer.choice > 3)
+    )) fail('invalid_assessment_evidence', '测评响应记录不完整或损坏，不能正式结算', 'answers')
+    // Score only saved at-time facts; neither an overwritten bank nor a later
+    // projection can supply or rejudge a missing response. Validate before I/O.
+    const scored = scoreAssessment(attempt.answers)
+    await projectAnchorResponses(ctx, attempt)
+    // Journal the one rule's exact result so recovery never recalculates it.
+    const cleanAnchors = attempt.answers.filter((answer) => answer.anchor && !answer.contaminated)
+    const anchorAccuracy = cleanAnchors.length
+      ? cleanAnchors.filter((answer) => answer.correct).length / cleanAnchors.length
+      : null
+    const level = await loadCompletionProjection(ctx, 'level')
+    const drift = anchorAccuracy === null ? level.drift : nextDrift(level.drift, anchorAccuracy)
+    const at = attempt.answers.at(-1).at
+    const point = {
+      id: `level-${attempt.id}`,
+      attemptId: attempt.id,
+      at,
+      kind: attempt.kind,
+      band: scored.band,
+      finalBandIndex: scored.finalBandIndex,
+      coverageNote: scored.coverageNote,
+      scoringRule: scored.scoringRule,
+      scoring: scored.scoring,
+      accuracy: scored.accuracy,
+      counts: scored.counts,
+      weaknesses: scored.weaknesses,
+      reference: scored.reference,
+      anchorAccuracy: anchorAccuracy === null ? null : Number(anchorAccuracy.toFixed(2)),
+      driftStreak: drift.streak
+    }
+    const previous = await loadCompletionProjection(ctx, 'syllabus')
+    const profile = await load(ctx, 'profile')
+    const current = latestPoint(level)
+    const syllabus = !current || current.finalBandIndex !== point.finalBandIndex || !(previous.phases ?? []).length
+      ? buildSyllabus({ finalBandIndex: point.finalBandIndex, targetBand: profile.profile?.targetBand, todayText: dateOf(new Date(at)), generationId: `assessment-${attempt.id}`, at })
+      : null
+    // Durable intent precedes every derived write. The response and this exact
+    // point/syllabus can be replayed after any later file replacement fails.
+    attempt.status = 'finalizing'
+    attempt.finalization = { version: 1, point, drift, syllabus }
+    await writeJson(assessmentFile(ctx, attempt.id), attempt)
+  }
+  const { point, drift, syllabus } = attempt.finalization
+  const level = await loadCompletionProjection(ctx, 'level')
+  if (!(level.points ?? []).some(entry => entry.id === point.id || entry.attemptId === attempt.id)) {
+    level.points = [...(level.points ?? []), point].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
+    level.current = point
+    level.scoringRule = SCORING_RULE
+    level.drift = drift
+    await save(ctx, 'level', level)
+  }
+  if (syllabus) await publishSyllabus(file(ctx, 'syllabus'), syllabus, DEFAULTS.syllabus)
   attempt.status = 'done'
-  attempt.updatedAt = ctx.now.toISOString()
+  attempt.completionPending = true
+  attempt.updatedAt = point.at
   attempt.result = { ...point, drift }
   delete attempt.pool
   delete attempt.anchors
   await writeJson(assessmentFile(ctx, attempt.id), attempt)
-  return { attemptId: attempt.id, done: true, result: attempt.result, progress: attempt.answers.length }
+  return publicAttempt(attempt)
+}
+
+async function recoverAssessmentFinalizations(ctx) {
+  const entries = await listDir(file(ctx, 'assessments'))
+  const names = [...new Set(entries.filter(entry => entry.isFile() && /^\d{4}-.*\.json(?:\.bak)?$/.test(entry.name)).map(entry => entry.name.replace(/\.bak$/, '')))].sort()
+  for (const name of names) {
+    // A missing authority with a leftover backup is not a fresh attempt. The
+    // backup may predate its last accepted response or its completion intent.
+    const { value, warning } = await readJson(join(file(ctx, 'assessments'), name), null)
+    if (warning) fail('assessment_recovery_failed', `恢复测评失败：${warning}；请检查存储后重试`, 'attemptId')
+    if (value?.lifecycleVersion === 1 && (value.status === 'finalizing' || (value.status === 'in_progress' && value.answers.length === (value.kind === 'short' ? SHORT_ASSESSMENT_LENGTH : ASSESSMENT_LENGTH)))) {
+      await finishAttempt(ctx, value)
+    }
+  }
 }
 
 // ------------------------------------------------------------------ dispatch
@@ -1696,6 +1880,11 @@ async function executeCommand(root, command, payload = {}, options = {}) {
     return { ok: false, code: 'unknown_command', message: `不认识的命令 ${command}` }
   }
   try {
+    // No command may observe or change one projection of an unfinished result.
+    // Recovery runs in the same root lane as all reads and writers; failed I/O
+    // leaves the durable intent intact and the public command fails closed.
+    await recoverAssessmentHistory(ctx, DEFAULTS)
+    await recoverAssessmentFinalizations(ctx)
     const data = await handler(ctx, payload ?? {})
     return { ok: true, data, warnings }
   } catch (error) {

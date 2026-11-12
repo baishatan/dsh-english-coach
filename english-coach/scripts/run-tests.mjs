@@ -10,7 +10,12 @@ const script = fileURLToPath(import.meta.url)
 const defaultRoot = fileURLToPath(new URL('../', import.meta.url))
 const ownerFile = '.test-runner-owner.json'
 const environmentDirectories = { TMPDIR: 'tmp', TMP: 'tmp-windows', TEMP: 'temp', HOME: 'home', DSH_HOME: 'dsh-home', DSH_AGENTS_HOME: 'agents-home' }
-const coreFiles = ['core', 'due-review-correction', 'durable-round-recovery', 'host-preference', 'learning-experience', 'new-word-correction', 'round-outcome', 'shared-effective-result', 'translation', 'word-retry-acceptance'].map(name => `${name}.test.js`)
+const coreFiles = [
+  'assessment-anchors', 'assessment-bank', 'assessment-history', 'assessment-response', 'assessment-scoring',
+  'band-syllabus', 'core', 'due-review-correction', 'durable-round-recovery', 'host-preference',
+  'learning-experience', 'new-word-correction', 'onboarding-profile', 'round-outcome',
+  'shared-effective-result', 'translation', 'word-retry-acceptance'
+].map(name => `${name}.test.js`)
 
 function parseOptions(argv) {
   const options = { root: defaultRoot, suite: 'all', tmpParent: tmpdir(), testArgs: [] }

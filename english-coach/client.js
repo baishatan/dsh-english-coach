@@ -20,7 +20,7 @@ window.__ModuleLoader__.load({
       profile: '个人',
       loading: '加载中…',
       retry: '重试',
-      onboardTitle: '先说三件事',
+      onboardTitle: '说说你的学习目标',
       onboardHint: '这些只影响每天给你找什么材料，随时可以改。',
       goal: '想用英语做什么',
       goalWork: '工作里用',
@@ -34,7 +34,6 @@ window.__ModuleLoader__.load({
       interests: '感兴趣的主题',
       interestsHint: '逗号分隔，例如：工程管理, 产品设计, 能源',
       profileTitle: '个人目标',
-      profileHint: '用于安排学习目标和选择课程素材，随时可以改。',
       profileInterestsHint: '输入主题后按回车或点「添加」，最多 12 个；最后点「保存」。',
       interestLimit: '最多填写 12 个兴趣主题，请先移除一些再添加。',
       goalNote: '为什么学英语',
@@ -48,7 +47,7 @@ window.__ModuleLoader__.load({
       saved: '已保存',
       startAssessment: '先做一次测评',
       assessmentFirst: '测评大约 10 分钟，全是选择题。',
-      needBank: '还没有题库。点下面让 Agent 出一套，大约一分钟。',
+      needBank: '还没有题库。请重新准备至少 24 道独立词汇/语法短题，难度 1–6 各至少 4 道；点「生成测评题库」后才会开始准备。',
       makeBank: '生成测评题库',
       makeBankRunning: '正在出题…',
       bankReady: '题库已就绪，可以开始测评。',
@@ -140,7 +139,7 @@ window.__ModuleLoader__.load({
       streakShort: '连续',
       bandShort: '档位',
       assessmentShort: '测评',
-      assessmentFirstHint: '做完会给出档位和薄弱项，之后的大纲照着排。',
+      assessmentFirstHint: '当前未测评，可先从入门材料开始学习；测评用于估计词汇与语法档位，不是学习门槛。',
       backToStudy: '回到今天',
       todayIndex: '今天 {done} / {total} 项',
       noLessonShort: '今天还没排课',
@@ -149,7 +148,7 @@ window.__ModuleLoader__.load({
       phaseIndex: '第 {n} / {total} 阶段',
       nowWhere: '现在在哪',
       routeTitle: '换路线',
-      routeNote: '大纲照着当前档位排，不写死日期；水平变了就重写一次。本周已勾选的目标会保留。',
+      routeNote: '大纲从当前档位起步，目标档位只指引未来方向。首次测评或档位变化会重建；同档复测保留路线。重建后本周目标重新开始，实际学习记录和已学天数保留。',
       rewriteRoute: '重写大纲',
 
       // review
@@ -319,9 +318,11 @@ window.__ModuleLoader__.load({
         const request = generation
         try {
           const status = await call('job.status', { kind: 'vocab' })
-          if (request !== generation || !status.ok || !status.data) return
-          if (status.data.status === 'pending') return
-          patch({ job: status.data })
+          if (request !== generation) return
+          if (!status.ok) { patch({ error: `读取词汇生成状态失败：${status.message || '暂时无法连接后台'}。将继续重试，不会重复创建任务。` }); return }
+          if (!status.data) return
+          if (status.data.status === 'pending') { patch({ error: null }); return }
+          patch({ job: status.data, error: null })
           stopPolling()
           if (status.data.status === 'failed') { patch({ error: status.data.failure ?? t('generateFailed') }); return }
           patch({ busy: true })
@@ -924,8 +925,9 @@ window.__ModuleLoader__.load({
   transition: background .12s ease, border-color .12s ease, opacity .12s ease; }
 .ec-btn:hover:not(:disabled) { background: var(--dsw-alias-border-l1); }
 .ec-btn:disabled { opacity: .45; cursor: default; }
-.ec-btn-primary { background: var(--dsw-alias-brand-primary); color: var(--dsw-alias-bg-base); }
-.ec-btn-primary:hover:not(:disabled) { background: var(--dsw-alias-brand-primary); filter: brightness(1.06); }
+.ec-btn-primary { background: var(--ec-primary-fill, #0f1115); color: var(--ec-primary-foreground, #ffffff);
+  border-color: var(--dsw-alias-label-primary, #0f1115); font-weight: 600; }
+.ec-btn-primary:hover:not(:disabled) { background: var(--ec-primary-hover, #43454a); }
 .ec-btn-ghost { background: transparent; border-color: var(--dsw-alias-border-l2); color: var(--dsw-alias-label-primary); }
 .ec-btn-ghost:hover:not(:disabled) { background: var(--dsw-alias-bg-layer-2); }
 .ec-btn-sm { padding: 5px 10px; font-size: 12px; }
@@ -1199,12 +1201,18 @@ window.__ModuleLoader__.load({
 .ec-profile-read-error p { color: var(--dsw-alias-state-error-primary); margin: 0 0 8px; }
 @media (max-width: 600px) { .ec-profile-goal { padding: 20px; } .ec-profile-page-editing .ec-form { grid-template-columns: minmax(0, 1fr); gap: 16px; } }
 
-.ec-profile-comparison { display: flex; gap: 28px; flex-wrap: wrap; margin-top: 18px; padding-top: 16px;
+.ec-profile-actions { display: flex; align-items: center; gap: 16px; margin-left: auto; }
+.ec-profile-actions .ec-profile-link { font-size: 12.5px; min-height: 28px; padding: 2px 0; }
+.ec-profile-summary { margin-top: 10px; overflow-wrap: anywhere; }
+.ec-profile-meta { font-size: 12.5px; color: var(--dsw-alias-label-secondary); }
+.ec-profile-goal-note { font-size: 15.5px; line-height: 1.6; font-weight: 500; margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 65ch; }
+.ec-profile-goal-note[data-empty="true"] { color: var(--dsw-alias-label-secondary); font-weight: 400; }
+.ec-profile-interests { font-size: 12.5px; color: var(--dsw-alias-label-secondary); margin-top: 4px; }
+.ec-profile-comparison { display: flex; gap: 28px; flex-wrap: wrap; margin-top: 16px; padding-top: 14px;
   border-top: 1px solid var(--dsw-alias-border-l1); }
-.ec-profile-comparison > div { display: grid; gap: 3px; min-width: 100px; }
+.ec-profile-comparison > div { display: grid; gap: 2px; min-width: 100px; }
 .ec-profile-comparison span { color: var(--dsw-alias-label-secondary); font-size: 12px; }
-.ec-profile-comparison b { font-size: 21px; font-weight: 600; }
-.ec-profile-goal-note { font-size: 20px; line-height: 1.65; margin: 12px 0; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 65ch; }
+.ec-profile-comparison b { font-size: 16px; font-weight: 600; }
 .ec-profile-link { display: inline-block; border: 0; background: transparent; color: var(--dsw-alias-brand-primary); font: inherit;
   padding: 8px 0; min-height: 36px; cursor: pointer; text-align: left; }
 .ec-profile-link:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 3px; border-radius: 3px; }
@@ -1221,7 +1229,7 @@ window.__ModuleLoader__.load({
 .ec-profile-weaknesses { padding-left: 20px; font-size: 12.5px; color: var(--dsw-alias-label-secondary); }
 .ec-profile-diagnostics { font-size: 12px; color: var(--dsw-alias-label-secondary); }
 .ec-profile-diagnostics p { margin: 6px 0; }
-@media (max-width: 480px) { .ec-profile-metrics { gap: 12px; } .ec-profile-metrics dd { font-size: 21px; } .ec-profile-goal-note { font-size: 18px; } }
+@media (max-width: 480px) { .ec-profile-metrics { gap: 12px; } .ec-profile-metrics dd { font-size: 21px; } }
 
 .ec-curve-wrap { margin-top: 18px; min-width: 0; }
 .ec-curve-scroll { overflow-x: auto; max-width: 100%; }
@@ -1289,9 +1297,52 @@ window.__ModuleLoader__.load({
 .ec-pop .ec-acts { margin-top: 10px; }
 .ec-pop-acts { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 8px; margin-top: 14px; }
 .ec-pop-acts > .ec-btn { flex: none; white-space: nowrap; margin-left: 0; }
+/* Keep the shared primary focus ring after page-specific focus rules. */
+.ec-btn.ec-btn-primary:focus-visible { outline: 2px solid var(--dsw-alias-label-primary, #0f1115); outline-offset: 3px; }
 `
     function Style() {
-      return h('style', { dangerouslySetInnerHTML: { __html: CSS } })
+      const element = useRef(null)
+      useEffect(() => {
+        const scope = element.current?.parentElement
+        if (!scope) return
+        // CSS var fallbacks are independent: a missing foreground could otherwise
+        // leave a theme fill paired with unrelated fallback text. Select all three
+        // semantic tokens together and keep their CSS references live.
+        const tokens = [
+          ['--ec-primary-fill', '--dsw-alias-button-primary-fill', '#0f1115'],
+          ['--ec-primary-hover', '--dsw-alias-button-primary-hover', '#43454a'],
+          ['--ec-primary-foreground', '--dsw-alias-label-primary-foreground', '#ffffff']
+        ]
+        const sync = () => {
+          const computed = window.getComputedStyle(scope)
+          const complete = tokens.every(([, name]) => computed.getPropertyValue(name).trim())
+          for (const [local, name, fallback] of tokens) {
+            const value = complete ? `var(${name})` : fallback
+            if (scope.style.getPropertyValue(local) !== value) scope.style.setProperty(local, value)
+          }
+        }
+        sync()
+        const ancestors = new Set()
+        for (let node = scope; node; node = node.parentElement) ancestors.add(node)
+        const sheetSelector = 'style:not([data-ec-style]),link[rel~="stylesheet"]'
+        const isSheet = node => node?.nodeType === 1 && node.matches(sheetSelector)
+        const hasSheet = node => isSheet(node) || (node?.nodeType === 1 && node.querySelector(sheetSelector))
+        const refresh = () => { sync(); observer.takeRecords() } // discard our own local-token writes
+        const observer = new window.MutationObserver(records => {
+          // Theme changes arrive on ancestors or external stylesheets. Ignore
+          // answer text, lesson DOM and our own style nodes; each mutation batch
+          // needs at most one computed-style read, including across busy renders.
+          if (records.some(record => record.type === 'attributes'
+            ? ancestors.has(record.target) || isSheet(record.target)
+            : isSheet(record.target) || isSheet(record.target.parentElement)
+              || [...record.addedNodes, ...record.removedNodes].some(hasSheet))) refresh()
+        })
+        observer.observe(document.documentElement, { subtree: true, attributes: true, attributeFilter: ['class', 'style', 'data-ds-dark-theme', 'href', 'media', 'disabled', 'rel'], childList: true, characterData: true })
+        const loaded = event => { if (isSheet(event.target)) refresh() }
+        document.addEventListener('load', loaded, true)
+        return () => { observer.disconnect(); document.removeEventListener('load', loaded, true) }
+      }, [])
+      return h('style', { ref: element, 'data-ec-style': true, dangerouslySetInnerHTML: { __html: CSS } })
     }
 
     // ------------------------------------------------------------ primitives
@@ -1329,11 +1380,11 @@ window.__ModuleLoader__.load({
       )
     }
 
-    function Field({ label, hint, children }) {
+    function Field({ label, hint, children, id }) {
       return h(
         'div',
         { className: 'ec-field' },
-        h('label', { className: 'ec-label' }, label),
+        h('label', { className: 'ec-label', htmlFor: id }, label),
         children,
         hint ? h('div', { className: 'ec-muted', style: { marginTop: 5 } }, hint) : null
       )
@@ -1396,12 +1447,19 @@ window.__ModuleLoader__.load({
         goal: 'work',
         minutesPerDay: 30,
         targetBand: '中级',
+        goalNote: '',
         interests: '',
         workContext: ''
       })
       const [busy, setBusy] = useState(false)
       const [error, setError] = useState(null)
       const [guessed, setGuessed] = useState(false)
+      const fieldId = useId()
+      const firstField = useRef(null)
+      const goalField = useRef(null)
+      const saving = useRef(false)
+      useEffect(() => { firstField.current?.focus() }, [])
+      useEffect(() => { if (error) goalField.current?.focus() }, [error])
 
       // A first guess from the current workspace, so the learner confirms or
       // corrects it instead of describing their work from scratch.
@@ -1417,11 +1475,15 @@ window.__ModuleLoader__.load({
       }, [])
 
       const submit = async () => {
+        if (saving.current) return
+        saving.current = true
         setBusy(true)
+        setError(null)
         const result = await call('profile.save', {
           goal: form.goal,
           minutesPerDay: Number(form.minutesPerDay),
           targetBand: form.targetBand,
+          goalNote: form.goalNote,
           workContext: form.workContext,
           interests: form.interests
             .split(/[,，]/)
@@ -1429,12 +1491,13 @@ window.__ModuleLoader__.load({
             .filter(Boolean)
         })
         setBusy(false)
+        saving.current = false
         if (!result.ok) {
           setError(result.message)
           return
         }
         setError(null)
-        await onSaved()
+        await onSaved(result.data.profile)
       }
 
       return h(
@@ -1445,8 +1508,10 @@ window.__ModuleLoader__.load({
         guessed
           ? h(
               Field,
-              { label: t('workContext'), hint: t('workContextHint') },
+              { label: t('workContext'), hint: t('workContextHint'), id: `${fieldId}-work` },
               h('input', {
+                id: `${fieldId}-work`,
+                disabled: busy,
                 className: 'ec-input',
                 type: 'text',
                 value: form.workContext,
@@ -1456,10 +1521,13 @@ window.__ModuleLoader__.load({
           : null,
         h(
           Field,
-          { label: t('goal') },
+          { label: t('goal'), id: `${fieldId}-goal` },
           h(
             'select',
             {
+              id: `${fieldId}-goal`,
+              disabled: busy,
+              ref: firstField,
               className: 'ec-select',
               value: form.goal,
               onChange: (event) => setForm({ ...form, goal: event.target.value })
@@ -1471,8 +1539,10 @@ window.__ModuleLoader__.load({
         ),
         h(
           Field,
-          { label: t('minutes') },
+          { label: t('minutes'), id: `${fieldId}-minutes` },
           h('input', {
+            id: `${fieldId}-minutes`,
+            disabled: busy,
             className: 'ec-input',
             type: 'number',
             min: 5,
@@ -1483,10 +1553,12 @@ window.__ModuleLoader__.load({
         ),
         h(
           Field,
-          { label: t('targetBand') },
+          { label: t('targetBand'), id: `${fieldId}-band` },
           h(
             'select',
             {
+              id: `${fieldId}-band`,
+              disabled: busy,
               className: 'ec-select',
               value: form.targetBand,
               onChange: (event) => setForm({ ...form, targetBand: event.target.value })
@@ -1496,8 +1568,25 @@ window.__ModuleLoader__.load({
         ),
         h(
           Field,
-          { label: t('interests'), hint: t('interestsHint') },
+          { label: t('goalNote'), hint: '可选，写下具体目标或希望用英语完成的事。', id: `${fieldId}-note` },
+          h('textarea', {
+            id: `${fieldId}-note`,
+            ref: goalField,
+            disabled: busy,
+            className: 'ec-input ec-profile-note-input',
+            rows: 3,
+            'aria-label': t('goalNote'),
+            value: form.goalNote,
+            placeholder: t('goalNotePlaceholder'),
+            onChange: (event) => setForm({ ...form, goalNote: event.target.value })
+          })
+        ),
+        h(
+          Field,
+          { label: t('interests'), hint: t('interestsHint'), id: `${fieldId}-interests` },
           h('input', {
+            id: `${fieldId}-interests`,
+            disabled: busy,
             className: 'ec-input',
             type: 'text',
             value: form.interests,
@@ -1668,8 +1757,7 @@ window.__ModuleLoader__.load({
           prefs.manualPlay ? h(Btn, { small: true, primary: true, onClick: () => { void audio.playLocal() } }, '播放生成音频') : null,
           prefs.localStatus && prefs.localStatus !== '试听结束' ? h(Btn, { small: true, onClick: () => audio.release(owner.current) }, '停止试听') : null,
           !kokoro ? h(Btn, { small: true, onClick: audio.refreshVoices }, '重试声源') : null),
-        h('div', { className: 'ec-muted', style: { marginTop: 10 } }, kokoro ? '本地音色在 DSH 主机处理文本；远程页面会把文本交给该主机。' : '系统音色来自当前网页设备。'),
-        h('div', { className: 'ec-sub' }, '语速为相对档位，不同音色的实际词速可能不同。'),
+        !kokoro ? h('div', { className: 'ec-muted', style: { marginTop: 10 } }, '系统音色来自当前网页设备。') : null,
         prefs.localStatus ? h('div', { role: 'status', 'aria-live': 'polite' }, prefs.localStatus) : null,
         prefs.notice ? h('div', { role: 'status', className: 'ec-muted' }, prefs.notice) : null,
         prefs.error ? h(Notice, { tone: 'error' }, prefs.error) : null,
@@ -2178,8 +2266,11 @@ window.__ModuleLoader__.load({
     function WeeklyCard({ data, reload }) {
       const weekly = data.syllabus?.weekly ?? { goals: [], completedGoals: 0, totalGoals: 0 }
       const goals = weekly.goals ?? []
+      const [error, setError] = useState(null)
       const toggle = async (goalId, done) => {
-        await call('syllabus.toggleGoal', { goalId, done })
+        setError(null)
+        const result = await call('syllabus.toggleGoal', { goalId, done })
+        if (!result.ok) setError(result.code === 'goal_not_found' ? '本周目标已变化，旧目标未保存；请使用更新后的目标。' : result.message)
         await reload()
       }
       return h(
@@ -2191,6 +2282,7 @@ window.__ModuleLoader__.load({
           h('h2', null, t('weekGoals')),
           h('span', { className: 'ec-sub' }, `${weekly.completedGoals ?? 0} / ${weekly.totalGoals ?? 0}`)
         ),
+        error ? h('div', { role: 'alert' }, h(Notice, { tone: 'error' }, error)) : null,
         goals.length
           ? h(
               'div',
@@ -2652,6 +2744,8 @@ window.__ModuleLoader__.load({
 
     function TodayTab({ data, words, reload, onTab, onChooseList, onOpenVocabulary }) {
       const [job, setJob] = useState(null)
+      const [jobError, setJobError] = useState(null)
+      const [jobRetry, setJobRetry] = useState(0)
       const [notice, setNotice] = useState(null)
       const [busy, setBusy] = useState(false)
       const lesson = data.todayLesson
@@ -2660,18 +2754,22 @@ window.__ModuleLoader__.load({
         let alive = true
         void (async () => {
           const result = await call('job.status', { kind: 'lesson' })
-          if (alive && result.ok && result.data && result.data.date === data.today) setJob(result.data)
+          if (!alive) return
+          if (!result.ok) { setJobError(`读取课程生成状态失败：${result.message || '暂时无法连接后台'}。请重试读取，已有任务不会重复创建。`); return }
+          setJobError(null)
+          if (result.data && result.data.date === data.today) setJob(result.data)
         })()
         return () => {
           alive = false
         }
-      }, [data.today])
+      }, [data.today, jobRetry])
 
       useEffect(() => {
         if (!job || job.status !== 'pending') return
         const timer = setInterval(async () => {
           const result = await call('job.status', { kind: 'lesson' })
-          if (!result.ok) return
+          if (!result.ok) { setJobError(`读取课程生成状态失败：${result.message || '暂时无法连接后台'}。将继续重试，不会重复创建任务。`); return }
+          setJobError(null)
           setJob(result.data)
           if (result.data && result.data.status !== 'pending') {
             await reload()
@@ -2711,6 +2809,8 @@ window.__ModuleLoader__.load({
         'div',
         null,
         notice ? h(Notice, { tone: notice.tone }, notice.text) : null,
+        jobError ? h('div', { role: 'alert' }, h(Notice, { tone: 'error' }, jobError),
+          h(Btn, { small: true, onClick: () => setJobRetry(value => value + 1) }, '重试生成状态')) : null,
         failed ? h(Notice, { tone: 'error' }, `${t('generateFailed')}：${job.failure ?? ''}`) : null,
         pending ? h(Notice, null, t('generating')) : null,
         h(
@@ -2868,20 +2968,14 @@ window.__ModuleLoader__.load({
 
     // -------------------------------------------------------------- progress
 
-    const SKILL_LABEL = {
-      grammar: '语法',
-      vocab: '词汇',
-      reading: '阅读',
-      listening: '听力',
-      inference: '推断'
-    }
+    const SKILL_LABEL = { grammar: '语法', vocab: '词汇' }
 
     function Curve({ points }) {
       const records = (points ?? []).map((point, index) => ({ ...point, order: index }))
         .sort((a, b) => String(a.at).localeCompare(String(b.at)) || a.order - b.order)
       if (!records.length) return h('p', { className: 'ec-muted' }, '还没有测评记录，完成一次测评后可在这里回顾。')
       const width = 600, height = 200, left = 68, right = 24, top = 18, bottom = 36
-      const valueOf = point => Number.isFinite(point.estimate) ? Math.min(6, Math.max(1, point.estimate)) : Math.max(1, BANDS.indexOf(point.band) + 1)
+      const valueOf = point => Math.max(1, BANDS.indexOf(point.band) + 1)
       const xs = records.map((_, index) => records.length === 1 ? (left + width - right) / 2 : left + index * (width - left - right) / (records.length - 1))
       const yOf = value => height - bottom - ((value - 1) / 5) * (height - top - bottom)
       const d = xs.map((x, index) => `${index ? 'L' : 'M'}${x.toFixed(1)},${yOf(valueOf(records[index])).toFixed(1)}`).join(' ')
@@ -3051,19 +3145,20 @@ window.__ModuleLoader__.load({
             'div',
             { className: 'ec-profile-section-head' },
             h('h2', null, editing ? '编辑个人目标' : t('profileTitle')),
-            h('span', { className: 'ec-sub' }, editing ? '保存后用于安排后续学习，已有进度不变。' : t('profileHint'))
+            editing ? h('span', { className: 'ec-sub' }, '保存后用于安排后续学习，已有进度不变。') : null,
+            h('div', { className: 'ec-profile-actions' },
+              !editing ? h('button', { type: 'button', className: 'ec-profile-link', ref: editButton, onClick: () => { setDraft(savedProfile.current); setStatus(null); setEditing(true) } }, '编辑个人目标') : null,
+              onAssess ? h('button', { type: 'button', className: 'ec-profile-link', onClick: onAssess }, data.level?.latest ? '重新测评' : '开始测评') : null)
           ),
           !editing ? h(React.Fragment, null,
-            h('div', { style: { marginTop: 12, overflowWrap: 'anywhere' } },
-              h('div', null, `${t(`goal${String(draft.goal ?? 'other')[0].toUpperCase()}${String(draft.goal ?? 'other').slice(1)}`)} · 每天 ${draft.minutesPerDay ?? 30} 分钟 · 目标 ${draft.targetBand || '暂未设定'}`),
-              h('div', { className: 'ec-profile-goal-note' }, draft.goalNote ? (fullGoal || draft.goalNote.length <= 80 ? draft.goalNote : `${draft.goalNote.slice(0, 80)}…`) : '还没有填写具体目标'),
-              h('div', { className: 'ec-muted' }, `兴趣：${(fullGoal ? interests : interests.slice(0, 3)).map(text => fullGoal || text.length <= 16 ? text : `${text.slice(0, 16)}…`).join('、') || '暂未填写'}${!fullGoal && interests.length > 3 ? ` 等 ${interests.length} 项` : ''}`),
+            h('div', { className: 'ec-profile-summary' },
+              h('div', { className: 'ec-profile-meta' }, `${t(`goal${String(draft.goal ?? 'other')[0].toUpperCase()}${String(draft.goal ?? 'other').slice(1)}`)} · 每天 ${draft.minutesPerDay ?? 30} 分钟 · 目标 ${draft.targetBand || '暂未设定'}`),
+              h('div', { className: 'ec-profile-goal-note', 'data-empty': draft.goalNote ? null : 'true' }, draft.goalNote ? (fullGoal || draft.goalNote.length <= 80 ? draft.goalNote : `${draft.goalNote.slice(0, 80)}…`) : '还没有填写具体目标'),
+              h('div', { className: 'ec-profile-interests' }, `兴趣：${(fullGoal ? interests : interests.slice(0, 3)).map(text => fullGoal || text.length <= 16 ? text : `${text.slice(0, 16)}…`).join('、') || '暂未填写'}${!fullGoal && interests.length > 3 ? ` 等 ${interests.length} 项` : ''}`),
               (draft.goalNote?.length > 80 || interests.length > 3 || interests.some(text => text.length > 16)) ? h('button', { type: 'button', className: 'ec-profile-link', 'aria-expanded': fullGoal, onClick: () => setFullGoal(value => !value) }, fullGoal ? '收起完整目标' : '查看完整目标') : null),
             h('div', { className: 'ec-profile-comparison', role: 'group', 'aria-label': '当前与目标' },
               h('div', null, h('span', null, '当前水平估计'), h('b', null, data.level?.latest?.band || '尚未测评')),
-              h('div', null, h('span', null, '目标档位'), h('b', null, draft.targetBand || '暂未设定')),
-              onAssess ? h('button', { type: 'button', className: 'ec-profile-link', onClick: onAssess }, data.level?.latest ? '重新测评' : '开始测评') : null),
-            h('button', { type: 'button', className: 'ec-btn', ref: editButton, onClick: () => { setDraft(savedProfile.current); setStatus(null); setEditing(true) }, style: { marginTop: 12 } }, '编辑个人目标')) : h(
+              h('div', null, h('span', null, '目标档位'), h('b', null, draft.targetBand || '暂未设定')))) : h(
             'fieldset',
             { className: 'ec-form', disabled: busy, style: { border: 0, padding: 0, minWidth: 0 } },
             h(
@@ -3218,7 +3313,7 @@ window.__ModuleLoader__.load({
       if (!progress) return h('section', { className: 'ec-card' }, failure || h('div', { className: 'ec-empty', role: 'status' }, '正在读取学习进度…'))
 
       const latest = data.level?.latest
-      const weaknesses = latest?.weaknesses ?? []
+      const weaknesses = (latest?.weaknesses ?? []).filter(item => SKILL_LABEL[item.skill])
       const knownWeaknesses = weaknesses.filter(item => SKILL_LABEL[item.skill] && Number(item.missed) > 0)
       const mostMissed = Math.max(0, ...knownWeaknesses.map(item => Number(item.missed)))
       const focusSkills = knownWeaknesses.filter(item => Number(item.missed) === mostMissed).map(item => SKILL_LABEL[item.skill])
@@ -3237,7 +3332,7 @@ window.__ModuleLoader__.load({
           h('p', { className: 'ec-profile-suggestion', 'aria-label': '下一步建议' }, suggestion)),
         showRecords ? h('section', { className: 'ec-card ec-profile-records', 'aria-label': '学习记录详情' },
           h('h2', null, t('curve')), h(Curve, { points: progress.curve }),
-          h('p', { className: 'ec-muted' }, '水平估计只作学习参考，不与考试分数等价。'),
+          h('p', { className: 'ec-muted' }, '根据词汇与语法短题估计，仅供安排学习'),
           h('dl', { className: 'ec-profile-detail-facts' },
             h('div', null, h('dt', null, t('learningWords')), h('dd', null, `${progress.learning} 项`)),
             h('div', null, h('dt', null, '最长连续'), h('dd', null, `${progress.streak.best} 天`))),
@@ -3256,18 +3351,30 @@ window.__ModuleLoader__.load({
 
     function AssessmentPanel({ onExit, onFinished }) {
       const [attempt, setAttempt] = useState(null)
-      const [feedback, setFeedback] = useState(null)
       const [result, setResult] = useState(null)
       const [notice, setNotice] = useState(null)
       const [busy, setBusy] = useState(false)
       const [bankJob, setBankJob] = useState(null)
+      const submitting = useRef(false)
+      const pendingAnswer = useRef(null)
+      const [recovery, setRecovery] = useState('loading')
 
-      useEffect(() => {
-        void (async () => {
-          const resumed = await call('assessment.resume')
-          if (resumed.ok && resumed.data) setAttempt(resumed.data)
-        })()
-      }, [])
+      const resume = async () => {
+        setRecovery('loading')
+        setNotice(null)
+        const resumed = await call('assessment.resume')
+        if (!resumed.ok) {
+          setNotice({ tone: 'error', text: resumed.message })
+          setRecovery('failed')
+          return
+        }
+        pendingAnswer.current = null
+        setAttempt(resumed.data)
+        setResult(resumed.data?.done ? resumed.data.result : null)
+        if (resumed.data?.restartRequired) setNotice({ tone: 'info', text: resumed.data.message })
+        setRecovery('ready')
+      }
+      useEffect(() => { void resume() }, [])
 
       useEffect(() => {
         if (!bankJob || bankJob.status !== 'pending') return
@@ -3294,7 +3401,6 @@ window.__ModuleLoader__.load({
           return
         }
         setResult(null)
-        setFeedback(null)
         setAttempt(started.data)
       }
 
@@ -3310,28 +3416,34 @@ window.__ModuleLoader__.load({
         setNotice(null)
       }
 
-      const answer = async (choice) => {
-        if (!attempt || !attempt.question) return
-        setBusy(true)
-        const answered = await call('assessment.answer', {
+      const answer = async (response) => {
+        if (submitting.current || !attempt?.question) return
+        submitting.current = true
+        pendingAnswer.current ??= {
           attemptId: attempt.attemptId,
           itemId: attempt.question.id,
-          choice
-        })
+          ...response
+        }
+        setBusy(true)
+        const answered = await call('assessment.answer', pendingAnswer.current)
+        submitting.current = false
         setBusy(false)
         if (!answered.ok) {
           setNotice({ tone: 'error', text: answered.message })
           return
         }
-        setFeedback({ choice, answerIndex: answered.data.answerIndex, explanation: answered.data.explanation })
-        if (answered.data.done) {
-          setResult(answered.data.result)
-          return
-        }
-        setTimeout(() => {
-          setFeedback(null)
-          setAttempt({ ...attempt, question: answered.data.question, progress: answered.data.progress })
-        }, 900)
+        pendingAnswer.current = null
+        setNotice(null)
+        setAttempt(answered.data)
+        if (answered.data.done) setResult(answered.data.result)
+      }
+
+      if (recovery !== 'ready') {
+        return h('div', { className: 'ec-card' },
+          h('div', { role: 'status' }, recovery === 'loading' ? '正在恢复测评…' : '测评尚未恢复'),
+          notice ? h(Notice, { tone: notice.tone }, notice.text) : null,
+          recovery === 'failed' ? h(Btn, { onClick: resume }, t('retry')) : null,
+          h(Btn, { ghost: true, onClick: onExit }, '稍后继续'))
       }
 
       if (result) {
@@ -3340,12 +3452,17 @@ window.__ModuleLoader__.load({
           { className: 'ec-card' },
           h('div', { className: 'ec-stat-label' }, t('resultTitle')),
           h('div', { className: 'ec-big', style: { fontSize: 38 } }, result.band),
+          notice ? h(Notice, { tone: notice.tone }, notice.text) : null,
+          h('p', { className: 'ec-muted' }, result.scope),
           h('div', { className: 'ec-muted', style: { margin: '10px 0 4px' } },
             `${t('resultRef')}：${result.reference}`),
+          h('p', null, `正确 ${result.counts?.correct ?? 0}　错误 ${result.counts?.incorrect ?? 0}　不会 ${result.counts?.unable ?? 0}`),
+          h('p', null, `本轮答对率 ${Math.round((result.accuracy ?? 0) * 100)}%（包括不会的响应）`),
+          result.coverageNote ? h('p', { className: 'ec-muted' }, result.coverageNote) : null,
           h('div', { className: 'ec-section-title' }, t('resultWeak')),
-          (result.weaknesses ?? []).length
-            ? result.weaknesses.map((weakness, index) =>
-                h('div', { key: index, className: 'ec-muted' }, `· ${weakness.skill}（错 ${weakness.missed} 题）`)
+          (result.weaknesses ?? []).some(weakness => SKILL_LABEL[weakness.skill])
+            ? result.weaknesses.filter(weakness => SKILL_LABEL[weakness.skill]).map((weakness, index) =>
+                h('div', { key: index, className: 'ec-muted' }, `· ${SKILL_LABEL[weakness.skill]}（错误或不会 ${weakness.missed} 题）`)
               )
             : h('div', { className: 'ec-muted' }, t('resultWeakNone')),
           h(
@@ -3355,7 +3472,18 @@ window.__ModuleLoader__.load({
               Btn,
               {
                 primary: true,
+                disabled: busy,
                 onClick: async () => {
+                  if (submitting.current) return
+                  submitting.current = true
+                  setBusy(true)
+                  const acknowledged = await call('assessment.acknowledge', { attemptId: attempt.attemptId })
+                  submitting.current = false
+                  setBusy(false)
+                  if (!acknowledged.ok) {
+                    setNotice({ tone: 'error', text: acknowledged.message })
+                    return
+                  }
                   await onFinished()
                   onExit()
                 }
@@ -3376,7 +3504,7 @@ window.__ModuleLoader__.load({
             { className: 'ec-row' },
             h('span', { className: 'ec-muted' },
               t('question', { n: (attempt.progress ?? 0) + 1, total: attempt.total ?? 20 })),
-            h(Btn, { ghost: true, style: { marginLeft: 'auto' }, onClick: onExit }, t('exiting'))
+            h(Btn, { ghost: true, disabled: busy, style: { marginLeft: 'auto' }, onClick: onExit }, '稍后继续')
           ),
           h('div', { className: 'ec-progress' },
             h('i', { style: { width: `${(((attempt.progress ?? 0) + 1) / (attempt.total ?? 20)) * 100}%` } })),
@@ -3386,19 +3514,15 @@ window.__ModuleLoader__.load({
           h('div', { style: { fontSize: 14.5, marginBottom: 4 } }, question.prompt),
           h(ChoiceList, {
             choices: question.choices,
-            answerIndex: feedback ? feedback.answerIndex : -1,
-            picked: feedback ? feedback.choice : null,
-            disabled: busy,
-            onPick: answer
+            picked: null,
+            disabled: busy || Boolean(pendingAnswer.current),
+            onPick: choice => answer({ responseType: 'choice', choice })
           }),
-          feedback
-            ? h(
-                'div',
-                { className: 'ec-feedback' },
-                `${feedback.choice === feedback.answerIndex ? t('correct') : t('wrong')}　${feedback.explanation ?? ''}`
-              )
-            : null,
-          notice ? h(Notice, { tone: notice.tone }, notice.text) : null
+          h(Btn, { disabled: busy || Boolean(pendingAnswer.current), onClick: () => answer({ responseType: 'unable' }) }, '不会，继续'),
+          notice ? h(Notice, { tone: notice.tone }, notice.text) : null,
+          notice && pendingAnswer.current ? h('div', { className: 'ec-row' },
+            h(Btn, { disabled: busy, onClick: () => answer() }, t('retry')),
+            h(Btn, { disabled: busy, onClick: resume }, '恢复已保存进度')) : null
         )
       }
 
@@ -3440,7 +3564,11 @@ window.__ModuleLoader__.load({
       const openVocabulary = () => navigate(() => { setTab('words'); setOpenThemed(0); setOpenPersonal(value => value + 1) })
       const chooseList = () => navigate(() => { setTab('words'); setMode('normal'); setOpenPersonal(0); setOpenThemed(value => value + 1) })
       const startAssessment = () => navigate(() => setMode('assessment'))
-      const { data, error, loading, reload } = useRefresh(loadState, 20000)
+      const [onboardingProfile, setOnboardingProfile] = useState(null)
+      const { data: polledData, error, loading, reload } = useRefresh(loadState, 20000)
+      // A saved onboarding profile is confirmed even while an older state read is in flight.
+      const data = polledData && onboardingProfile && (!polledData.onboarded || !polledData.profile?.updatedAt || polledData.profile.updatedAt < onboardingProfile.updatedAt)
+        ? { ...polledData, onboarded: true, profile: onboardingProfile } : polledData
       const words = useRefresh(loadWords, 0)
       const round = useStudyRound(false)
 
@@ -3472,7 +3600,7 @@ window.__ModuleLoader__.load({
         return h('div', { className: 'ec-root' }, h(Style),
           h('div', { className: 'ec-wrap', style: { maxWidth: 720 } },
             h('header', { className: 'ec-top' }, h('h1', null, t('title'))),
-            h(Onboarding, { onSaved: reload })))
+            h(Onboarding, { onSaved: profile => { setOnboardingProfile(profile); void reload() } })))
       }
 
       if (mode === 'assessment') {
@@ -3543,8 +3671,7 @@ window.__ModuleLoader__.load({
               { className: 'ec-status' },
               h('span', null, `${t('dueShort')} `, h('b', null, String(due))),
               h('span', null, `${t('streakShort')} `, h('b', null, String(streak))),
-              band && tab !== 'profile' ? h('span', null, `${t('bandShort')} `, h('b', null, band)) : null,
-              h('button', { type: 'button', onClick: startAssessment }, t('assessmentShort'))
+              band && tab !== 'profile' ? h('span', null, `${t('bandShort')} `, h('b', null, band)) : null
             )
           ),
           error ? h(Notice, { tone: 'error' }, `刷新失败：${error}。当前内容和未保存修改已保留。`) : null,
@@ -3708,7 +3835,7 @@ window.__ModuleLoader__.load({
 
         h('div', { className: 'ec-section-title' }, t('regenerateSyllabus')),
         h('div', { className: 'ec-muted', style: { marginBottom: 10 } },
-          '按当前档位与目标档位重写一份大纲；本周已勾选的目标会保留。'),
+          t('routeNote')),
         h(
           Btn,
           {

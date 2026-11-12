@@ -103,7 +103,7 @@ function bank(count = 24) {
     items.push({
       id: `q-${index + 1}`,
       difficulty: (index % 6) + 1,
-      skill: ['grammar', 'vocab', 'reading'][index % 3],
+      skill: ['grammar', 'vocab'][index % 2],
       prompt: `Question ${index + 1}: pick one.`,
       choices: ['alpha', 'beta', 'gamma', 'delta'],
       answerIndex: index % 4,
@@ -583,7 +583,7 @@ test('测评按难度自适应：答对升档、答错降档，且不重复出�
     mean(right.difficulties) - mean(wrong.difficulties) >= 1,
     `全对应显著高于全错：${right.difficulties.join(',')} vs ${wrong.difficulties.join(',')}`
   )
-  assert.ok(right.result.estimate > wrong.result.estimate)
+  assert.ok(right.result.finalBandIndex > wrong.result.finalBandIndex)
   assert.ok(right.result.band !== wrong.result.band)
 })
 
@@ -652,13 +652,14 @@ test('已完成课程重新提交时保留已完成的学习项', async (t) => {
   assert.equal(after.data.lesson.summary, '补充了一句说明')
 })
 
-test('同一道锚题第二次遇到时被标记污染，不进入漂移统计', async (t) => {
+test('冻结锚题答完后不再复现，第五次仍由普通题补满', async (t) => {
   const root = await makeRoot(t)
   await run(root, 'assessment.saveBank', bank(), at('2026-10-20'))
 
-  // 锚题池 12 道、每次取 3 道，第 5 次测评会再次抽到第 1 批
+  // 锚题池 12 道、每次最多 3 道；第 5 次不再抽取已答锚题。
+  let fifth
   for (let round = 0; round < 5; round += 1) {
-    await fullAssessment(root, at(`2026-11-${String(round + 1).padStart(2, '0')}`))
+    fifth = await fullAssessment(root, at(`2026-11-${String(round + 1).padStart(2, '0')}`))
   }
 
   const log = await fs.readFile(join(root, 'anchors', 'responses.jsonl'), 'utf8')
@@ -667,13 +668,12 @@ test('同一道锚题第二次遇到时被标记污染，不进入漂移统计',
     .filter(Boolean)
     .map((line) => JSON.parse(line))
 
-  const repeated = entries.filter((entry) => entry.anchorId === 'anchor-01')
-  assert.equal(repeated.length, 2, '第 1 道锚题应在第 1 次与第 5 次测评中出现')
-  assert.equal(repeated[0].contaminated, false)
-  assert.equal(repeated[1].contaminated, true)
-
-  const clean = entries.filter((entry) => !entry.contaminated)
-  assert.equal(clean.length, 12, '只有每道锚题的首次暴露是干净样本')
+  assert.equal(entries.length, 12, '锚题耗尽不会为凑数再写作答')
+  assert.equal(new Set(entries.map((entry) => entry.anchorId)).size, 12)
+  assert.equal(entries.every((entry) => !entry.contaminated), true)
+  const attempt = JSON.parse(await fs.readFile(join(root, 'assessments', `${fifth.attemptId}.json`), 'utf8'))
+  assert.equal(attempt.answers.length, 10)
+  assert.equal(attempt.answers.some((answer) => answer.anchor), false)
 })
 
 test('锚题连续三次偏离基线后只加提示，不改分数', async (t) => {
@@ -697,8 +697,9 @@ test('锚题连续三次偏离基线后只加提示，不改分数', async (t) =
   const progress = await run(root, 'progress.get', {}, at('2026-10-25'))
   assert.ok(progress.data.drift.note, '连续三次偏离后应出现提示')
   assert.equal(progress.data.curve.length, 4)
-  const estimates = progress.data.curve.map((point) => point.estimate)
-  assert.ok(estimates.every((value) => Number.isFinite(value)), '分数不应被自动改动或清空')
+  assert.ok(progress.data.curve.every(point => Number.isInteger(point.finalBandIndex) && point.finalBandIndex >= 1 && point.finalBandIndex <= 6), '提示不应清空公开档位')
+  const level = JSON.parse(await fs.readFile(join(root, 'level.json'), 'utf8'))
+  assert.ok(level.points.every(point => point.finalBandIndex === Math.min(point.scoring.rawBandIndex, point.scoring.coverageCap)), '漂移观察不自动校正档位')
 })
 
 test('未到期的复习项不能推进盒子，到了才能答', async (t) => {
@@ -821,7 +822,7 @@ test('课程里的表达会自动进入复习队列', async (t) => {
   }
 })
 
-test('被污染的锚题作答不进入漂移判断', async (t) => {
+test('锚题耗尽后普通题作答不产生新的漂移判断', async (t) => {
   const root = await makeRoot(t)
   await run(root, 'assessment.saveBank', bank(), at('2026-10-20'))
 
@@ -830,22 +831,18 @@ test('被污染的锚题作答不进入漂移判断', async (t) => {
     await fullAssessment(root, at(`2026-10-2${round}`), { decide: (id) => answerIndexFor(id) })
   }
   const before = await run(root, 'progress.get', {}, at('2026-10-25'))
-  assert.equal(before.data.drift.streak, 0)
-  const baseline = before.data.drift.baseline
+  assert.deepEqual(before.data.drift, { note: null })
+  const priorLevel = JSON.parse(await fs.readFile(join(root, 'level.json'), 'utf8'))
+  assert.equal(priorLevel.drift.streak, 0)
 
-  // 第五次又抽到 1–3 号锚题（已污染），全部答错；这些作答不应推动漂移
-  await fullAssessment(root, at('2026-10-25'), {
-    decide: (id) => {
-      const correct = answerIndexFor(id)
-      return ANCHOR_POOL.some((anchor) => anchor.id === id) ? (correct + 1) % 4 : correct
-    }
-  })
+  // 第五次只用普通题；即使全部答错，也不应形成新的锚题漂移观察。
+  await fullAssessment(root, at('2026-10-25'), { decide: (id) => (answerIndexFor(id) + 1) % 4 })
 
   const after = await run(root, 'progress.get', {}, at('2026-10-25'))
-  assert.equal(after.data.drift.streak, 0, '污染样本不应计入漂移')
-  assert.equal(after.data.drift.baseline, baseline)
+  assert.deepEqual(after.data.drift, { note: null })
   const level = JSON.parse(await fs.readFile(join(root, 'level.json'), 'utf8'))
-  assert.equal(level.points[level.points.length - 1].anchorAccuracy, null, '污染样本不产生锚题准确率')
+  assert.deepEqual(level.drift, priorLevel.drift, '普通题不应计入锚题漂移')
+  assert.equal(level.points[level.points.length - 1].anchorAccuracy, null, '没有新锚题不产生锚题准确率')
 })
 
 test('数据文件被截断时回退到上一个可用版本并给出警告', async (t) => {
@@ -967,7 +964,7 @@ test('第一次测评完成后自动生成一份不含日期的大纲', async (t
   assert.equal(state.data.syllabus.currentPhase.id, 'phase-1')
 })
 
-test('重新生成大纲不丢失本周已勾选的目标', async (t) => {
+test('重新生成大纲重置本周目标勾选并拒绝旧目标身份', async (t) => {
   const root = await makeRoot(t)
   await run(root, 'assessment.saveBank', bank(), at('2026-10-20'))
   await fullAssessment(root, at('2026-10-20'))
@@ -979,8 +976,10 @@ test('重新生成大纲不丢失本周已勾选的目标', async (t) => {
   const regenerated = await run(root, 'syllabus.generate', {}, at('2026-10-20'))
   assert.equal(regenerated.ok, true, JSON.stringify(regenerated))
   const after = await run(root, 'state.get', {}, at('2026-10-20'))
-  assert.equal(after.data.syllabus.weekly.goals[0].done, true)
+  assert.equal(after.data.syllabus.weekly.goals[0].done, false)
+  assert.notEqual(after.data.syllabus.weekly.goals[0].id, goalId)
   assert.equal(after.data.syllabus.phases.length, 3)
+  assert.equal((await run(root, 'syllabus.toggleGoal', { goalId, done: true }, at('2026-10-20'))).ok, false)
 })
 
 test('大纲拒绝写入具体日期', async (t) => {

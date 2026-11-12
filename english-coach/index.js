@@ -3,7 +3,7 @@ import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 
 import { execute } from './core/index.js'
-import { dateOf } from './core/constants.js'
+import { BANDS, dateOf } from './core/constants.js'
 import { readJson, writeJson } from './core/store.js'
 import { createSpeechAssets } from './speech/assets.js'
 import { createSpeechAudio } from './speech/audio.js'
@@ -27,6 +27,14 @@ const WATCH_INTERVAL_MS = 5_000
 const JOB_TIMEOUT_MS = 15 * 60_000
 const HISTORY_TIMEOUT_MS = 10_000
 const HISTORY_MAX_PAGES = 20
+
+const ASSESSMENT_BANK_CONTRACT = [
+  '至少 24 道普通题，难度 1–6 为整数且各至少 4 道；skill 仅 grammar / vocab，整库两类均有覆盖，不设每档或每场比例。',
+  '每题是独立单句的词义、搭配、语法填空或句子选择，题干最多 30 个英文词；恰好四个不同的非空字符串选项，每项最多 12 个英文词，只有一个正确答案，answerIndex 为 0–3 整数。',
+  '英文词按连续英文字母计数，词内撇号、连字符和点分缩写仍算一词（如 don\'t、state-of-the-art、U.S.）；数字、符号及 ___ 填空占位不计英文词。',
+  '禁止文章、段落、多轮对话、音频及外部材料，passage 必须为空；不能把文章放进 prompt，不自动截断或改写不合格题目；高难题靠词义、搭配和句法而非篇幅。',
+  '普通题 ID 必须非空、池内唯一且不与冻结锚题 ID 冲突（保留 anchor-01 至 anchor-12）。'
+].join('\n')
 
 function resolveDefaultRoot() {
   return join(homedir(), 'DeepSeek-English')
@@ -241,7 +249,32 @@ export function apply(ctx, config) {
 
   // ------------------------------------------------------- the daily agent
 
+  async function learningContext() {
+    const snapshot = await execute(root, 'state.get')
+    // Only these stores supply the material's current band, profile or batch
+    // preference. An unrelated attendance warning is not a learning gate.
+    const unavailable = (snapshot.warnings ?? []).filter(warning => /^(?:profile|settings|level)\.json\s/.test(warning))
+    if (!snapshot.ok || unavailable.length) {
+      throw new Error(`无法读取可靠的学习状态，请检查后重试：${snapshot.message || unavailable.join('；') || '状态不可用'}`)
+    }
+    const data = snapshot.data
+    const latest = data?.level?.latest
+    if (!data?.level || latest !== null && (!Number.isInteger(latest?.finalBandIndex)
+      || latest.finalBandIndex < 1 || latest.finalBandIndex > BANDS.length
+      || latest.band !== BANDS[latest.finalBandIndex - 1])) {
+      throw new Error('当前档位状态不可用，请检查后重试；未创建生成任务')
+    }
+    const band = latest?.band ?? BANDS[0]
+    const index = latest?.finalBandIndex ?? 1
+    return { data, lines: [
+      latest ? `当前有效测评档位：${band}。` : '当前测评状态：未测评；可直接学习，不要求先完成测评；入门材料起点不代表测评结果。',
+      `材料难度：${band}（档位 ${index}/6）。`,
+      '目标档位只表示未来方向，不抬高或压低材料难度；大纲阶段和路线只用于选择主题，不能覆盖当前材料档位。'
+    ] }
+  }
+
   async function lessonPrompt() {
+    const learning = await learningContext()
     const preference = await execute(root, 'study.preference', {})
     if (!preference.ok) throw new Error(preference.message || '无法读取当前词库偏好')
     const { activeWordList, candidates, candidateCount, batchSize } = preference.data
@@ -256,6 +289,7 @@ export function apply(ctx, config) {
       '你是「英语教练」的素材采购员。按下面的步骤工作，不要输出与任务无关的内容。',
       '',
       '1. 先调用 english_state，读出 today、画像、当前阶段与阶段目标、最近水平估计、到期复习数量、近 7 天用过的素材链接。',
+      ...learning.lines,
       '   今天已有草稿、进行中或已完成课程就保留，不重复生成或覆盖；说明已有课程即可。',
       '   不要用任何工具在本机写文件；所有内容只能通过 english_save_lesson 提交。',
       ...preferenceLines,
@@ -283,9 +317,8 @@ export function apply(ctx, config) {
       '你是「英语教练」的出题人。请只做一件事：调用 english_save_assessment 提交一套英语测评题库。',
       '',
       '要求：',
-      '- 24 道四选一，难度 1 到 6 各 4 道；1 大致是最简单，6 大致是最难。',
-      '- 覆盖语法、词汇、阅读理解、推断四类，skill 字段里标明。',
-      '- 每题 4 个选项、只有一个正确答案，answerIndex 是从 0 开始的选项下标。',
+      ASSESSMENT_BANK_CONTRACT,
+      '- 难度 1 最简单、6 最难；结构校验不证明教学正确或难度已标定，提交前逐题检查唯一答案和内容独立性。',
       '- 每题给一句中文讲解，说明为什么正确答案对、其他选项错在哪。',
       '- 不要使用任何考试机构的真题或改编题，自己写。',
       '- 不要在对话里贴出题目正文，直接调用工具提交。'
@@ -297,18 +330,19 @@ export function apply(ctx, config) {
    * writes vocabulary; it never touches the lesson or the syllabus.
    */
   async function vocabPrompt() {
-    const snapshot = await execute(root, 'state.get').catch(() => null)
-    const data = snapshot?.ok ? snapshot.data : null
-    const count = data?.settings?.study?.wordsPerDay ?? 10
-    const band = data?.level?.latest?.band ?? '未测评'
+    const learning = await learningContext()
+    const count = learning.data.settings.study.wordsPerDay
     return [
       '你是「英语教练」的补充词汇编辑。只做一件事：调用 english_add_words 提交一批新词。',
       '',
-      '1. 先调用 english_state，读出画像、当前档位、目标档位和 review.terms（已经有的词）。',
+      '1. 先调用 english_state，读出画像、当前档位和 review.terms（已经有的词）；失败或当前档位不可用就报告原因并停止，不使用旧快照猜测。',
+      '   以最新返回的 level.latest.finalBandIndex 与 band 为准；latest 为 null 时仍是未测评，从入门材料开始。',
+      '   以下是请求时的参考快照；若状态已变，以最新状态更新材料难度、画像、每批词数与已有词。',
+      ...learning.lines,
       `2. 出 ${count} 个新词或整块表达，要求：`,
       '   - 避免重复已有词；忽略大小写及多余空白，同词最终由插件全量去重，review.terms 只是有限摘要，不自动合并不同词形或英美拼写；',
       '   - 贴近画像里的工作方向和兴趣，整块表达优先于孤立单词；',
-      `   - 难度略高于「${band}」、但不高于目标档位；`,
+      '   - 按最新状态确定的材料难度选择新词，不自行提高或降低档位；',
       '   - 每个词给中文释义、4 个不同的中文选项，以及一句中文讲解（常见搭配、和近义词的区别）；',
       '   - answerIndex 指向与 meaning 完全相同的那一项。',
       '3. 不要在对话里贴出词表，直接调用 english_add_words。',
@@ -739,29 +773,32 @@ export function apply(ctx, config) {
     {
       name: 'english_save_assessment',
       description:
-        '提交一套测评题库。至少 20 道四选一，难度用 1 到 6 标注，覆盖多个难度；插件会按作答自适应抽题，并混入自己的锚题。以 version 为幂等键。',
+        `提交一套简短词汇与语法测评题库。${ASSESSMENT_BANK_CONTRACT}\n保存和开测共用准入规则，不合格时请重新准备。插件会自适应抽题并混入冻结锚题。以 version 为幂等键。`,
       parameters: {
         type: 'object',
         properties: {
           version: { type: 'string', description: '这一套题目的版本标识' },
           items: {
             type: 'array',
+            minItems: 24,
+            description: '至少 24 道普通题，难度 1–6 各至少 4 道，整库同时覆盖 grammar 和 vocab',
             items: {
               type: 'object',
               properties: {
-                id: { type: 'string' },
+                id: { type: 'string', minLength: 1, description: '普通池内唯一，不能与冻结锚题 ID 相同' },
                 difficulty: { type: 'integer', minimum: 1, maximum: 6 },
                 skill: {
                   type: 'string',
-                  description: 'grammar / vocab / reading / listening / inference'
+                  enum: ['grammar', 'vocab'],
+                  description: '仅 grammar / vocab，整库两类均须包含，不设每档比例'
                 },
-                prompt: { type: 'string' },
-                passage: { type: 'string', description: '如有阅读材料，放这里' },
-                choices: { type: 'array', items: { type: 'string' }, minItems: 4, maxItems: 4 },
+                prompt: { type: 'string', minLength: 1, description: '独立单句，最多 30 个英文词；缩写算一词、填空占位不计词' },
+                passage: { type: 'string', description: '必须为空；禁止文章、对话、音频或外部材料' },
+                choices: { type: 'array', items: { type: 'string', minLength: 1, description: '非空且互不相同，每项最多 12 个英文词' }, minItems: 4, maxItems: 4 },
                 answerIndex: { type: 'integer', minimum: 0, maximum: 3 },
                 explanation: { type: 'string', description: '中文讲解' }
               },
-              required: ['id', 'difficulty', 'prompt', 'choices', 'answerIndex']
+              required: ['id', 'difficulty', 'skill', 'prompt', 'choices', 'answerIndex']
             }
           }
         },

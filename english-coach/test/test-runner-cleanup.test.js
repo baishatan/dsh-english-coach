@@ -235,6 +235,30 @@ test('public runner rejects command injection, out-of-package files and symlinke
   }
 })
 
+test('public core suite includes the assessment, route and onboarding domain suites through its existing CLI', async t => {
+  const { base, env } = await isolatedEnvironment(t)
+  const extracted = join(base, 'core-selection')
+  await fs.mkdir(join(extracted, 'test'), { recursive: true })
+  await fs.writeFile(join(extracted, 'package.json'), JSON.stringify({ name: 'synthetic-core-selection', type: 'module' }))
+  const expected = [
+    'assessment-anchors', 'assessment-bank', 'assessment-history', 'assessment-response', 'assessment-scoring',
+    'band-syllabus', 'core', 'due-review-correction', 'durable-round-recovery', 'host-preference',
+    'learning-experience', 'new-word-correction', 'onboarding-profile', 'round-outcome',
+    'shared-effective-result', 'translation', 'word-retry-acceptance'
+  ]
+  for (const name of expected) await fs.writeFile(join(extracted, 'test', `${name}.test.js`),
+    `import test from 'node:test'; test(${JSON.stringify(`selected domain suite: ${name}`)}, () => {})\n`)
+  await fs.writeFile(join(extracted, 'test', 'unrelated-ui.test.js'), "throw Error('core must not select UI suites')\n")
+  const child = runCLI(env, ['--root', extracted, '--suite', 'core', '--tmp-parent', env.TMPDIR, '--', '--test-reporter=tap'])
+  const result = resultFrom(child)
+  assert.equal(child.status, 0, child.stdout + child.stderr)
+  for (const name of expected) assert.ok(child.stdout.includes(`selected domain suite: ${name}`), `core omitted ${name}`)
+  assert.equal(result.status, 'passed')
+  assert.equal(result.cleanup, 'removed')
+  assert.deepEqual(result.residue, [])
+  assert.deepEqual(await fs.readdir(env.TMPDIR), [])
+})
+
 test('public runner executes explicit tests in an extracted package root without development dependencies', async t => {
   const { base, env } = await isolatedEnvironment(t)
   const extracted = join(base, 'unpacked')
